@@ -17,6 +17,7 @@ function CollectionView() {
   const { id } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const providerCatalog = useQuery({ queryKey: ['providers'], queryFn: async () => (await api.providers.list()).data });
   const [syncing, setSyncing] = useState(false);
   const [sourcesOpen, setSourcesOpen] = useState(() => { try { return localStorage.getItem('artist.sourcesOpen') !== 'false'; } catch { return true; } });
   const [tileHeight, setTileHeight] = useState(() => { try { const value = Number(localStorage.getItem('artist.tileHeight')); return value >= 120 && value <= 360 ? value : 220; } catch { return 220; } });
@@ -301,6 +302,7 @@ function CollectionView() {
             <span>{sourcesOpen ? '−' : '+'} Sources</span><span className="text-xs text-slate-400">{collection.sources.filter(source => source.enabled).length} enabled{folderSyncing ? ' · Sync running' : ''}</span>
           </button>
           <div id="folder-sources" hidden={!sourcesOpen}>
+            <p className="mb-3 text-xs text-slate-400">Enable any compatible sites here. Disabling a source keeps its images, search and sync history. Configure credentials in Settings before scraping.</p>
             <div className="mb-3 flex flex-wrap items-center gap-2 rounded border border-[#202a34] bg-[#090d12] p-3 text-xs">
               <label className="text-slate-400">Amount <input type="number" min="1" max="320" value={syncLimit} onChange={(e) => setSyncLimit(e.target.value)} className="ml-1 w-16 px-2 py-1 bg-[#090d12] border border-[#202a34] rounded" /></label>
               <label className="text-slate-400">Order <select value={syncSort} onChange={(e) => setSyncSort(e.target.value)} className="ml-1 px-2 py-1 bg-[#090d12] border border-[#202a34] rounded"><option value="latest">Latest</option><option value="oldest">Oldest</option></select></label>
@@ -309,27 +311,33 @@ function CollectionView() {
               {syncTargetsThisFolder && !jobFinished && syncJobId && <button type="button" onClick={() => cancelSyncMutation.mutate()} disabled={cancelSyncMutation.isPending || syncJob?.status === 'cancelling'} className="rounded bg-red-900/70 px-3 py-1.5 text-xs font-semibold text-red-100 hover:bg-red-800 disabled:opacity-50">{syncJob?.status === 'cancelling' || cancelSyncMutation.isPending ? 'Stopping...' : syncJob?.kind === 'all' ? 'Stop batch' : 'Stop sync'}</button>}
             </div>
             <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-              {collection.sources.map((source) => (
+              {[...new Set([...(providerCatalog.data?.items || []).map(p => p.name), ...collection.sources.map(s => s.provider)])].map(name => {
+                const descriptor = providerCatalog.data?.items?.find(p => p.name === name);
+                return { provider: name, enabled: false, ...collection.sources.find(s => s.provider === name), supported: (descriptor?.collection_types || ['artist', 'character', 'tag']).includes(collection.type), available: descriptor?.available !== false, reason: descriptor?.unavailable_reason };
+              }).map((source) => (
                 <div key={source.provider} className="rounded border border-[#202a34] bg-[#0a0f15] p-3">
                   <div className="flex items-center gap-3">
                     <label className="flex min-w-0 flex-1 items-center gap-2 text-sm font-medium text-slate-300">
-                      <input type="checkbox" checked={source.enabled} onChange={(event) => sourceMutation.mutate({ provider: source.provider, enabled: event.target.checked })} disabled={sourceMutation.isPending} />
+                      <input type="checkbox" checked={source.enabled} onChange={(event) => sourceMutation.mutate({ provider: source.provider, enabled: event.target.checked })} aria-label={`Enable ${source.provider}`} disabled={sourceMutation.isPending || folderSyncing || !source.supported} />
                       <span className="capitalize">{source.provider === 'twitter' ? 'Twitter / X' : source.provider}</span>
                     </label>
                     {source.last_cursor && <span className="text-[11px] text-slate-400">Cursor {source.last_cursor.substring(0, 8)}...</span>}
                     <button
                       onClick={() => handleSync(source.provider)}
-                      disabled={!source.enabled || folderSyncing}
+                      disabled={!source.enabled || folderSyncing || !source.available || !source.supported}
                       className="min-w-28 rounded bg-[#344a73] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#405b88] disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       {syncTargetsThisFolder && !jobFinished ? 'Syncing...' : activeAllJob ? 'Batch running...' : 'Sync now'}
                     </button>
                   </div>
+                  {!source.supported && <p className="mt-2 text-xs text-amber-300">Artist profiles only; unavailable for this collection type.</p>}
+                  {!source.available && <p className="mt-2 text-xs text-amber-300">{source.reason || 'Configure this provider in Settings before scraping.'}</p>}
                   {(
                     <label className="mt-3 block text-[11px] text-slate-400">
                       {['pixiv', 'artstation', 'twitter', 'pawchive'].includes(source.provider) ? 'Artist profile URL / ID / handle' : 'Provider-specific search (optional)'}
                       <input
                         key={`${source.provider}:${source.query_override || ''}`}
+                        disabled={!source.supported || folderSyncing || sourceMutation.isPending}
                         defaultValue={source.query_override || ''}
                         onBlur={(event) => {
                           if (event.target.value.trim() !== (source.query_override || '')) sourceMutation.mutate({ provider: source.provider, query_override: event.target.value.trim() });

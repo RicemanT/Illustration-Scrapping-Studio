@@ -62,39 +62,35 @@ async def update_collection(folder_id: int, updates: dict):
 
 @router.patch("/{folder_id}/sources/{provider}")
 async def update_collection_source(folder_id: int, provider: str, payload: dict):
-    """Update one provider's enablement or provider-specific artist identity."""
+    """Add or update a source without deleting its history or pagination."""
     if "enabled" not in payload and "query_override" not in payload:
-        raise HTTPException(status_code=422, detail="enabled or query_override is required")
-    if "enabled" in payload and not isinstance(payload["enabled"], bool):
-        raise HTTPException(status_code=422, detail="enabled must be a boolean")
-    conn = get_connection()
-    exists = conn.execute("SELECT type,query FROM collection WHERE id = ?", (folder_id,)).fetchone()
-    if not exists:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Folder not found")
-    source = conn.execute("SELECT 1 FROM collection_source WHERE collection_id = ? AND provider = ?", (folder_id, provider)).fetchone()
-    if not source:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Provider is not configured for this folder")
+        raise HTTPException(422, "enabled or query_override is required")
+    if "enabled" in payload and not isinstance(payload['enabled'], bool):
+        raise HTTPException(422, "enabled must be a boolean")
+    if 'query_override' in payload and payload['query_override'] is not None and not isinstance(payload['query_override'], str):
+        raise HTTPException(422, 'query_override must be a string or null')
     from app.services.queries import validate_collection_query, assert_search_idle
+    conn = get_connection()
     try:
-        if "query_override" in payload:
-            assert_search_idle(conn, folder_id)
-        validate_collection_query(payload.get('query_override') or exists[1], exists[0], provider)
+        conn.execute('BEGIN IMMEDIATE')
+        folder = conn.execute('SELECT type,query FROM collection WHERE id=?', (folder_id,)).fetchone()
+        if not folder:
+            raise HTTPException(404, 'Folder not found')
+        source = conn.execute('SELECT query_override FROM collection_source WHERE collection_id=? AND provider=?', (folder_id,provider)).fetchone()
+        value = (payload.get('query_override') or '').strip() if 'query_override' in payload else (source[0] if source else None)
+        validate_collection_query(value or folder['query'], folder['type'], provider)
+        assert_search_idle(conn, folder_id)
+        conn.execute('INSERT OR IGNORE INTO collection_source(collection_id,provider,enabled) VALUES(?,?,0)', (folder_id,provider))
+        if 'enabled' in payload:
+            conn.execute('UPDATE collection_source SET enabled=? WHERE collection_id=? AND provider=?', (int(payload['enabled']),folder_id,provider))
+        if 'query_override' in payload and (value or None) != (source[0] if source else None):
+            conn.execute('UPDATE collection_source SET query_override=?,last_cursor=NULL,backfill_cursor=NULL WHERE collection_id=? AND provider=?', (value or None,folder_id,provider))
+        conn.commit()
+        return {'folder_id':folder_id,'provider':provider,**payload}
     except ValueError as exc:
+        raise HTTPException(422,str(exc)) from exc
+    finally:
         conn.close()
-        raise HTTPException(422, str(exc)) from exc
-    if "enabled" in payload:
-        conn.execute("UPDATE collection_source SET enabled = ? WHERE collection_id = ? AND provider = ?", (1 if payload["enabled"] else 0, folder_id, provider))
-    if "query_override" in payload:
-        value = str(payload.get("query_override") or "").strip()
-        if any(character in value for character in "\r\n\0"):
-            conn.close()
-            raise HTTPException(status_code=422, detail="Invalid source query")
-        conn.execute("UPDATE collection_source SET query_override = ?, last_cursor = NULL, backfill_cursor = NULL WHERE collection_id = ? AND provider = ?", (value or None, folder_id, provider))
-    conn.commit()
-    conn.close()
-    return {"folder_id": folder_id, "provider": provider, **payload}
 
 
 @router.delete("/{folder_id}")

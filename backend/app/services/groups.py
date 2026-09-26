@@ -93,7 +93,7 @@ def parse_artists(text):
     return entries
 
 
-def import_artists(group_id, text, *, apply=False, library=None, kind="artist"):
+def import_artists(group_id, text, *, apply=False, library=None, kind="artist", additional_sources=None):
     from app.services.collections import CollectionService
     from app.services.queries import validate_collection_query
     if kind == 'artist':
@@ -122,7 +122,9 @@ def import_artists(group_id, text, *, apply=False, library=None, kind="artist"):
         if apply:
             conn.execute('BEGIN IMMEDIATE')
         group = validate_group(conn, group_id)
-        validate_collection_query('example', kind, group['provider'])
+        sources = list(dict.fromkeys([group['provider'], *(additional_sources or [])]))
+        for source in sources:
+            validate_collection_query('example', kind, source)
         existing = {(humanize_artist_query(row['query']) if kind != 'tag' else ' '.join(row['query'].split())).casefold(): row['id'] for row in conn.execute(
             'SELECT id,query FROM collection WHERE group_id=? AND type=?', (group_id,kind))}
         for entry in entries:
@@ -134,7 +136,7 @@ def import_artists(group_id, text, *, apply=False, library=None, kind="artist"):
             if apply and entry['status'] == 'new':
                 folder = CollectionService().create_collection(FolderCreate(
                     name=entry['artist'], query=entry['artist'], group_id=group_id, type=kind,
-                    sources=[group['provider']]), connection=conn)
+                    sources=sources), connection=conn)
                 entry.update(status='created', folder_id=folder.id)
         if apply:
             if library is not None:

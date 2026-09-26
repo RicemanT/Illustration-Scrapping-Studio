@@ -24,6 +24,7 @@ function GroupPage() {
   const [name, setName] = useState('');
   const [provider, setProvider] = useState('danbooru');
   const [kind, setKind] = useState('artist');
+  const [additionalSources, setAdditionalSources] = useState([]);
   const [text, setText] = useState('');
   const [preview, setPreview] = useState(null);
   const [notice, setNotice] = useState('');
@@ -43,8 +44,8 @@ function GroupPage() {
   const create = useMutation({ mutationFn: () => api.groups.create({ name, provider }), onSuccess: async ({ data }) => {
     await refresh(); setName(''); navigate(`/groups/${data.id}`);
   } });
-  const inspect = useMutation({ mutationFn: () => api.groups.preview(group.id, text, kind), onSuccess: ({ data }) => setPreview(data) });
-  const importList = useMutation({ mutationFn: () => api.groups.import(group.id, text, kind), onSuccess: async ({ data }) => {
+  const inspect = useMutation({ mutationFn: () => api.groups.preview(group.id, text, kind, additionalSources), onSuccess: ({ data }) => setPreview(data) });
+  const importList = useMutation({ mutationFn: () => api.groups.import(group.id, text, kind, additionalSources), onSuccess: async ({ data }) => {
     setPreview(data); setNotice(`Created ${data.counts.created} collections. Existing collections and duplicate lines were skipped.`); await refresh();
   } });
   const move = useMutation({ mutationFn: ({ id, destination }) => api.groups.move(id, destination), onSuccess: async () => {
@@ -75,7 +76,7 @@ function GroupPage() {
     <h1 className="text-xl font-semibold">Collection groups</h1>
     <form className="flex flex-wrap gap-2" onSubmit={(event) => { event.preventDefault(); create.mutate(); }}>
       <input aria-label="Group name" className={field} placeholder="New group name" value={name} maxLength={100} required onChange={(event) => setName(event.target.value)} />
-      <select aria-label="Group provider" className={field} value={provider} onChange={(event) => setProvider(event.target.value)}>
+      <select aria-label="Group provider" title="Batch provider for Scrape group; collections can have additional sources" className={field} value={provider} onChange={(event) => setProvider(event.target.value)}>
         {(providers.data?.items || [{ name: 'danbooru' }, { name: 'e621' }]).map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
       </select>
       <button className={button} disabled={create.isPending}>Create group</button>
@@ -98,7 +99,14 @@ function GroupPage() {
       </section>
       <section className="rounded border border-slate-800 p-4 space-y-3">
         <h2 className="font-semibold">Import collection list</h2>
-        <label className="block text-sm">List type <select aria-label="List type" className={field} value={kind} disabled={busy} onChange={e => { setKind(e.target.value); setPreview(null); setNotice(''); }}><option value="artist">Artists</option><option value="character">Characters</option><option value="tag">Tags / queries</option></select></label>
+        <label className="block text-sm">List type <select aria-label="List type" className={field} value={kind} disabled={busy} onChange={e => { setKind(e.target.value); setAdditionalSources([]); setPreview(null); setNotice(''); }}><option value="artist">Artists</option><option value="character">Characters</option><option value="tag">Tags / queries</option></select></label>
+        <fieldset className="space-y-2"><legend className="text-sm">Sources for new collections (select multiple)</legend>
+          <p className="text-xs text-slate-400">{group.provider} is included for group scraping. Extra sources can be synced from each collection or Sync All. Existing collections are skipped, not modified by this import.</p>
+          <div className="flex flex-wrap gap-3">{providers.data?.items?.map(item => <label key={item.name} className="text-sm flex items-center gap-2">
+            <input type="checkbox" aria-label={`Bulk source ${item.name}`} checked={item.name === group.provider || additionalSources.includes(item.name)} disabled={busy || item.name === group.provider || !(item.collection_types || ['artist','character','tag']).includes(kind)} onChange={event => { setAdditionalSources(old => event.target.checked ? [...old,item.name] : old.filter(name => name !== item.name)); setPreview(null); }} />
+            {item.name}{!item.available ? ' (setup needed)' : ''}
+          </label>)}</div>
+        </fieldset>
         <p className="text-sm text-slate-400">Upload a UTF-8 .txt file or paste one artist, character, or tag query per line. Choose the list type below; tag queries keep their spaces and underscores. Preview, then create the folders; scraping starts separately. Maximum 5,000 lines / 1 MiB.</p>
         <input key={groupId} aria-label="Collection text file" type="file" accept=".txt,text/plain" disabled={busy} onChange={async (event) => {
           const file = event.target.files?.[0]; if (!file) return;

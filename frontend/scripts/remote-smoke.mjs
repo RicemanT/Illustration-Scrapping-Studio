@@ -61,6 +61,22 @@ try {
   await until(()=>js(`[${JSON.stringify(prefix)},${JSON.stringify(prefix+'/')}].includes(location.pathname)`),'dashboard navigation');
   await cdp('Page.navigate',{url:base+'/settings'});
   await until(()=>js("document.querySelector('[aria-label=\"Maximum longest side\"]')?.value==='3072'"),'reconnect retained settings');
+  // Create with multiple sources, then edit an initially unconfigured source.
+  await js("[...document.querySelectorAll('button')].find(e=>e.textContent.includes('New Collection')).click()");
+  await until(()=>js("!!document.querySelector('input[placeholder=\"e.g., Quasarcake\"]')"),'create modal');
+  await js(`(() => {for(const [placeholder,value] of [['e.g., Quasarcake','Multi source fixture'],['namako daibakuhatsu','fixture_artist']]) {const el=document.querySelector('input[placeholder="'+placeholder+'"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,value);el.dispatchEvent(new Event('input',{bubbles:true}));}})()`);
+  await js("[...document.querySelectorAll('label')].find(e=>e.textContent.trim()==='e621').querySelector('input').click()");
+  await js("[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Create Collection').click()");
+  let folder;
+  await until(async()=>{folder=(await (await fetch(base+'/api/folders/')).json()).find(f=>f.name==='Multi source fixture');return folder;},'multi-source collection created');
+  if(folder.sources.filter(s=>s.enabled).length!==2)throw new Error('Creation lost selected sources');
+  await cdp('Page.navigate',{url:base+'/folder/'+folder.id});
+  await until(()=>js("!!document.querySelector('[aria-label=\"Enable yandere\"]')"),'all source controls');
+  await js("document.querySelector('[aria-label=\"Enable yandere\"]').click()");
+  await until(async()=> (await (await fetch(base+'/api/folders/'+folder.id)).json()).sources.some(s=>s.provider==='yandere' && s.enabled),'added existing-collection source');
+  await until(()=>js("!document.querySelector('[aria-label=\"Enable danbooru\"]').disabled"),'source mutation settled');
+  await js("document.querySelector('[aria-label=\"Enable danbooru\"]').click()");
+  await until(async()=> (await (await fetch(base+'/api/folders/'+folder.id)).json()).sources.some(s=>s.provider==='danbooru' && !s.enabled),'source disabled');
   const events=await (await fetch(base+'/api/diagnostics?limit=100')).json();
   if(!events.items.some(item=>item.event==='settings.storage' || item.kind==='settings.storage')) {
     // Event name is schema-owned; inspect serialized entries for the exact event code.

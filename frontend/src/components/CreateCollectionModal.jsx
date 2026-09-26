@@ -61,7 +61,7 @@ function CreateCollectionModal({ onClose }) {
           <label className="block text-slate-300">Group
             <select className="block w-full border rounded p-2" value={formData.group_id || ''} onChange={(event) => {
               const group = groups.data?.find((item) => item.id === Number(event.target.value));
-              setFormData({ ...formData, group_id: group?.id || null, sources: group ? [group.provider] : formData.sources });
+              setFormData({ ...formData, group_id: group?.id || null, sources: group ? [...new Set([...formData.sources, group.provider])] : formData.sources });
             }}><option value="">Ungrouped</option>{groups.data?.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select>
           </label>
           <label className="block text-sm">Collection type
@@ -132,7 +132,7 @@ function CreateCollectionModal({ onClose }) {
           {/* Sources */}
           <div>
             <label className="block text-sm font-medium text-slate-300 mb-2">
-              Sources
+              Sources (select any number)
             </label>
             <div className="space-y-2">
               {providers.map((provider) => (
@@ -141,7 +141,7 @@ function CreateCollectionModal({ onClose }) {
                     type="checkbox"
                     checked={formData.sources.includes(provider.name)}
                     onChange={() => handleSourceToggle(provider.name)}
-                    disabled={!provider.available || !(provider.collection_types || ['artist', 'character', 'tag']).includes(formData.type)}
+                    disabled={!(provider.collection_types || ['artist', 'character', 'tag']).includes(formData.type)}
                     className="mr-2 h-4 w-4 text-blue-600 focus:ring-blue-500 border-[#303d4c] rounded"
                   />
                   <span className="text-slate-300">

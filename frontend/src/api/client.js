@@ -32,8 +32,8 @@ export const api = {
   groups: {
     list: () => client.get('/groups'),
     create: (data) => client.post('/groups', data),
-    preview: (id, text, type = 'artist') => client.post(`/groups/${id}/collections/preview`, { text, type }),
-    import: (id, text, type = 'artist') => client.post(`/groups/${id}/collections`, { text, type }),
+    preview: (id, text, type = 'artist', additional_sources = []) => client.post(`/groups/${id}/collections/preview`, { text, type, additional_sources }),
+    import: (id, text, type = 'artist', additional_sources = []) => client.post(`/groups/${id}/collections`, { text, type, additional_sources }),
     move: (folderId, groupId) => client.post(`/groups/folders/${folderId}/move`, { group_id: groupId }),
     sync: (id, options) => client.post(`/sync/group/${id}`, null, { params: options }),
     enableSource: (id, folderId) => client.post(`/groups/${id}/folders/${folderId}/enable-source`),

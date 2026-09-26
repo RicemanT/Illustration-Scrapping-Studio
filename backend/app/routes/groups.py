@@ -16,6 +16,7 @@ class GroupCreate(BaseModel):
 class ArtistList(BaseModel):
     text: str = Field(max_length=1024 * 1024)
     type: str = "artist"
+    additional_sources: list[str] = Field(default_factory=list, max_length=8)
 
 
 class FolderMove(BaseModel):
@@ -44,13 +45,13 @@ def create_group(payload: GroupCreate):
 @router.post('/{group_id}/collections/preview')
 @router.post('/{group_id}/artists/preview')
 def preview_artists(group_id: int, payload: ArtistList):
-    return checked(groups.import_artists, group_id, payload.text, kind=payload.type)
+    return checked(groups.import_artists, group_id, payload.text, kind=payload.type, additional_sources=payload.additional_sources)
 
 
 @router.post('/{group_id}/collections')
 @router.post('/{group_id}/artists')
 def import_artists(group_id: int, payload: ArtistList):
-    return checked(groups.import_artists, group_id, payload.text, apply=True, library=LIBRARY_PATH, kind=payload.type)
+    return checked(groups.import_artists, group_id, payload.text, apply=True, library=LIBRARY_PATH, kind=payload.type, additional_sources=payload.additional_sources)
 
 
 @router.post('/folders/{folder_id}/move')

@@ -14,6 +14,8 @@ Click **+ New Collection**, choose a type, then enter a display name, search and
 
 The display name does not need to match the query. Type is fixed after creation to protect caption semantics. Artist and character collections with the same name can coexist in a group. Every collection owns separate files and metadata; importing an identical image into another collection does not make them share a writable original.
 
+In **Sources**, enable or disable any compatible site, including sites not chosen at creation. Disabling keeps existing images, provider-specific queries and sync cursors. Providers needing credentials can be selected in advance; finish setup in Settings before scraping. Source edits wait until active scraping/import jobs finish.
+
 Edit searches in **Sources**. Search changes reset provider pagination and are blocked while affected jobs are active. Local gallery filters affect the view, not future downloads. Changing settings does not rewrite existing images or force deduplicated sources to download again.
 
 ## Providers and credentials
@@ -33,7 +35,7 @@ hatsune_miku
 hakurei_reimu
 ```
 
-Preview first, inspect invalid/existing entries, then choose **Create collections**. Blank and duplicate entries are skipped; types deduplicate independently. Limits are 5,000 lines and 1 MiB per list. A group with a profile-only provider cannot create character/tag searches.
+Choose multiple **Sources for new collections** if wanted; the group batch provider is included automatically. Additional sources apply to newly created collections; existing entries remain unchanged. Preview first, inspect invalid/existing entries, then choose **Create collections**. Blank and duplicate entries are skipped; types deduplicate independently. Limits are 5,000 lines and 1 MiB per list. A group with a profile-only provider cannot create character/tag searches.
 
 Choose **Scrape group** to run that group's enabled collections with its designated provider. **Sync All** targets enabled sources across groups. Groups are actual parent directories: `images/<group-slug>/<collection-slug>/`, with matching thumbnails. Ungrouped collections use their own direct directory. **Move into group** moves files with membership; finish conflicting jobs first. Group renaming/deletion and nested groups are not exposed in the current UI.
 
