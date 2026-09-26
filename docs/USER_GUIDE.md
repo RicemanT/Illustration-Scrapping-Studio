@@ -72,7 +72,7 @@ Defaults retain the prior 2000-pixel AREA policy: JPEG stays JPEG, other support
 
 ## Workers and storage
 
-Worker count accepts any positive integer, with no fixed application maximum; default is two. Higher counts consume more CPU/RAM and may not improve provider-limited throughput. Configure according to actual workload, not just the host's logical CPU count.
+Worker count accepts any positive integer, with no fixed application maximum; default is two. Higher counts consume more CPU/RAM and may not improve provider-limited throughput. Configure according to actual workload, not just the host's logical CPU count. Booru adapters currently space request starts one second apart; fast files may finish before another request starts even with many workers. Waiting workers are shown separately from transfer/processing activity. Danbooru documents a 10 requests/second read burst limit but asks long-running clients to stay around 1 request/second; see its [API guidance](https://safebooru.donmai.us/wiki_pages/help%3Aapi). This is API guidance, not a guarantee about media CDN limits. The app retains its conservative request-start pacing.
 
 **Active server and storage** reports the backend's library and available disk space. The default free-space reserve is 5 GiB. Below it, new download/ingestion admission fails with an explanation. This is a soft check, not a hard disk quota: in-flight downloads and other processes may cross the threshold. Free space or change the reserve, then rerun failed work. Filesystem capacity may differ from an account quota.
 

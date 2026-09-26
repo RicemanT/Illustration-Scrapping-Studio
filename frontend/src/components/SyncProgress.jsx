@@ -36,6 +36,12 @@ export const formatTransferSummary = (transfer) => {
 
 export function FileTransferProgress({ transfer }) {
   if (!transfer) return null;
+  if (transfer.stage === 'waiting_for_provider') return (
+    <div className="my-2 rounded border border-[#243244] bg-[#090d12] p-2 text-xs text-slate-400">
+      Post {transfer.remote_id}: waiting for provider request slot
+      {transfer.request_interval_seconds > 0 && <span> (request starts spaced {transfer.request_interval_seconds}s apart)</span>}
+    </div>
+  );
   const total = transfer.bytes_total;
   const downloaded = transfer.bytes_downloaded || 0;
   const determinate = Boolean(total);
@@ -69,7 +75,7 @@ export function ActiveTransferProgress({ progress }) {
   }
   return (
     <div className="my-2 space-y-2">
-      <div className="text-[11px] text-slate-400">{activeFiles.length} active of {progress?.workers || activeFiles.length} configured workers</div>
+      <div className="text-[11px] text-slate-400">{activeFiles.length} occupied of {progress?.workers || activeFiles.length} configured workers; {activeFiles.filter(file => file.stage === 'waiting_for_provider').length} waiting for provider</div>
       {activeFiles.map((transfer, index) => (
         <FileTransferProgress key={`${transfer.remote_id || 'file'}-${transfer.stage || 'active'}-${index}`} transfer={transfer} />
       ))}

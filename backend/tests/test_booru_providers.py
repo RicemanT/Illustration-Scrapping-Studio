@@ -200,6 +200,41 @@ class BooruNormalizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(next_cursor, "3")
         self.assertEqual(captured_pages, [None, "2"])
 
+    async def test_slow_downloads_overlap_with_spaced_starts(self):
+        import asyncio
+        import time
+        starts, updates = [], []
+        both_started, release = asyncio.Event(), asyncio.Event()
+        class SlowBody(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                await release.wait()
+                yield b'test'
+        def handler(request):
+            starts.append(time.monotonic())
+            if len(starts) == 2: both_started.set()
+            return httpx.Response(200, stream=SlowBody())
+        provider = BooruProvider('danbooru')
+        await provider.client.aclose()
+        provider.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        provider.config = dict(provider.config, rate_limit=0.05)
+        tasks = []
+        try:
+            with tempfile.TemporaryDirectory() as temp:
+                for ident in (1, 2):
+                    post = provider._post_to_remote({'id': ident, 'file_url': f'https://files.example/{ident}.jpg', 'image_width': 512, 'image_height': 512, 'file_ext': 'jpg'})
+                    tasks.append(asyncio.create_task(provider.download_image(post, str(Path(temp)/f'{ident}.jpg'), progress=updates.append)))
+                try:
+                    await asyncio.wait_for(both_started.wait(), timeout=3)
+                    self.assertFalse(any(task.done() for task in tasks))
+                    self.assertGreaterEqual(starts[1]-starts[0], 0.045)
+                    self.assertEqual(len([u for u in updates if u['stage']=='waiting_for_provider']), 2)
+                finally:
+                    release.set()
+                    await asyncio.gather(*tasks)
+                for ident in (1, 2): self.assertEqual((Path(temp)/f'{ident}.jpg').read_bytes(), b'test')
+        finally:
+            await provider.close()
+
 
 if __name__ == "__main__":
     unittest.main()

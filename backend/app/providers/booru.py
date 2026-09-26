@@ -524,6 +524,9 @@ class BooruProvider(Provider):
         """Download image to destination path."""
         # Rate-limit request starts, not the entire response body. Worker
         # concurrency may overlap transfers that have already been admitted.
+        if progress:
+            progress({"stage": "waiting_for_provider", "remote_id": post.remote_id,
+                      "format": post.format, "request_interval_seconds": float(self.config['rate_limit'])})
         async with self.rate_limiter:
             await self._rate_limit()
         Path(dest_path).parent.mkdir(parents=True, exist_ok=True)
