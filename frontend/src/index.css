@@ -1,0 +1,67 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root { color-scheme: dark; }
+  input:not([type=checkbox]):not([type=radio]):not([type=range]), select, textarea {
+    background-color: #080d12;
+    color: #d3dce7;
+    border-color: #303d4c;
+  }
+  input::placeholder, textarea::placeholder { color: #8998aa; }
+  button:disabled { cursor: default; }
+  :focus-visible { outline: 2px solid #78a9f5; outline-offset: 3px; }
+  input[type=checkbox], input[type=radio] { accent-color: #6099ef; }
+  * { scrollbar-color: #3a495c #11161d; scrollbar-width: thin; }
+}
+
+body {
+  margin: 0;
+  background: #030609;
+  color: #b7c0cc;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* { box-sizing: border-box; }
+button, input, select { font: inherit; }
+button { cursor: pointer; }
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
+}
+
+/* Reference-inspired ambient lighting belongs to the chrome, never the artwork. */
+.app-atmosphere {
+  background: linear-gradient(180deg, #020405 0%, #080e14 42%, #202b35 100%);
+}
+.app-workspace { background: transparent; }
+.app-topbar {
+  background: rgba(2, 4, 6, .92);
+  box-shadow: 0 1px 0 rgba(151, 176, 206, .035);
+}
+.artist-sidebar {
+  background: linear-gradient(180deg, rgba(0, 2, 3, .78), rgba(10, 17, 24, .3));
+}
+.surface-panel {
+  background: linear-gradient(135deg, rgba(9, 15, 21, .82), rgba(3, 7, 11, .64));
+  box-shadow: inset 0 1px 0 rgba(179, 203, 230, .035);
+}
+.gallery-surface { background: rgba(2, 5, 8, .22); }
+.viewer-atmosphere {
+  background: radial-gradient(ellipse at 50% 100%, #16212d 0%, #070c12 60%, #020405 100%);
+}
+.viewer-info {
+  background: linear-gradient(180deg, #070c12, #131d28);
+}
+.app-atmosphere button, .viewer-atmosphere button {
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-atmosphere button, .viewer-atmosphere button { transition: none; }
+}

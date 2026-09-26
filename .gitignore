@@ -1,0 +1,54 @@
+# Runtime data, private configuration and archives
+library/
+backups/
+releases/
+.secrets/
+.env
+.env.*
+!.env.example
+provider_settings.json
+provider_settings.tmp
+cookies.txt
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.schema-version
+.collection-studio.lock
+*.zip
+*.tar
+*.tar.gz
+*.7z
+*.log
+*.log.*
+
+# Python environments and generated files
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+build/
+dist/
+
+# Frontend dependencies and caches
+node_modules/
+.cache/
+
+# Local benchmark output (historical checked-in report lives under benchmarks)
+/backend/filter-benchmark*.json
+
+# Editors and operating systems
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

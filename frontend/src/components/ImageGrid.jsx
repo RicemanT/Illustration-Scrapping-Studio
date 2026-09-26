@@ -1,0 +1,75 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { justifiedRows } from './justifiedLayout';
+import ImageDetail from './ImageDetail';
+import { backendAssetUrl } from '../api/client';
+
+function ImageGrid({ images, selected = new Set(), onToggle, targetHeight = 220 }) {
+  const [selectedImage, setSelectedImage] = useState(null);
+
+  const container = useRef(null);
+  const [width, setWidth] = useState(0);
+  useEffect(() => {
+    const observer = new ResizeObserver(([entry]) => setWidth(entry.contentRect.width));
+    if (container.current) observer.observe(container.current);
+    return () => observer.disconnect();
+  }, []);
+  const currentIndex = images.findIndex(image => image.id === selectedImage?.id);
+  const rows = justifiedRows(images, width, targetHeight);
+
+
+  return (
+    <>
+      <div className="p-2">
+        <div ref={container} className="space-y-1.5" data-testid="justified-gallery">
+          {rows.map((row, rowIndex) => <div key={rowIndex} className="flex gap-1.5" style={{ height: row.height }}>
+          {row.items.map(({ image, width: tileWidth }) => {
+            const isOriginalFrame = ['original_frame', 'archive_frame'].includes(image.derived_media_source);
+            const isArchiveFrame = image.derived_media_source === 'archive_frame';
+            return (
+            <div
+              key={image.id}
+              onClick={(event) => event.shiftKey && onToggle ? onToggle(image.id) : setSelectedImage(image)}
+              role="button" tabIndex={0} aria-label={`Open image ${image.id}`}
+              onKeyDown={(event) => { if (event.target !== event.currentTarget) return; if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); setSelectedImage(image); } }}
+              style={{ width: tileWidth, height: row.height, flexShrink: 0 }}
+              className="relative bg-[#0c1219] rounded overflow-hidden cursor-pointer hover:ring-2 hover:ring-blue-400"
+            >
+              <img
+                src={image.thumb_path ? backendAssetUrl(`/static/thumbnails/${image.thumb_path}`) : undefined}
+                alt={`Image ${image.id}`}
+                className="w-full h-full object-contain"
+                loading="lazy"
+              />
+              {onToggle && <button type="button" aria-label={`${selected.has(image.id) ? 'Deselect' : 'Select'} image`} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onToggle(image.id); }} className={`absolute top-2 left-2 z-10 h-4 w-4 rounded border ${selected.has(image.id) ? 'bg-blue-500 border-blue-300' : 'bg-black/40 border-white/60'}`} />}
+              {selected.has(image.id) && <div className="pointer-events-none absolute inset-0 ring-2 ring-inset ring-blue-400 " />}
+              {Boolean(image.derived_media_source || image.derived_from_preview) && <div title={isArchiveFrame ? `Frame extracted from original ${image.original_media_format || 'archive'}, then normalized for training` : isOriginalFrame ? `Frame extracted from original ${image.original_media_format || 'media'}, then normalized for training` : `Provider preview derived from ${image.original_media_format || 'unsupported media'}, then normalized for training`} className={`absolute right-2 top-2 rounded px-1.5 py-0.5 text-[10px] font-medium uppercase ring-1 ${isOriginalFrame ? 'bg-emerald-950/90 text-emerald-200 ring-emerald-700/70' : 'bg-amber-950/90 text-amber-200 ring-amber-700/70'}`}>{isArchiveFrame ? 'archive frame' : isOriginalFrame ? 'original frame' : 'preview still'}</div>}
+              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent p-2">
+                <div className="text-white text-xs">
+                  {image.width}x{image.height}
+                </div>
+              </div>
+              <div className="pointer-events-none absolute bottom-2 right-2 flex gap-1 text-[10px]">
+                {Boolean(image.favorite) && <span title="Favorite" aria-label="Favorite" className="rounded bg-black/80 px-1 text-amber-200">★</span>}
+                {image.review_status && image.review_status !== 'pending' && <span className="rounded bg-black/80 px-1 text-slate-200">{image.review_status}</span>}
+              </div>
+            </div>
+            );
+          })}</div>)}
+        </div>
+      </div>
+
+      {selectedImage && (
+        <ImageDetail
+          key={selectedImage.id}
+          image={selectedImage}
+          position={currentIndex + 1} total={images.length}
+          onPrevious={currentIndex > 0 ? () => setSelectedImage(images[currentIndex - 1]) : undefined}
+          onNext={currentIndex >= 0 && currentIndex < images.length - 1 ? () => setSelectedImage(images[currentIndex + 1]) : undefined}
+          onClose={() => setSelectedImage(null)}
+        />
+      )}
+    </>
+  );
+}
+
+export default ImageGrid;
