@@ -69,6 +69,38 @@ def create_group(name, provider, library):
         conn.close()
 
 
+@pair_write
+def delete_group(group_id, library):
+    """Delete members through their normal cleanup path; retain group on failure."""
+    from app.services.collections import CollectionService
+    conn = get_connection()
+    try:
+        assert_idle(conn)
+        group = conn.execute('SELECT slug FROM artist_group WHERE id=?', (group_id,)).fetchone()
+        if not group:
+            return False
+        members = conn.execute('SELECT id,slug FROM collection WHERE group_id=?', (group_id,)).fetchall()
+        for slug in [group['slug'], *(row['slug'] for row in members)]:
+            for category in ('images', 'thumbnails'):
+                _safe(library / category, slug)
+    finally:
+        conn.close()
+    service = CollectionService()
+    for row in members:
+        service.delete_collection(row['id'], library)
+    # Remove only empty parent directories, never unrelated content.
+    for category in ('images', 'thumbnails'):
+        path = _safe(library / category, group['slug'])
+        if path.exists():
+            path.rmdir()
+    conn = get_connection()
+    try:
+        conn.execute('DELETE FROM artist_group WHERE id=?', (group_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    return True
+
 def parse_artists(text):
     if len(text.encode('utf-8')) > 1024 * 1024:
         raise ValueError('Artist list exceeds 1 MiB')
@@ -162,7 +194,7 @@ def assert_idle(conn):
     # Disk paths must stay stable for all readers/writers with work in flight.
     for table in ('sync_job', 'dataset_job', 'import_batch'):
         if conn.execute(f"SELECT 1 FROM {table} WHERE status IN ('queued','running','cancelling') LIMIT 1").fetchone():
-            raise ValueError('Finish or cancel pending sync, import and QA jobs before moving folders')
+            raise ValueError('Finish or cancel pending sync, import and QA jobs before changing group storage or protection')
 
 
 def _safe(root, relative):
@@ -257,6 +289,8 @@ def move_folder(folder_id, group_id, library):
             raise ValueError('Folder not found')
         if folder['group_id'] == group_id:
             return
+        if conn.execute('SELECT 1 FROM group_blocked_folder WHERE folder_id=?', (folder_id,)).fetchone():
+            raise ValueError('Unprotect this collection before moving it, then protect it in the destination group if needed')
         if conn.execute('SELECT 1 FROM collection WHERE group_id IS ? AND name=? AND type=? AND id<>?', (group_id, folder['name'], folder['type'], folder_id)).fetchone():
             raise ValueError('A folder with this name already exists in the destination group')
         old = folder['slug']

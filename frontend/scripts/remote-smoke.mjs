@@ -82,8 +82,18 @@ try {
     // Event name is schema-owned; inspect serialized entries for the exact event code.
     if(!JSON.stringify(events.items).includes('settings.storage'))throw new Error('Missing prefixed request diagnostics');
   }
+  const fixtureGroup = await (await fetch(base+'/api/groups', {method:'POST', headers:{'Content-Type':'application/json','X-XSRFToken':'fixture-xsrf'}, body:JSON.stringify({name:'Delete fixture',provider:'danbooru'})})).json();
+  const moved = await fetch(base+'/api/groups/folders/'+folder.id+'/move', {method:'POST',headers:{'Content-Type':'application/json','X-XSRFToken':'fixture-xsrf'},body:JSON.stringify({group_id:fixtureGroup.id})});
+  if(!moved.ok)throw new Error('Fixture move failed');
+  await cdp('Page.navigate',{url:base+'/groups/'+fixtureGroup.id});
+  await until(()=>js("[...document.querySelectorAll('button')].some(e=>e.textContent==='Protect all current folders')"),'group protection controls');
+  await js("[...document.querySelectorAll('button')].find(e=>e.textContent==='Protect all current folders').click()");
+  await until(async()=> (await (await fetch(base+'/api/groups/'+fixtureGroup.id+'/blocked')).json()).length===1,'protected group member');
+  await js("window.confirm=()=>true; [...document.querySelectorAll('button')].find(e=>e.textContent==='Delete group').click()");
+  await until(async()=> !(await (await fetch(base+'/api/groups')).json()).some(g=>g.id===fixtureGroup.id),'group deleted through UI');
+  if((await fetch(base+'/api/folders/'+folder.id)).status!==404)throw new Error('Deleted group retained collection');
   if(errors.length || escaped.length)throw new Error(JSON.stringify({errors,escaped}));
   const shot=await cdp('Page.captureScreenshot',{format:'png'});writeFileSync(path.join(temp,'proxy-settings.png'),Buffer.from(shot.data,'base64'));
-  console.log(JSON.stringify({status:'passed',checks:['deep-link UI','settings load/save','server storage reserve','thumbnail URL','router prefix','browser reconnect','diagnostics','no escaped requests'],artifacts:temp},null,2));
+  console.log(JSON.stringify({status:'passed',checks:['deep-link UI','settings load/save','server storage reserve','thumbnail URL','router prefix','browser reconnect','diagnostics','multi-source editing','group protection','group deletion','no escaped requests'],artifacts:temp},null,2));
 } catch(error) {console.error(error);console.error(output.slice(-4000));process.exitCode=1;}
 finally {ws?.close();browser?.kill();backend?.kill();proxy?.close();setTimeout(()=>process.exit(process.exitCode||0),1000);}

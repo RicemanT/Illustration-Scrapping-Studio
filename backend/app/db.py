@@ -327,6 +327,16 @@ def init_db():
     """)
 
     _migrate_group_folders(conn)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS group_blocked_folder (
+            group_id INTEGER NOT NULL,
+            folder_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(group_id, folder_id),
+            FOREIGN KEY(group_id) REFERENCES artist_group(id) ON DELETE CASCADE,
+            FOREIGN KEY(folder_id) REFERENCES collection(id) ON DELETE CASCADE
+        )
+    """)
 
     # Collection sources table
     cursor.execute("""

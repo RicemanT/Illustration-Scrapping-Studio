@@ -40,6 +40,45 @@ class ArtistGroupTests(unittest.IsolatedAsyncioTestCase):
         db.DB_PATH = self.old_db
         self.temp.cleanup()
 
+    async def test_protection_excludes_global_and_group_scraping(self):
+        from app.routes.groups import add_blocked, ProtectionUpdate, remove_blocked
+        first = self.folder('Curated', self.dan['id'])
+        second = self.folder('New', self.dan['id'])
+        add_blocked(self.dan['id'], ProtectionUpdate(text='\ufeffCURATED'))
+        self.assertEqual([row[0] for row in sync._enabled_pairs()], [second.id])
+        with patch.object(sync, '_start_new_job', side_effect=lambda job: job):
+            job = await sync.sync_group(self.dan['id'])
+        self.assertEqual([pair[0] for pair in job['parameters']['pairs']], [second.id])
+        with self.assertRaises(HTTPException):
+            add_blocked(self.dan['id'], ProtectionUpdate(text='New\nunknown'))
+        self.assertEqual([row[0] for row in sync._enabled_pairs()], [second.id])
+        remove_blocked(self.dan['id'], first.id)
+        self.assertEqual(len(sync._enabled_pairs()), 2)
+
+    async def test_delete_failure_retains_retryable_collection(self):
+        folder = self.folder('Retry', self.dan['id'])
+        directory = self.root / 'images' / folder.slug
+        directory.mkdir(parents=True, exist_ok=True)
+        with patch('app.services.collections.shutil.rmtree', side_effect=PermissionError('locked')):
+            with self.assertRaises(PermissionError):
+                self.service.delete_collection(folder.id, self.root)
+        self.assertIsNotNone(self.service.get_collection(folder.id))
+        self.assertTrue(self.service.delete_collection(folder.id, self.root))
+
+    async def test_group_delete_purges_members_and_keeps_other_group(self):
+        from app.services.groups import delete_group
+        first = self.folder('Delete', self.dan['id'])
+        other = self.folder('Keep', self.e621['id'])
+        for folder in (first, other):
+            for category in ('images', 'thumbnails'):
+                path = self.root / category / folder.slug
+                path.mkdir(parents=True, exist_ok=True)
+                (path / 'fixture.txt').write_text('fixture')
+        self.assertTrue(delete_group(self.dan['id'], self.root))
+        self.assertIsNone(self.service.get_collection(first.id))
+        self.assertTrue((self.root / 'images' / other.slug / 'fixture.txt').exists())
+        self.assertFalse((self.root / 'images' / first.slug).exists())
+
     def folder(self, name='Artist', group=None, sources=None):
         return self.service.create_collection(FolderCreate(name=name, query=name, group_id=group, sources=sources or ['danbooru']))
 

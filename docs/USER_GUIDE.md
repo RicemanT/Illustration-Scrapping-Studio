@@ -91,3 +91,12 @@ Open **Logs** or an error notification's diagnostics link. Filter by request/job
 See [Troubleshooting](TROUBLESHOOTING.md), and follow [Installation](INSTALLATION.md#back-up-the-library) for backup/restore and safe updates. The app does not launch training jobs or manage GPUs/models.
 
 For complete provider authentication instructions, follow [Provider setup](PROVIDER_SETUP.md), including Windows/Jupyter commands and cookie upload.
+
+
+### Protect curated collections and delete groups
+
+In **Groups / bulk lists**, select a group and use **Protect all current folders** to exclude its current members from **Scrape group**, **Sync All**, and scheduled syncs. New collections are not automatically protected. You can also paste exact collection names (one per line) or upload a UTF-8 `.txt` file, then click **Add pasted names**. Matching ignores case; unknown names reject the entire submission and are reported. Lists allow up to 5,000 lines / 1 MiB.
+
+The protected list shows an **Unprotect** button for each member. Explicit single-collection scraping remains available. Finish or cancel active jobs before changing protection. Unprotect a collection before moving it and reapply protection in its destination if needed.
+
+**Delete group** permanently removes its member collections, image/sidecar directories, thumbnails, and associated image-deletion recovery snapshots. Confirm the prompt only when you intend to remove the entire group. Active sync, import, or QA work must finish first. Collection rows also have individual Delete controls. A filesystem error is reported; resolve it and retry. Deletion can have removed earlier members before encountering an error, so it cannot be undone.

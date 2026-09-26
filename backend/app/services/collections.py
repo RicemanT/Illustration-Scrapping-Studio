@@ -213,11 +213,16 @@ class CollectionService:
             conn.close()
             return False
         if library_path:
+            from app.services.groups import _safe
+            try:
+                for category in ('images', 'thumbnails'):
+                    _safe(library_path / category, collection['slug'])
+            except Exception:
+                conn.close()
+                raise
             # A folder deletion is permanent, including any batch-delete
             # recovery snapshot that still belongs to it.
             self._purge_image_recoveries(collection_id, library_path)
-        cursor.execute("DELETE FROM collection WHERE id = ?", (collection_id,))
-        conn.commit()
         conn.close()
 
         if library_path:
@@ -233,6 +238,12 @@ class CollectionService:
                     raise ValueError(f"Unsafe folder storage path: {collection_dir}")
                 if collection_dir.exists():
                     shutil.rmtree(collection_dir)
+        conn = get_connection()
+        try:
+            conn.execute("DELETE FROM collection WHERE id = ?", (collection_id,))
+            conn.commit()
+        finally:
+            conn.close()
         return True
 
     def get_collection_images(

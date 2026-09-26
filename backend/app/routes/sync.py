@@ -135,7 +135,7 @@ def _enabled_pairs() -> list[tuple[int, str, str]]:
     rows = conn.execute("""
         SELECT c.id, c.name, cs.provider
         FROM collection c JOIN collection_source cs ON cs.collection_id = c.id
-        WHERE c.enabled = 1 AND cs.enabled = 1 ORDER BY c.name, cs.provider
+        WHERE c.enabled = 1 AND cs.enabled = 1 AND NOT EXISTS (SELECT 1 FROM group_blocked_folder b WHERE b.folder_id=c.id) ORDER BY c.name, cs.provider
     """).fetchall()
     conn.close()
     return [(int(row[0]), row[1], row[2]) for row in rows]
@@ -185,6 +185,14 @@ async def _run_all_job(job_id: str) -> None:
                     last_persisted = now
 
             try:
+                conn = get_connection()
+                try:
+                    protected = conn.execute('SELECT 1 FROM group_blocked_folder WHERE folder_id=?', (folder_id,)).fetchone()
+                finally:
+                    conn.close()
+                if protected:
+                    _append_log(job, {'message': f'Skipped protected collection: {folder_name}'})
+                    continue
                 if 'group_id' in params:
                     conn = get_connection()
                     try:
@@ -464,7 +472,7 @@ async def sync_group(group_id: int, limit: int = 20, sort: str = 'latest',
                 raise HTTPException(409, reason)
         pairs = [list(row) for row in conn.execute('''SELECT c.id,c.name,cs.provider
             FROM collection c JOIN collection_source cs ON cs.collection_id=c.id
-            WHERE c.group_id=? AND c.enabled=1 AND cs.enabled=1 AND cs.provider=? ORDER BY c.name,c.id''',
+            WHERE c.group_id=? AND c.enabled=1 AND cs.enabled=1 AND cs.provider=? AND NOT EXISTS (SELECT 1 FROM group_blocked_folder b WHERE b.folder_id=c.id) ORDER BY c.name,c.id''',
             (group_id, provider))]
     finally:
         conn.close()
