@@ -32,3 +32,5 @@ Confirm which directory is persistent with your server operator. Keep SQLite and
 Stop the app gracefully, then run `studio.py backup` from the server's app environment to an archive outside the library. Backups include credentials and must stay private. Restore into a new directory; see [Installation](INSTALLATION.md). Back up before pulling updated source. Run setup again (or upload a fresh frontend build and use `--skip-ui-build`), then restart. Startup migration snapshots protect metadata; they do not replace full library backups.
 
 No remote server login or deployment was performed by the coding agent. Local subprocess integration tests exercise prefixed UI/API routing; final Jupyter authentication/proxy behavior, dependency installation and scraping must be verified on the actual host.
+
+For complete provider authentication instructions, follow [Provider setup](PROVIDER_SETUP.md), including Windows/Jupyter commands and cookie upload.

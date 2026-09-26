@@ -6,6 +6,7 @@ Illustration Scrapping Studio collects and reviews illustrations from supported 
 | --- | --- |
 | [Installation](INSTALLATION.md) | Windows/Linux setup, launchers, updates, backup and restore |
 | [JupyterHub](JUPYTER.md) | Server installation, notebook launch, proxy access, persistent storage |
+| [Provider setup](PROVIDER_SETUP.md) | Gelbooru keys, Pixiv OAuth, X cookies, local versus Jupyter steps |
 | [User guide](USER_GUIDE.md) | Collections, providers, bulk lists, scraping, review, tags, processing, exports |
 | [Troubleshooting](TROUBLESHOOTING.md) | Startup, provider errors, storage, logs and proxy problems |
 | [Development](DEVELOPMENT.md) | Project layout, developer setup, tests and configuration |

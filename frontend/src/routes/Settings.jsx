@@ -235,6 +235,7 @@ function Settings() {
         <div className="flex items-start justify-between gap-3">
           <div>
             <h2 className="font-semibold text-slate-100">Pixiv, Twitter / X, ArtStation, and Pawchive</h2>
+            <a href="https://github.com/RicemanT/Illustration-Scrapping-Studio/blob/main/docs/PROVIDER_SETUP.md" target="_blank" rel="noopener noreferrer" className="text-xs text-blue-300 underline">Step-by-step provider setup guide</a>
             <p className="mt-1 text-xs text-slate-400">Powered by gallery-dl {galleryConfig?.version || ''}. Originals and all assets in multi-image posts are imported; provider thumbnails are never substituted for failed video or archive media.</p>
           </div>
           <span className={`text-xs ${galleryConfig?.installed ? 'text-emerald-400' : 'text-red-400'}`}>{galleryConfig?.installed ? 'Runtime ready' : 'gallery-dl missing'}</span>
@@ -246,7 +247,8 @@ function Settings() {
             <span className={`text-xs ${galleryConfig?.pixiv?.configured ? 'text-emerald-400' : 'text-amber-400'}`}>{galleryConfig?.pixiv?.configured ? 'Token saved' : 'Setup required'}</span>
           </div>
           <div className="mt-2 space-y-1 text-xs text-slate-400">
-            <p>1. In a terminal opened in this project, run <code className="text-blue-300">.venv\Scripts\gallery-dl.exe oauth:pixiv</code>.</p>
+            <p>1. Open a terminal in the project directory. Windows: <code className="text-blue-300">.venv\Scripts\gallery-dl.exe oauth:pixiv</code>. Jupyter/Linux: <code className="text-blue-300">.venv/bin/gallery-dl oauth:pixiv</code>. Use a terminal rather than a notebook cell because this command needs interactive input.</p>
+            <p>If running on Jupyter, open the printed login URL in your laptop browser, then paste the requested code back into the Jupyter terminal. You can also complete OAuth on your laptop and save the final token in this server's Settings.</p>
             <p>2. When the terminal shows <code className="text-blue-300">code:</code>, OAuth is not finished yet. Open its login URL, follow the displayed F12/Network instructions, and paste the callback's short-lived <code className="text-blue-300">code</code> into the terminal.</p>
             <p>3. After gallery-dl exchanges that code, it prints a <code className="text-blue-300">refresh-token</code>. Paste that final refresh token below—not the login URL or callback code. It is stored locally and never returned by the API.</p>
           </div>
@@ -262,7 +264,7 @@ function Settings() {
             <h3 className="text-sm font-medium text-slate-200">Twitter / X authentication</h3>
             <span className={`text-xs ${galleryConfig?.twitter?.configured ? 'text-emerald-400' : 'text-amber-400'}`}>{galleryConfig?.twitter?.configured ? (galleryConfig.twitter.auth_mode === 'cookies_file' ? 'Cookie file active' : 'Browser selected') : 'Setup required'}</span>
           </div>
-          <p className="mt-1 text-xs text-slate-400">Recommended for Edge and remote servers: export signed-in x.com cookies in Netscape cookies.txt format, then upload the file here. It is stored privately on the backend that performs the sync, so your browser can stay open and the same workflow works locally or on a Jupyter server.</p>
+          <p className="mt-1 text-xs text-slate-400">On your laptop, sign in to x.com and export that site's cookies in Netscape cookies.txt format using a trusted tool. The export must include auth_token and ct0. Choose the file below, then click Upload cookies.txt. It is stored privately on the backend that performs the sync, so your browser can stay open and the same workflow works locally or on a Jupyter server.</p>
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <input type="file" accept=".txt,text/plain" onChange={(event) => setTwitterCookieFile(event.target.files?.[0] || null)} className="min-w-0 flex-1 rounded border border-[#202a34] bg-[#090d12] px-3 py-2 text-xs" />
             <button type="button" onClick={() => twitterCookieMutation.mutate()} disabled={!twitterCookieFile || twitterCookieMutation.isPending} className="rounded bg-[#344a73] px-3 py-2 text-xs text-white disabled:opacity-50">{twitterCookieMutation.isPending ? 'Uploading...' : 'Upload cookies.txt'}</button>
@@ -270,7 +272,7 @@ function Settings() {
           </div>
           {twitterCookieMutation.isSuccess && <p className="mt-2 text-xs text-emerald-400">Validated and saved. Cookie values are never returned by the API.</p>}
           {(twitterCookieMutation.isError || removeTwitterCookieMutation.isError) && <p className="mt-2 text-xs text-red-400">{(twitterCookieMutation.error || removeTwitterCookieMutation.error)?.response?.data?.detail || (twitterCookieMutation.error || removeTwitterCookieMutation.error)?.message}</p>}
-          <p className="mt-4 border-t border-[#202a34] pt-3 text-xs text-slate-400">Browser-profile extraction remains available as a local fallback. Chromium browsers may need to be fully closed, so saving a browser below switches Twitter back to browser mode.</p>
+          <p className="mt-4 border-t border-[#202a34] pt-3 text-xs text-slate-400">Browser mode reads a browser on the backend machine, not your laptop when using Jupyter. After uploading cookies, leave cookie-file mode active. Browser-profile extraction remains available as a local fallback. Chromium browsers may need to be fully closed, so saving a browser below switches Twitter back to browser mode.</p>
           <div className="mt-3 grid gap-2 sm:grid-cols-[12rem_1fr_auto]">
             <select value={twitterBrowser} onChange={(event) => setTwitterBrowser(event.target.value)} className="rounded border border-[#202a34] bg-[#090d12] px-3 py-2 text-sm">
               {(galleryConfig?.twitter_browsers || ['firefox', 'chrome', 'edge']).map((browser) => <option key={browser} value={browser}>{browser}</option>)}

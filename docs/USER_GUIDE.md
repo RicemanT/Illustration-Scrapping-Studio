@@ -87,3 +87,5 @@ Export a validated selection using copy or hardlink mode. Hardlinks may fall bac
 Open **Logs** or an error notification's diagnostics link. Filter by request/job and expand the explanation. Confirmed observations and likely causes are distinguished. Unknown errors remain unknown. History rotates and is not permanent; export a relevant page when reporting an issue. Check exported logs for private paths, names and provider information before sharing.
 
 See [Troubleshooting](TROUBLESHOOTING.md), and follow [Installation](INSTALLATION.md#back-up-the-library) for backup/restore and safe updates. The app does not launch training jobs or manage GPUs/models.
+
+For complete provider authentication instructions, follow [Provider setup](PROVIDER_SETUP.md), including Windows/Jupyter commands and cookie upload.
