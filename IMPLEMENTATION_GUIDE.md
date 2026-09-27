@@ -288,3 +288,5 @@ Group protection/deletion audit: corrected malformed delete URL; routed group de
 
 
 Public Jupyter lifecycle hardening: setup now installs the validated UI before no-Node setup, start/stop handles cleared processes safely, and updates/start refuse surviving checkout processes or occupied ports. Removed timeout force-killing and broad pkill advice. Shared stdlib helper in tools/jupyter_support.py supports staged UI replacement with rollback, process diagnostics, and owned graceful shutdown. Source archives skip Git; offline source updates are optional. Regression tests execute actual notebook lifecycle cells and validate archives/process guards. Actual authenticated JupyterHub access still requires host verification.
+
+Jupyter UI ZIP compatibility fix: accept root/dist/wrapped builds and Windows separators; retain traversal, link, duplicate-path, ambiguous-index and missing-asset validation. Eleven lifecycle/archive tests pass.

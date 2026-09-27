@@ -2,6 +2,7 @@
 from pathlib import Path, PurePosixPath
 import os
 import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -61,16 +62,38 @@ def refresh_ui(app, zip_path):
     frontend.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.ui-update-', dir=frontend) as temporary:
         stage = Path(temporary)
+        payload = stage / 'payload'
+        payload.mkdir()
         with zipfile.ZipFile(zip_path) as archive:
+            entries = []
+            seen = set()
             for info in archive.infolist():
-                parts = PurePosixPath(info.filename).parts
-                if not parts or parts[0] != 'dist' or any(p in ('.', '..') or ':' in p for p in parts) or '\\' in info.filename or ((info.external_attr >> 16) & 0o170000) == 0o120000:
-                    raise ValueError('UI zip must contain only regular files under dist/')
-            archive.extractall(stage)
-        built = stage / 'dist'
-        index = built / 'index.html'
-        if not index.is_file():
-            raise ValueError('UI zip must contain dist/index.html')
+                # Windows ZIP writers sometimes use backslashes as separators.
+                name = info.filename.replace('\\', '/')
+                parts = PurePosixPath(name).parts
+                mode = (info.external_attr >> 16) & 0o170000
+                if not parts or name.startswith('/') or any(p == '..' or ':' in p for p in parts) or mode not in (0, 0o100000, 0o040000):
+                    raise ValueError(f'Unsafe UI archive entry: {info.filename!r}')
+                if '__MACOSX' in parts or parts[-1] == '.DS_Store':
+                    continue
+                key = '/'.join(parts).casefold()
+                if key in seen:
+                    raise ValueError(f'Duplicate UI archive path: {info.filename!r}')
+                seen.add(key)
+                entries.append((info, parts, name.endswith('/') or mode == 0o040000))
+            for info, parts, directory in entries:
+                target = payload.joinpath(*parts)
+                if directory:
+                    target.mkdir(parents=True, exist_ok=True)
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with archive.open(info) as source, target.open('wb') as output:
+                        shutil.copyfileobj(source, output)
+        candidates = list(payload.rglob('index.html'))
+        if len(candidates) != 1:
+            raise ValueError('UI zip must contain exactly one built index.html with its assets (at the root, in dist/, or inside a wrapper folder).')
+        index = candidates[0]
+        built = index.parent
         assets = re.findall(r'(?:src|href)=[\"\']([^\"\']+)', index.read_text(encoding='utf-8'))
         for asset in assets:
             if asset.startswith(('http:', 'https:', 'data:', '//', '#')):

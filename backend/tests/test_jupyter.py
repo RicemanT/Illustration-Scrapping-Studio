@@ -90,12 +90,27 @@ class JupyterLifecycleTests(unittest.TestCase):
         dist = self.root / 'frontend/dist'
         dist.mkdir(parents=True)
         (dist / 'index.html').write_text('old')
-        for files in ({'dist/index.html': '<script src="/assets/missing.js"></script>'}, {'dist/../../escape': 'bad'}, {'index.html': 'wrong prefix'}):
+        for files in ({'dist/index.html': '<script src="/assets/missing.js"></script>'}, {'dist/../../escape': 'bad'}, {'readme.txt': 'missing UI'}):
             with self.assertRaises(ValueError):
                 support.refresh_ui(self.root, self.archive(files))
             self.assertEqual((dist / 'index.html').read_text(), 'old')
         support.refresh_ui(self.root, self.archive({'dist/index.html': 'new'}))
         self.assertEqual((dist / 'index.html').read_text(), 'new')
+
+    def test_common_zip_layouts_and_windows_separators(self):
+        for prefix in ('', 'dist/', 'frontend/dist/', 'frontend-ui/dist/', 'dist\\'):
+            separator = '\\' if '\\' in prefix else '/'
+            files = {prefix + 'index.html': '<script src="/assets/app.js"></script>',
+                     prefix + 'assets' + separator + 'app.js': 'valid'}
+            installed = support.refresh_ui(self.root, self.archive(files))
+            self.assertEqual((installed / 'assets/app.js').read_text(), 'valid')
+
+    def test_unsafe_or_ambiguous_zip_layouts(self):
+        for files in ({'../index.html': 'bad'}, {'C:/index.html': 'bad'},
+                      {'dist\\..\\index.html': 'bad'}, {'/index.html': 'bad'},
+                      {'a/index.html': 'one', 'b/index.html': 'two'}):
+            with self.assertRaises(ValueError):
+                support.refresh_ui(self.root, self.archive(files))
 
     def test_replacement_failure_restores_previous_ui(self):
         dist = self.root / 'frontend/dist'
@@ -104,7 +119,7 @@ class JupyterLifecycleTests(unittest.TestCase):
         archive = self.archive({'dist/index.html': 'new'})
         rename = Path.rename
         def fail_install(source, target):
-            if source.name == 'dist' and source.parent.name.startswith('.ui-update-'):
+            if source.name == 'dist' and source.parent.name == 'payload':
                 raise OSError('simulated rename failure')
             return rename(source, target)
         with patch.object(Path, 'rename', fail_install):
