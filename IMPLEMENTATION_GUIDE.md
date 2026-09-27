@@ -285,3 +285,6 @@ Multi-source editing fix: collection Sources displays the provider catalog, allo
 
 
 Group protection/deletion audit: corrected malformed delete URL; routed group deletion through collection cleanup with storage validation and idle-job guard; retain collection records on file cleanup failure for retry. Wired protection into global/scheduled/group source selection and persisted-job execution, added bounded typed block requests and atomic unknown-name validation, UTF-8 upload, mutation errors, protected status, and right-aligned header actions. Manual per-collection sync remains intentional. Added backend regressions and proxy browser coverage for protect/delete. No production collections were deleted during validation.
+
+
+Public Jupyter lifecycle hardening: setup now installs the validated UI before no-Node setup, start/stop handles cleared processes safely, and updates/start refuse surviving checkout processes or occupied ports. Removed timeout force-killing and broad pkill advice. Shared stdlib helper in tools/jupyter_support.py supports staged UI replacement with rollback, process diagnostics, and owned graceful shutdown. Source archives skip Git; offline source updates are optional. Regression tests execute actual notebook lifecycle cells and validate archives/process guards. Actual authenticated JupyterHub access still requires host verification.
