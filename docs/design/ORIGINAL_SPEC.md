@@ -10,7 +10,7 @@
 
 ## Executive Summary
 
-This application is an **artist-folder training dataset builder** for image model finetuning. It scrapes art from booru sites (Danbooru, Gelbooru, e621, yande.re) and gallery-dl-backed Pixiv, ArtStation, Twitter/X, and Pawchive sources. One artist equals one folder, and every folder owns independent image + ground-truth sidecar pairs with full source provenance. It does not generate natural-language captions.
+This application is an **artist-folder training dataset builder** for image model finetuning. It scrapes art from booru sites (Danbooru, Gelbooru, e621) and gallery-dl-backed DeviantArt, Pixiv, ArtStation, Twitter/X, and Pawchive sources. One artist equals one folder, and every folder owns independent image + ground-truth sidecar pairs with full source provenance. It does not generate natural-language captions.
 
 > **Authoritative terminology and ownership rule (v1.1):** Folder replaces collection everywhere in the product and public API. Images are one-to-many from folder to image, never many-to-many. The legacy SQLite names `collection`, `collection_source`, and `collection_image`, old `collection_id` database columns, internal Python symbols, and the hidden `/api/collections` alias remain only to migrate existing local libraries safely. Any older section below that describes shared files, cross-folder memberships, or library-global hash identity is superseded by this rule.
 
@@ -40,7 +40,7 @@ A **folder** is an isolated artist dataset defined by:
 - An optional **artist tag template** whose `{artist}` is the lowercase folder name (default `Drawn by {artist}` for new folders)
 - Editable **ground-truth tags** backed by immutable provider metadata
 - **Per-folder filters** (resolution floor, aspect ratio, ratings, blocked tags)
-- **Source enablement** (which providers to query: Danbooru, Gelbooru, e621, yande.re, Pixiv)
+- **Source enablement** (which providers to query: Danbooru, Gelbooru, e621, DeviantArt, Pixiv)
 
 Folders have a **one-to-many** relationship with images. Every image record has exactly one owning `folder_id`. Importing the same bytes or provider post into two folders creates separate database image/source records and separate physical image/sidecar pairs under both folder slugs.
 
@@ -62,7 +62,7 @@ A **source record** links an image to its origin on a provider:
 
 ### Ground-Truth Tags
 
-The trainer-facing `.txt` sidecar is a comma-separated ground-truth tag list, not a natural-language caption. Provider tags are preserved unchanged in source records. When enabled, a folder's artist template replaces `{artist}` with the normalized lowercase folder name, producing one stable trigger regardless of profile display names or multi-creator credits. Danbooru, Gelbooru, and e621 are the only providers whose non-artist tags can automatically contribute to ground truth. Yande.re, Pixiv, Twitter/X, ArtStation, Pawchive, and unapproved future sources are provenance-only. Effective tags always group in this order: artist trigger, character, copyright/series, species, general (including character counts), then optional metadata. Provider order and positional edits remain stable within each group. e621's dedicated species taxonomy populates the species group. Gelbooru's flat post tags are typed through its batched tag-index endpoint before ingest. User changes are stored as positional add/remove overrides, so corrections survive metadata refreshes without erasing provenance. Batch replacements keep the old tag's position. Global and per-folder policies choose whether the canonical artist trigger and trusted booru character, copyright, species, general, and metadata tags contribute to effective ground truth. All effective tags use spaces instead of booru underscores.
+The trainer-facing `.txt` sidecar is a comma-separated ground-truth tag list, not a natural-language caption. Provider tags are preserved unchanged in source records. When enabled, a folder's artist template replaces `{artist}` with the normalized lowercase folder name, producing one stable trigger regardless of profile display names or multi-creator credits. Danbooru, Gelbooru, and e621 are the only providers whose non-artist tags can automatically contribute to ground truth. DeviantArt, Pixiv, Twitter/X, ArtStation, Pawchive, and unapproved future sources are provenance-only. Effective tags always group in this order: artist trigger, character, copyright/series, species, general (including character counts), then optional metadata. Provider order and positional edits remain stable within each group. e621's dedicated species taxonomy populates the species group. Gelbooru's flat post tags are typed through its batched tag-index endpoint before ingest. User changes are stored as positional add/remove overrides, so corrections survive metadata refreshes without erasing provenance. Batch replacements keep the old tag's position. Global and per-folder policies choose whether the canonical artist trigger and trusted booru character, copyright, species, general, and metadata tags contribute to effective ground truth. All effective tags use spaces instead of booru underscores.
 
 ## Architecture Overview
 
@@ -70,7 +70,7 @@ The trainer-facing `.txt` sidecar is a comma-separated ground-truth tag list, no
 
 - **Backend:** Python 3.11+, FastAPI, SQLite, httpx for async HTTP, Pillow for image operations, imagehash for perceptual hashing
 - **Frontend:** React 18+, Vite, Tailwind CSS, React Query for server state, react-window or react-virtuoso for virtualized grids
-- **Scrapers:** Native API clients for boorus (Danbooru, Gelbooru, e621, yande.re), gallery-dl wrapper for Pixiv
+- **Scrapers:** Native API clients for boorus (Danbooru, Gelbooru, e621), gallery-dl wrapper for Pixiv
 - **Storage:** SQLite database at `library/index.db`, images stored in `library/images/`, thumbnails in `library/thumbnails/`
 
 ### Component Layout
@@ -146,7 +146,7 @@ CREATE TABLE collection (
 CREATE TABLE collection_source (
   id INTEGER PRIMARY KEY,
   collection_id INTEGER NOT NULL,
-  provider TEXT NOT NULL,  -- 'danbooru', 'gelbooru', 'e621', 'yandere', 'pixiv'
+  provider TEXT NOT NULL,  -- 'danbooru', 'gelbooru', 'e621', 'pixiv'
   last_cursor TEXT,  -- provider-specific: post ID for boorus, artwork ID for pixiv
   enabled INTEGER DEFAULT 1,
   FOREIGN KEY (collection_id) REFERENCES collection(id) ON DELETE CASCADE,
@@ -287,7 +287,7 @@ class Provider(ABC):
         pass
 ```
 
-### Booru Provider (Danbooru, Gelbooru, e621, yande.re)
+### Booru Provider (Danbooru, Gelbooru, e621)
 
 **Implementation:** One generic `BooruProvider` class parameterized by a site config.
 
@@ -341,15 +341,6 @@ BOORU_SITES = {
         },
         'rate_limit': 1.0,
     },
-    'yandere': {
-        'base_url': 'https://yande.re',
-        'api_path': '/post.json',
-        'page_param': 'page',
-        'tag_param': 'tags',
-        'limit_param': 'limit',
-        'max_limit': 100,
-        'rate_limit': 1.0,
-    }
 }
 ```
 
@@ -494,7 +485,7 @@ The files are independently stored at `library/images/<folder-a>/<sha256>.<ext>`
     - Right-click: Add to query, Exclude from query, Block from export
 
 **Collection Sources View:**
-- Per-source tabs (Danbooru, Gelbooru, e621, yande.re, Pixiv)
+- Per-source tabs (Danbooru, Gelbooru, e621, DeviantArt, Pixiv)
 - For each:
   - Enable/disable toggle
   - Last cursor value (read-only display)
@@ -623,7 +614,7 @@ This is lower priority than initial sync; implement in phase 2.
    - Name (required)
    - Type (dropdown: Artist / Character / Concept / Custom)
    - Query (text input with syntax help)
-   - Sources (checkboxes: Danbooru, Gelbooru, e621, yande.re, Pixiv)
+   - Sources (checkboxes: Danbooru, Gelbooru, e621, DeviantArt, Pixiv)
 2. Auto-suggest:
    - If type=Artist, suggest query format `artist:{name}`
    - If type=Character, suggest `character:{name}`
@@ -797,7 +788,7 @@ A standalone view for discovering content before committing to scrape it. Lets u
 
 **Top bar:**
 - Search input (tag query syntax)
-- Provider dropdown (Danbooru, Gelbooru, e621, yande.re, Pixiv)
+- Provider dropdown (Danbooru, Gelbooru, e621, DeviantArt, Pixiv)
 - Search button
 - Filter toggles: Safe, Questionable, Explicit
 
@@ -990,7 +981,7 @@ Pixiv refresh tokens expire periodically (weeks to months). When a sync fails wi
 **Goal:** Add remaining booru providers, implement deduplication.
 
 **Deliverables:**
-- Gelbooru, e621, yande.re providers (using generic booru adapter + configs)
+- Gelbooru, e621 providers (using generic booru adapter + configs)
 - Perceptual hash computation on ingest (imagehash.phash)
 - Dedup tier 1 & 2 (exact hash, MD5 cross-reference)
 - Dedup tier 3: 64-bit pHash + dHash and Czkawka-inspired 256-bit gradient hashing with Hamming distance

@@ -18,6 +18,7 @@ cookies.txt
 *.schema-version
 .collection-studio.lock
 *.zip
+*.zip.sha256
 *.tar
 *.tar.gz
 *.7z

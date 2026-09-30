@@ -145,60 +145,7 @@ class BooruNormalizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(post.source, "https://artist.example/work/22")
         self.assertEqual(post.tags["species"], ["human", "canine"])
 
-    async def test_yandere_normalizes_relative_urls_and_flat_tags(self):
-        provider = BooruProvider("yandere")
-        try:
-            post = provider._post_to_remote({
-                "id": 33,
-                "file_url": "/image/33.jpg",
-                "preview_url": "/preview/33.jpg",
-                "width": 900,
-                "height": 1400,
-                "tags": "artist_name portrait",
-                "rating": "q",
-            })
-        finally:
-            await provider.close()
-        self.assertEqual(post.image_url, "https://yande.re/image/33.jpg")
-        self.assertEqual(post.preview_url, "https://yande.re/preview/33.jpg")
-        self.assertEqual(post.format, "jpg")
-        self.assertEqual(post.tags["general"], ["artist_name", "portrait"])
-        self.assertEqual(post.rating, "questionable")
 
-    async def test_yandere_pagination_is_one_based_when_date_filter_hides_page(self):
-        captured_pages = []
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            captured_pages.append(request.url.params.get("page"))
-            return httpx.Response(200, json=[{
-                "id": 44,
-                "file_url": "https://files.example/44.jpg",
-                "width": 100,
-                "height": 100,
-                "tags": "old_post",
-                "created_at": "2020-01-01T00:00:00Z",
-            }])
-
-        provider = BooruProvider("yandere")
-        await provider.client.aclose()
-        provider.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-
-        async def no_wait():
-            return None
-
-        provider._rate_limit = no_wait
-        try:
-            posts, cursor = await provider.search("artist_name", date_from="2025-01-01")
-            _, next_cursor = await provider.search(
-                "artist_name", cursor=cursor, date_from="2025-01-01"
-            )
-        finally:
-            await provider.close()
-
-        self.assertEqual(posts, [])
-        self.assertEqual(cursor, "2")
-        self.assertEqual(next_cursor, "3")
-        self.assertEqual(captured_pages, [None, "2"])
 
     async def test_slow_downloads_overlap_with_spaced_starts(self):
         import asyncio

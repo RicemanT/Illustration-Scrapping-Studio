@@ -1,9 +1,12 @@
+from typing import Literal
+from pydantic import BaseModel, Field
+from app.services.provider_settings import update_provider_settings, read_provider_settings
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from app.providers.booru import BOORU_SITES, ProviderAuthenticationError, get_gelbooru_credentials, save_gelbooru_credentials
 from app.providers.gallery_dl import (
     GALLERY_DL_PROVIDERS, TWITTER_BROWSERS, gallery_dl_runtime, get_gallery_dl_settings,
     provider_ready, remove_twitter_cookie_file, save_pixiv_refresh_token,
-    save_twitter_browser, save_twitter_cookie_file,
+    save_twitter_browser, save_twitter_cookie_file, save_deviantart_cookie_file, remove_deviantart_cookie_file,
 )
 from app.providers.registry import create_provider, provider_descriptors, supported_provider
 
@@ -74,6 +77,7 @@ async def gallery_dl_config():
     return {
         **gallery_dl_runtime(),
         "pixiv": {"configured": bool(settings["pixiv_refresh_token"])},
+        "deviantart": {"cookie_file_configured": bool(settings["deviantart_cookie_file"]), "media_mode": settings["deviantart_media_mode"], "configured": bool(settings["deviantart"].get("refresh_token")), "custom_client_configured": bool(settings["deviantart"].get("client_id"))},
         "twitter": {
             "configured": (
                 settings["twitter_auth_mode"] == "cookies_file" and bool(settings["twitter_cookie_file"])
@@ -129,3 +133,50 @@ async def upload_twitter_cookies(file: UploadFile = File(...)):
 @router.delete("/twitter/cookies")
 async def delete_twitter_cookies():
     return remove_twitter_cookie_file()
+
+
+class DeviantArtSettings(BaseModel):
+    refresh_token: str = Field(default='', max_length=4096)
+    client_id: str = Field(default='', max_length=256)
+    client_secret: str = Field(default='', max_length=4096)
+
+
+@router.put('/deviantart/config')
+async def update_deviantart_config(payload: DeviantArtSettings):
+    values = {key: value.strip() for key, value in payload.model_dump().items()}
+    if any(any(ord(c) < 32 for c in value) for value in values.values()):
+        raise HTTPException(422, 'Credentials cannot contain control characters')
+    if bool(values['client_id']) != bool(values['client_secret']):
+        raise HTTPException(422, 'Custom client ID and secret must be supplied together')
+    values['media_mode'] = (read_provider_settings().get('deviantart') or {}).get('media_mode', 'original')
+    update_provider_settings('deviantart', values)
+    return {'configured': bool(values['refresh_token']), 'custom_client_configured': bool(values['client_id'])}
+
+
+class DeviantArtMedia(BaseModel):
+    mode: Literal['original', 'published', 'prefer_original', 'published_preview']
+
+
+@router.put('/deviantart/media')
+async def update_deviantart_media(payload: DeviantArtMedia):
+    values = dict(read_provider_settings().get('deviantart') or {})
+    values['media_mode'] = payload.mode
+    update_provider_settings('deviantart', values)
+    return {'media_mode': payload.mode}
+
+
+@router.post('/deviantart/cookies')
+async def upload_deviantart_cookies(file: UploadFile = File(...)):
+    contents = await file.read(2 * 1024 * 1024 + 1)
+    await file.close()
+    if len(contents) > 2 * 1024 * 1024:
+        raise HTTPException(413, 'cookies.txt must be 2 MB or smaller')
+    try:
+        return save_deviantart_cookie_file(contents.decode('utf-8-sig'))
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise HTTPException(422, str(exc) if not isinstance(exc, UnicodeDecodeError) else 'cookies.txt must be UTF-8 text') from exc
+
+
+@router.delete('/deviantart/cookies')
+async def delete_deviantart_cookies():
+    return remove_deviantart_cookie_file()

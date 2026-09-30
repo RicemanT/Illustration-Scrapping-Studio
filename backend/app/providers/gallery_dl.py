@@ -2,6 +2,7 @@
 
 import asyncio
 import difflib
+import hashlib
 import importlib.util
 import json
 import os
@@ -31,12 +32,14 @@ from app.services.workspace import scratch_directory
 
 
 GALLERY_DL_PROVIDERS = {
+    "deviantart": {"requires_auth": False, "max_limit": 200},
     "pixiv": {"requires_auth": True, "max_limit": 200},
     "artstation": {"requires_auth": False, "max_limit": 200},
     "twitter": {"requires_auth": True, "max_limit": 200},
     "pawchive": {"requires_auth": False, "max_limit": 200},
 }
 TWITTER_BROWSERS = {"firefox", "chrome", "chromium", "edge", "brave", "opera", "vivaldi", "safari"}
+DEVIANTART_COOKIE_PATH = LIBRARY_PATH / ".secrets" / "deviantart.cookies.txt"
 TWITTER_COOKIE_PATH = LIBRARY_PATH / ".secrets" / "twitter.cookies.txt"
 ARTSTATION_SIZE_SEGMENTS = ("small", "medium", "large", "4k", "8k", "original")
 ARTSTATION_COVER_SIZE_SEGMENTS = (*ARTSTATION_SIZE_SEGMENTS, "smaller_square")
@@ -87,6 +90,9 @@ def get_gallery_dl_settings() -> dict[str, Any]:
     return {
         "pixiv_refresh_token": os.getenv("PIXIV_REFRESH_TOKEN", "").strip()
         or str((stored.get("pixiv") or {}).get("refresh_token", "")).strip(),
+        "deviantart": {key: str((stored.get("deviantart") or {}).get(key, "")).strip() for key in ("refresh_token", "client_id", "client_secret")},
+        "deviantart_cookie_file": str(DEVIANTART_COOKIE_PATH) if DEVIANTART_COOKIE_PATH.is_file() else "",
+        "deviantart_media_mode": (stored.get("deviantart") or {}).get("media_mode", "original"),
         "twitter_auth_mode": auth_mode,
         "twitter_browser": browser,
         "twitter_profile": profile,
@@ -146,6 +152,36 @@ def save_twitter_cookie_file(contents: str) -> dict[str, Any]:
     return {"configured": True, "auth_mode": "cookies_file", "cookie_count": len(twitter_cookies)}
 
 
+def save_deviantart_cookie_file(contents: str) -> dict[str, Any]:
+    from gallery_dl.util import cookiestxt_load
+    from http.cookiejar import MozillaCookieJar
+    try:
+        cookies = list(cookiestxt_load(StringIO(contents)))
+    except Exception as exc:
+        raise ValueError("Invalid Netscape cookies.txt file") from exc
+    cookies = [c for c in cookies if c.domain.lstrip(".").lower() == "deviantart.com" and not c.is_expired()]
+    if not any(c.name in {"auth", "auth_secure"} and c.value for c in cookies):
+        raise ValueError("Export signed-in DeviantArt cookies in Netscape format, including an unexpired auth or auth_secure cookie.")
+    DEVIANTART_COOKIE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = DEVIANTART_COOKIE_PATH.with_name(f".{uuid.uuid4().hex}.tmp")
+    try:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(fd)
+        jar = MozillaCookieJar(str(temporary))
+        for cookie in cookies:
+            jar.set_cookie(cookie)
+        jar.save(ignore_discard=True, ignore_expires=False)
+        temporary.replace(DEVIANTART_COOKIE_PATH)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return {"cookie_file_configured": True, "cookie_count": len(cookies)}
+
+
+def remove_deviantart_cookie_file() -> dict[str, Any]:
+    DEVIANTART_COOKIE_PATH.unlink(missing_ok=True)
+    return {"cookie_file_configured": False}
+
+
 def remove_twitter_cookie_file() -> dict[str, Any]:
     TWITTER_COOKIE_PATH.unlink(missing_ok=True)
     current = read_provider_settings().get("twitter") or {}
@@ -187,7 +223,7 @@ def _public_metadata(value: Any) -> Any:
             str(key): _public_metadata(item)
             for key, item in value.items()
             if not str(key).startswith("_")
-            and not any(word in str(key).lower() for word in ("cookie", "token", "authorization", "password"))
+            and not any(word in str(key).lower() for word in ("cookie", "token", "authorization", "password", "secret"))
         }
     if isinstance(value, list):
         return [_public_metadata(item) for item in value]
@@ -201,7 +237,7 @@ def _as_list(value: Any) -> list[str]:
         result = []
         for item in value:
             if isinstance(item, dict):
-                item = item.get("name") or item.get("tag")
+                item = item.get("name") or item.get("tag") or item.get("tag_name")
             if item:
                 result.append(str(item).strip())
         return result
@@ -443,6 +479,17 @@ class GalleryDLProvider(Provider):
 
     def _target_url(self, query: str) -> str:
         value = query.strip()
+        if self.site == "deviantart":
+            value = value.removeprefix("artist:").strip().lstrip("@")
+            if value.startswith(("http://", "https://")):
+                parsed = urlparse(value)
+                host = (parsed.hostname or "").lower()
+                if parsed.username or parsed.password or parsed.port or not (host == "deviantart.com" or host.endswith(".deviantart.com")):
+                    raise ValueError("Use a DeviantArt profile, gallery, or artwork URL")
+                return urlunparse(parsed._replace(scheme="https", fragment=""))
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*", value):
+                raise ValueError("Use the DeviantArt username or full profile URL; set a provider-specific search if it differs from the collection name")
+            return f"https://www.deviantart.com/{value}/gallery/all"
         if value.startswith(("http://", "https://")):
             return value
         if value.casefold().startswith("artist:"):
@@ -473,6 +520,7 @@ class GalleryDLProvider(Provider):
             "timeout": 120,
             "retries": 2,
             "pixiv": {"ugoira": True, "tags": "original"},
+            "deviantart": {"public": not bool(self.settings.get("deviantart", {}).get("refresh_token")), "original": self.settings.get("deviantart_media_mode", "original") not in {"published", "published_preview"}, "previews": False, "metadata": True, "include": "gallery", "journals": False, "extra": False, "wait-min": 2},
             "artstation": {
                 # Fail over promptly to the public portfolio transport instead
                 # of repeating a connection reset inside gallery-dl.
@@ -485,6 +533,11 @@ class GalleryDLProvider(Provider):
             "twitter": {"size": ["orig", "4096x4096"], "include": "media", "retweets": False},
             "pawchive": {"original": True, "previews": False, "metadata": True},
         }
+        if self.settings.get("deviantart_cookie_file"):
+            extractor["deviantart"]["cookies"] = self.settings["deviantart_cookie_file"]
+        for key, value in self.settings.get("deviantart", {}).items():
+            if value:
+                extractor["deviantart"][key.replace("_", "-")] = value
         if self.settings["pixiv_refresh_token"]:
             extractor["pixiv"]["refresh-token"] = self.settings["pixiv_refresh_token"]
         if self.settings.get("twitter_auth_mode") == "cookies_file" and self.settings.get("twitter_cookie_file"):
@@ -496,14 +549,52 @@ class GalleryDLProvider(Provider):
             extractor["twitter"]["cookies"] = cookie_source
         return {"extractor": extractor, "output": {"private": True}}
 
+    def _cache_file(self, workdir: str) -> Path:
+        if self.site != "deviantart":
+            return Path(workdir) / "cache.sqlite3"
+        # The API rotates refresh tokens. Keep gallery-dl's refreshed token
+        # across discovery subprocesses, isolated by the saved credential set.
+        fingerprint = hashlib.sha256(json.dumps(self.settings.get("deviantart", {}), sort_keys=True).encode()).hexdigest()
+        directory = LIBRARY_PATH / ".secrets" / "deviantart"
+        directory.mkdir(parents=True, exist_ok=True)
+        directory.chmod(0o700)
+        target = directory / f"{fingerprint}.sqlite3"
+        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT, 0o600)
+        os.close(descriptor)
+        return target
+
     async def _run_gallery_dl(self, target: str, start: int, end: int) -> list[tuple[str, dict[str, Any]]]:
+        try:
+            return await self._run_gallery_dl_once(target, start, end)
+        except (RuntimeError, ProviderAuthenticationError) as exc:
+            if self.site != "deviantart" or "free download limit reached" not in str(exc).casefold():
+                raise
+            if self.settings.get("deviantart_media_mode", "original") != "prefer_original":
+                raise RuntimeError(
+                    "DeviantArt refused an original-file download: its free download limit was reached. "
+                    "This is a site-side quota, not your worker count or disk space. "
+                    "Retry later or configure authorized OAuth access (which may still be limited). "
+                    "To use available published artwork instead, choose Published images or Allow published fallback "
+                    "in Settings > DeviantArt. Published images may be smaller; thumbnails are not substituted."
+                ) from exc
+            message = "DeviantArt original-download quota reached; retrying this page with published artwork images. These may be smaller than originals."
+            from app.services.diagnostics import emit
+            emit("provider.deviantart.published_fallback", message, "WARNING", provider="deviantart")
+            if callback := getattr(self, "search_progress", None):
+                callback({"phase": "search", "message": message})
+            records = await self._run_gallery_dl_once(target, start, end, original=False)
+            return [(url, {**data, "studio_media_selection": "published_after_original_quota"}) for url, data in records]
+
+    async def _run_gallery_dl_once(self, target: str, start: int, end: int, *, original: bool | None = None) -> list[tuple[str, dict[str, Any]]]:
         # --config adds to default user configuration unless explicitly ignored.
         # External actions/plugins/output paths must never affect app discovery.
         with tempfile.TemporaryDirectory(prefix="provider-", dir=scratch_directory()) as workdir:
             config_path = Path(workdir) / "config.json"
             config = self._config()
+            if original is not None:
+                config["extractor"]["deviantart"]["original"] = original
             config["extractor"].update({"base-directory": workdir, "download": False})
-            config["cache"] = {"file": str(Path(workdir) / "cache.sqlite3")}
+            config["cache"] = {"file": str(self._cache_file(workdir))}
             config_path.write_text(json.dumps(config), encoding="utf-8")
             environment = os.environ.copy()
             environment.update({"TMP": workdir, "TEMP": workdir, "TMPDIR": workdir})
@@ -842,10 +933,20 @@ class GalleryDLProvider(Provider):
 
     def _normalize(self, image_url: str, data: dict[str, Any]) -> RemotePost:
         site = self.site
+        if site == "deviantart":
+            data = dict(data)
+            data.setdefault("studio_media_selection", "original" if data.get("is_original") else "published")
         raw_number = data.get("num")
         number = (int(raw_number) + 1) if site == "pixiv" and raw_number is not None else int(raw_number or 1)
         base_id = str(data.get("id") or data.get("id_str") or _nested(data, ("project", "id"), default=""))
-        if site == "artstation":
+        if site == "deviantart":
+            base_id = str(data.get("index") or "")
+            if not base_id.isdigit() or int(base_id) <= 0:
+                raise ValueError("DeviantArt returned artwork without a stable numeric ID")
+            remote_id = f"{base_id}:{number}"
+            remote_url = data.get("url") or f"https://www.deviantart.com/deviation/{base_id}"
+            artist = data.get("username") or _nested(data, ("author", "username"), default="")
+        elif site == "artstation":
             project_hash = str(data.get("hash_id") or _nested(data, ("project", "hash_id"), default=base_id))
             asset_id = str(_nested(data, ("asset", "id"), default=data.get("asset_id") or number))
             remote_id = f"{project_hash}:{asset_id}"
@@ -874,10 +975,12 @@ class GalleryDLProvider(Provider):
         meta = []
         if extension in {"zip", "gif", "mp4", "webm"}:
             meta.append("animated" if extension in {"zip", "gif"} else "video")
-        raw_date = data.get("date") or data.get("create_date") or data.get("published") or datetime.now(timezone.utc).isoformat()
+        raw_date = data.get("date") or data.get("create_date") or data.get("published") or data.get("published_time") or datetime.now(timezone.utc).isoformat()
+        if isinstance(raw_date, (int, float)):
+            raw_date = datetime.fromtimestamp(raw_date, timezone.utc)
         created_at = raw_date.isoformat() if hasattr(raw_date, "isoformat") else str(raw_date)
-        width = int(data.get("width") or _nested(data, ("asset", "width"), default=0) or 0)
-        height = int(data.get("height") or _nested(data, ("asset", "height"), default=0) or 0)
+        width = int(data.get("width") or _nested(data, ("asset", "width"), ("content", "width"), default=0) or 0)
+        height = int(data.get("height") or _nested(data, ("asset", "height"), ("content", "height"), default=0) or 0)
         preview_url = data.get("thumbnail_url") or data.get("preview_url")
         if site == "artstation":
             # The medium portfolio cover is only a matching reference. The
@@ -890,7 +993,7 @@ class GalleryDLProvider(Provider):
             tags={key: value for key, value in {
                 "artist": [str(artist)] if artist else [], "general": tags, "meta": meta,
             }.items() if value},
-            rating=str(data.get("rating") or "") or None,
+            rating=("questionable" if data.get("is_mature") else "safe") if site == "deviantart" else str(data.get("rating") or "") or None,
             score=int(data.get("favorite_count") or data.get("like_count") or data.get("likes") or 0) or None,
             source=data.get("source") or remote_url, parent_id=None, created_at=created_at,
             raw_metadata=_public_metadata(data),
@@ -984,7 +1087,9 @@ class GalleryDLProvider(Provider):
         if cached:
             return cached
         parts = remote_id.split(":")
-        if self.site == "pixiv" and parts:
+        if self.site == "deviantart" and parts and parts[0].isdigit():
+            target = f"https://www.deviantart.com/deviation/{parts[0]}"
+        elif self.site == "pixiv" and parts:
             target = f"https://www.pixiv.net/en/artworks/{parts[0]}"
         elif self.site == "twitter" and parts:
             target = f"https://x.com/i/web/status/{parts[0]}"
@@ -1000,17 +1105,51 @@ class GalleryDLProvider(Provider):
                 return post
         raise ValueError(f"{self.site} post asset {remote_id} was not found")
 
+    async def _deviantart_page_candidates(self, post: RemotePost):
+        from app.providers.deviantart_page import page_candidates
+        # Restrict page fetches to the configured provider, never metadata URLs elsewhere.
+        target = self._target_url(post.remote_url)
+        def fetch():
+            from http.cookiejar import MozillaCookieJar
+            jar = MozillaCookieJar()
+            if cookie_path := self.settings.get("deviantart_cookie_file"):
+                jar.load(cookie_path, ignore_discard=True, ignore_expires=False)
+            with curl_requests.Session(impersonate="chrome", cookies=jar) as session:
+                response = session.get(target, timeout=25, allow_redirects=False)
+                if response.status_code != 200:
+                    return []
+                return page_candidates(response.text, post.remote_id.split(":")[0],
+                                       self.settings.get("deviantart_media_mode") == "published_preview")
+        if not hasattr(self, "_deviantart_page_lock"):
+            self._deviantart_page_lock = asyncio.Lock()
+            self._deviantart_page_last = 0.0
+        try:
+            async with self._deviantart_page_lock:
+                await asyncio.sleep(max(0, 2 - (time.monotonic() - self._deviantart_page_last)))
+                self._deviantart_page_last = time.monotonic()
+                return await asyncio.to_thread(fetch)
+        except Exception:
+            from app.services.diagnostics import emit
+            emit("provider.deviantart.page_unavailable", "Artwork page could not be read; trying the API image URL.", "WARNING", provider="deviantart")
+            return []
+
     async def download_image(self, post: RemotePost, dest_path: str, progress: Optional[Callable[[dict], None]] = None) -> None:
         Path(dest_path).parent.mkdir(parents=True, exist_ok=True)
         transport = self._transport_cache.get((self.site, post.remote_id), {})
         headers = dict(transport.get("headers") or {})
         if self.site == "pixiv":
             headers["Referer"] = "https://www.pixiv.net/"
-        elif self.site == "artstation":
+        elif self.site in {"artstation", "deviantart"}:
             headers.setdefault("Referer", post.remote_url)
         elif self.site == "pawchive":
             headers.update({"Referer": post.remote_url, "Accept-Encoding": "identity"})
         urls = [post.image_url, *(transport.get("fallbacks") or [])]
+        selections = {}
+        if self.site == "deviantart" and not post.raw_metadata.get("is_original") and self.settings.get("deviantart_media_mode", "original") != "original" and post.format in {"jpg", "jpeg", "png", "webp", "avif"}:
+            candidates = await self._deviantart_page_candidates(post)
+            selections = dict(candidates)
+            urls = list(dict.fromkeys([*[u for u, kind in candidates if kind == "fullview"], *urls,
+                                      *[u for u, kind in candidates if kind == "thumbnail"]]))
         last_error: Exception | None = None
         total = None
         for attempt, url in enumerate(urls, 1):
@@ -1035,12 +1174,38 @@ class GalleryDLProvider(Provider):
                                           "percent": min(100, round(downloaded * 100 / total, 1)) if total else None,
                                           "speed_bps": speed, "eta_seconds": (total - downloaded) / speed if total and speed else None,
                                           "elapsed_seconds": elapsed, "fallback_attempt": attempt if attempt > 1 else None})
+                if self.site == "deviantart" and url in selections:
+                    from PIL import Image
+                    from app.services.diagnostics import emit
+                    try:
+                        with Image.open(dest_path) as image:
+                            width, height = image.size
+                            image_format = image.format.lower()
+                            image.verify()
+                    except (OSError, ValueError):
+                        last_error = RuntimeError("DeviantArt advertised image could not be decoded")
+                        Path(dest_path).unlink(missing_ok=True)
+                        continue
+                    post.width, post.height, post.format = width, height, image_format
+                    post.image_url = url
+                    post.raw_metadata.update({"studio_media_selection": selections[url], "is_original": False,
+                                              "studio_download_width": post.width, "studio_download_height": post.height})
+                    emit("provider.deviantart.media_selected", f"Downloaded {selections[url]} image: {post.width} x {post.height}.",
+                         "WARNING" if selections[url] == "thumbnail" else "INFO", provider="deviantart")
                 break
             except httpx.HTTPError as exc:
                 last_error = exc
                 Path(dest_path).unlink(missing_ok=True)
         else:
             assert last_error is not None
+            if self.site == "deviantart" and isinstance(last_error, httpx.HTTPStatusError) and last_error.response.status_code in (401, 403):
+                raise ProviderAuthenticationError(
+                    "DeviantArt denied access to the artwork file (HTTP "
+                    f"{last_error.response.status_code}). The listing was accessible, but the media was not. "
+                    "Configure authorized DeviantArt OAuth access in Settings and verify that your account can view the work. "
+                    "If OAuth is already configured, the account may lack access, the signed URL may have expired, or the site may be blocking this request. "
+                    "Retry the job to refresh its URLs. No thumbnail or blurred preview was substituted."
+                ) from last_error
             raise last_error
         if progress:
             elapsed = max(time.monotonic() - started, 0.001)

@@ -20,7 +20,7 @@ Edit searches in **Sources**. Search changes reset provider pagination and are b
 
 ## Providers and credentials
 
-Danbooru, Gelbooru, e621 and yande.re support the three collection types. Gallery-dl-backed ArtStation, Pixiv, Twitter/X and Pawchive integrations use artist/profile searches; they do not support arbitrary character/tag collections.
+Danbooru, Gelbooru and e621 support the three collection types. Gallery-dl-backed DeviantArt, ArtStation, Pixiv, Twitter/X and Pawchive integrations use artist/profile searches; they do not support arbitrary character/tag collections.
 
 Configure providers in **Settings**. Gelbooru uses a user ID and API key. Other adapters may require their own login/token/cookies; availability can change. Use the provider's status/test controls and read the resulting diagnostics. Uploaded Twitter cookies are a Netscape-format `cookies.txt` file from your own session. On a remote instance, laptop browser profiles are not available to the server: use the supported upload/configuration controls.
 
@@ -100,3 +100,7 @@ In **Groups / bulk lists**, select a group and use **Protect all current folders
 The protected list shows an **Unprotect** button for each member. Explicit single-collection scraping remains available. Finish or cancel active jobs before changing protection. Unprotect a collection before moving it and reapply protection in its destination if needed.
 
 **Delete group** permanently removes its member collections, image/sidecar directories, thumbnails, and associated image-deletion recovery snapshots. Confirm the prompt only when you intend to remove the entire group. Active sync, import, or QA work must finish first. Collection rows also have individual Delete controls. A filesystem error is reported; resolve it and retry. Deletion can have removed earlier members before encountering an error, so it cannot be undone.
+
+DeviantArt artist profiles and artwork URLs are supported through gallery-dl. See [Provider setup](PROVIDER_SETUP.md#deviantart) for public access, optional OAuth, and provider-specific usernames. Group scrape provider can be changed without changing member source settings.
+
+DeviantArt: if the original-download quota is exhausted, open Settings and select **Artwork page / published images**. To also permit smaller images when larger versions fail, select **Artwork page; allow thumbnail fallback**. This exception applies only to DeviantArt still images. Downloads retain their selected version and actual dimensions in source metadata. See [provider setup](PROVIDER_SETUP.md) for limitations.

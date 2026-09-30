@@ -48,3 +48,9 @@ After a kernel restart, rerun Configuration and Diagnose. Diagnose lists matchin
 A notebook already open in Jupyter does not automatically adopt cells changed by Git. Close it without saving stale cells and reopen the updated notebook, or obtain a fresh copy; retain your `APP`, `LIBRARY`, `PORT`, and `UI_ZIP` values. Always keep the same persistent library path unless intentionally creating a new library. Run Configuration after refreshing notebook code so it loads the matching helper module.
 
 If an older Setup cell rejects the UI ZIP before reaching `git pull`, pull the latest source in a terminal first, then rerun Configuration to reload the helper before retrying Setup. The archive must contain one built `index.html` and all its referenced assets; Windows ZIP separators are supported.
+
+## Updating for DeviantArt
+
+Finish active jobs and stop Studio before updating. Pull the latest source, upload the matching `frontend-ui.zip` if your server has no Node.js, and run the notebook Configuration, Setup/update, and Start cells. Refresh the browser after restarting. Keep your existing persistent library path.
+
+In the **server app?s Settings ? DeviantArt**, select **Artwork page / published images**, or **Artwork page; allow thumbnail fallback** if you accept smaller fallback images. Upload your signed-in DeviantArt Netscape cookie export using **Upload DeviantArt cookies**. A file saved in your laptop app is not automatically available to the server. OAuth and cookies are separate; cookies authenticate artwork pages, while OAuth authenticates API access. See [Provider setup](PROVIDER_SETUP.md) for mature browsing settings, weekly original-download limits, and private credential handling.

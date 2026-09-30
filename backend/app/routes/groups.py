@@ -128,3 +128,24 @@ def enable_group_source(group_id: int, folder_id: int):
         return {'folder_id': folder_id, 'provider': group['provider'], 'enabled': True}
     finally:
         conn.close()
+
+
+class GroupProvider(BaseModel):
+    provider: str
+
+
+@router.patch('/{group_id}/provider')
+def replace_group_provider(group_id: int, payload: GroupProvider):
+    from app.providers.registry import supported_provider
+    if not supported_provider(payload.provider):
+        raise HTTPException(422, 'Choose a supported provider')
+    conn = get_connection()
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        checked(groups.validate_group, conn, group_id)
+        checked(groups.assert_idle, conn)
+        conn.execute('UPDATE artist_group SET provider=? WHERE id=?', (payload.provider, group_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return {'provider': payload.provider}

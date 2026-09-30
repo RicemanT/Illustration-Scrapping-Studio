@@ -84,16 +84,6 @@ BOORU_SITES = {
         },
         'rate_limit': 1.0,
     },
-    'yandere': {
-        'base_url': 'https://yande.re',
-        'api_path': '/post.json',
-        'page_param': 'page',
-        'tag_param': 'tags',
-        'limit_param': 'limit',
-        'image_url_field': 'file_url',
-        'max_limit': 100,
-        'rate_limit': 1.0,
-    }
 }
 
 GELBOORU_TAG_TYPES = {
@@ -106,7 +96,7 @@ GELBOORU_TAG_TYPES = {
 
 
 class BooruProvider(Provider):
-    """Generic booru provider supporting Danbooru, Gelbooru, e621, yande.re."""
+    """Generic booru provider supporting Danbooru, Gelbooru, e621."""
 
     def __init__(self, site: str):
         if site not in BOORU_SITES:
@@ -266,12 +256,6 @@ class BooruProvider(Provider):
                     category = (category_map or {}).get(tag, 'general')
                     tags.setdefault(category, []).append(tag)
 
-        elif self.site == 'yandere':
-            # Yande.re has space-separated tags field
-            tag_string = post_data.get('tags', '')
-            if tag_string:
-                tags['general'] = tag_string.split()
-
         return tags
 
     def _post_to_remote(
@@ -313,8 +297,6 @@ class BooruProvider(Provider):
             remote_url = f"{self.config['base_url']}/index.php?page=post&s=view&id={post_id}"
         elif self.site == 'e621':
             remote_url = f"{self.config['base_url']}/posts/{post_id}"
-        elif self.site == 'yandere':
-            remote_url = f"{self.config['base_url']}/post/show/{post_id}"
         else:
             remote_url = image_url
 
@@ -374,12 +356,12 @@ class BooruProvider(Provider):
             # Booru APIs expose ordering/date constraints as query tags. Keep
             # the UI provider-neutral while translating them here.
             query_parts = query.split() if getattr(self, 'literal_query', False) else self._normalize_query(query)
-            if self.site in {'gelbooru', 'yandere'}:
+            if self.site == 'gelbooru':
                 # These providers search canonical tag names directly and do
                 # not understand Danbooru's artist:/character: namespaces.
                 query_parts = [part.split(':', 1)[1] if part.startswith(('artist:', 'character:', 'copyright:')) else part for part in query_parts]
-            # These metatags are supported by Danbooru/e621. Gelbooru and
-            # Yande.re use different query dialects, so do not send them
+            # These metatags are supported by Danbooru/e621. Gelbooru uses
+            # a different query dialect, so do not send them
             # provider-blindly (which turns a valid search into zero results).
             if self.site in {'danbooru', 'e621'}:
                 query_parts.append("order:id_asc" if sort == "oldest" else "order:id_desc")
@@ -398,10 +380,6 @@ class BooruProvider(Provider):
 
             if self.site == 'gelbooru':
                 params['sort'] = 'id:asc' if sort == 'oldest' else 'id:desc'
-            elif self.site == 'yandere':
-                # Moebooru-compatible APIs use `order`; keep the value out of
-                # the tag query so it cannot be interpreted as a tag.
-                params['order'] = 'id_asc' if sort == 'oldest' else 'id'
 
             # Add cursor/pagination
             if cursor:
@@ -477,15 +455,10 @@ class BooruProvider(Provider):
             # Determine next cursor
             next_cursor = None
             page_size = min(limit, self.config['max_limit'])
-            if normalized_posts and (self.site == 'yandere' or len(posts_data) >= page_size):
+            if normalized_posts and len(posts_data) >= page_size:
                 if self.site in ['danbooru', 'e621']:
                     # Use last post ID as cursor
                     next_cursor = normalized_posts[-1].remote_id
-                elif self.site == 'yandere':
-                    # Moebooru pages are one-based. Omitting `page` returns
-                    # page 1, so continuing at 1 would repeat the first page.
-                    current_page = int(cursor) if cursor else 1
-                    next_cursor = str(current_page + 1)
                 else:
                     next_cursor = f"o:{absolute_offset + len(posts_data)}"
 

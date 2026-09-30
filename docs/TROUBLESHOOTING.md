@@ -22,3 +22,10 @@
 For a bug report include the app revision, OS/Python version, local or Jupyter mode, the action attempted, expected/actual result and relevant request/job ID. Share redacted diagnostic excerpts rather than the database, provider settings, cookies or full private library. Logs can still contain local paths and collection names.
 
 Clean-machine Linux installation and your actual JupyterHub configuration require host-side verification. Passing offline fixtures does not establish current live-provider availability.
+
+## DeviantArt quota, mature artwork, and image quality
+
+- **Free download limit reached:** the original-file endpoint has exhausted its weekly allowance. OAuth/cookies do not remove the quota. Select an artwork-page download mode in Settings to retrieve available displayed images instead.
+- **HTTP 403 while your browser can view the work:** export signed-in DeviantArt cookies after choosing the appropriate Browsing Mode, upload them in the app's DeviantArt settings, then start a new sync. Re-export expired sessions. Upload validation confirms file format, not live account access.
+- **Some images are smaller:** displayed images and optional thumbnails are not guaranteed original uploads. Source metadata records `studio_media_selection` and actual downloaded dimensions for artwork-page candidates; diagnostics report the selected version. Existing processing/minimum-size settings still apply.
+- **More images than posts:** animated media can yield multiple extracted frames. For example, 20 processed posts can produce 24 stored images without duplicates or errors.

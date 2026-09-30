@@ -248,11 +248,11 @@ class TagServiceTests(unittest.TestCase):
         self.assertIn("Herheim@お仕事募集中", raw)
         self.assertIn("ELDENRING", raw)
 
-    def test_yandere_tags_are_provenance_only(self):
+    def test_deviantart_tags_are_provenance_only(self):
         conn = db.get_connection()
         conn.execute("UPDATE collection SET name = 'Artist', artist_tag_template = 'Drawn by {artist}' WHERE id = 1")
         source_id = conn.execute("SELECT id FROM image_source WHERE image_id = 2 ORDER BY id LIMIT 1").fetchone()[0]
-        conn.execute("UPDATE image_source SET provider = 'yandere' WHERE id = ?", (source_id,))
+        conn.execute("UPDATE image_source SET provider = 'deviantart' WHERE id = ?", (source_id,))
         conn.commit()
         conn.close()
         self.assertEqual(self.service.get_ground_truth(2)["tags"], ["Drawn by artist"])

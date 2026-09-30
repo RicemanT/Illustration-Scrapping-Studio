@@ -334,7 +334,7 @@ function CollectionView() {
                   {!source.available && <p className="mt-2 text-xs text-amber-300">{source.reason || 'Configure this provider in Settings before scraping.'}</p>}
                   {(
                     <label className="mt-3 block text-[11px] text-slate-400">
-                      {['pixiv', 'artstation', 'twitter', 'pawchive'].includes(source.provider) ? 'Artist profile URL / ID / handle' : 'Provider-specific search (optional)'}
+                      {['deviantart', 'pixiv', 'artstation', 'twitter', 'pawchive'].includes(source.provider) ? 'Artist profile URL / ID / handle' : 'Provider-specific search (optional)'}
                       <input
                         key={`${source.provider}:${source.query_override || ''}`}
                         disabled={!source.supported || folderSyncing || sourceMutation.isPending}

@@ -59,6 +59,7 @@ function GroupPage() {
     setMoveId(''); setNotice('Folder and its image/thumbnail directories moved. Existing deletion recovery remains available.');
     await client.invalidateQueries({ queryKey: ['image'] }); await refresh();
   } });
+  const replaceProvider = useMutation({ mutationFn: value => api.groups.setProvider(group.id, value), onSuccess: refresh });
   const enableSource = useMutation({ mutationFn: (folderId) => api.groups.enableSource(group.id, folderId), onSuccess: refresh });
   const scrape = useMutation({ mutationFn: (options) => api.groups.sync(group.id, options), onSuccess: ({ data }) => {
     setJobId(data.job_id); setShowSync(false); client.invalidateQueries({ queryKey: ['sync-history-brief'] });
@@ -89,14 +90,18 @@ function GroupPage() {
       <button className={button} disabled={create.isPending}>Create group</button>
     </form>
     <div className="flex flex-wrap gap-2">{groups.data?.map((item) => <Link className={`${field} ${item.id === group?.id ? 'text-blue-300 border-blue-500' : ''}`} key={item.id} to={`/groups/${item.id}`}>{item.name} / {item.provider}</Link>)}</div>
-    {[groups.error, folders.error, create.error, inspect.error, importList.error, move.error, scrape.error, cancel.error, enableSource.error, deleteGroup.error, deleteFolder.error, blocked.error, block.error, unblock.error].filter(Boolean).map((error, index) => <p role="alert" className="text-red-400" key={index}>{errorText(error)}</p>)}
+    {[groups.error, folders.error, create.error, inspect.error, importList.error, move.error, scrape.error, cancel.error, enableSource.error, replaceProvider.error, deleteGroup.error, deleteFolder.error, blocked.error, block.error, unblock.error].filter(Boolean).map((error, index) => <p role="alert" className="text-red-400" key={index}>{errorText(error)}</p>)}
     {notice && <p role="status" className="text-green-300">{notice}</p>}
     {!group && <p className="text-slate-400">Create or select a group to import a collection list and scrape its members separately.</p>}
     {group && <>
       <section className="rounded border border-slate-800 p-4 space-y-3">
         <div className="flex flex-wrap items-center gap-3"><h2 className="flex-1 font-semibold">{group.name} · {members.length} collections · {members.reduce((sum, folder) => sum + folder.image_count, 0)} images</h2>
-          <button className={button} disabled={activeSync || !members.length || scrape.isPending} onClick={() => { scrape.reset(); setShowSync(true); }}>Scrape group</button>
+          <button className={button} disabled={group.provider === 'retired' || activeSync || !members.length || scrape.isPending} onClick={() => { scrape.reset(); setShowSync(true); }}>Scrape group</button>
           <button className="rounded border border-red-800 px-3 py-2 text-sm text-red-200" disabled={deleteGroup.isPending || activeSync || deleteFolder.isPending} onClick={() => { if (window.confirm(`Delete group "${group.name}" and all ${members.length} collections and images? This cannot be undone.`)) deleteGroup.mutate(); }}>Delete group</button></div>
+        <label className="block text-sm">Group scrape provider <select aria-label="Group scrape provider" className={field} value={group.provider} disabled={activeSync || replaceProvider.isPending} onChange={e => replaceProvider.mutate(e.target.value)}>
+          {group.provider === 'retired' && <option value="retired" disabled>Choose a replacement provider</option>}
+          {providers.data?.items?.map(item => <option key={item.name} value={item.name}>{item.name}</option>)}
+        </select><span className="ml-2 text-xs text-slate-400">Changes batch routing only; enable the source and set its query in each collection.</span></label>
         <p className="text-xs text-slate-400">Provider: {group.provider}. Storage: images/{group.slug}/&lt;collection&gt;/ and thumbnails/{group.slug}/&lt;collection&gt;/</p>
         <p className="text-xs text-slate-400">Group scraping uses only {group.provider} for enabled members that have that source enabled. Other providers and groups are excluded.</p>
         {job.data && <div className="text-sm space-y-1"><p>{job.data.status}: {job.data.progress?.message}</p><p>{job.data.progress?.completed || 0}/{job.data.progress?.total || 0} collections · {job.data.progress?.new_images || 0} new images · {job.data.progress?.errors || 0} errors</p>
@@ -141,7 +146,7 @@ function GroupPage() {
         }} />
         {fileError && <p role="alert" className="text-red-400">{fileError}</p>}
         <textarea aria-label="Collection list" className={`${field} block w-full h-40`} value={text} disabled={busy} onChange={(event) => { setText(event.target.value); setPreview(null); setNotice(''); }} placeholder={'artist_one\nartist_two'} />
-        <button className={button} disabled={busy || !text.trim()} onClick={() => { setNotice(''); inspect.mutate(); }}>Preview list</button>
+        <button className={button} disabled={busy || group.provider === 'retired' || !text.trim()} onClick={() => { setNotice(''); inspect.mutate(); }}>Preview list</button>
         {preview && <div className="space-y-2"><p>{preview.counts.new} new · {preview.counts.existing} existing · {preview.counts.duplicate} duplicate lines · {preview.counts.invalid} invalid · {preview.counts.created} created</p>
           <div className="max-h-52 overflow-auto text-sm">{preview.items.map((item) => <div key={item.line}>{item.line}. {item.name || item.artist} ({item.type || kind}) — {item.status} {item.reason || ""}</div>)}</div>
           <button className={button} disabled={busy || !preview.counts.new || preview.counts.invalid > 0} onClick={() => importList.mutate()}>Create collections</button>
@@ -157,7 +162,7 @@ function GroupPage() {
           <Link to={`/folder/${folder.id}`} className="text-blue-300">{folder.name} · {folder.image_count} images</Link>
           {folder.sources.some((source) => source.provider === group.provider && source.enabled)
             ? <span className="text-xs text-slate-400">{blocked.data?.some(item => item.id === folder.id) ? 'Protected from bulk scraping' : folder.enabled ? 'Ready' : 'Folder disabled'}</span>
-            : <button className="text-xs text-blue-300" disabled={enableSource.isPending} onClick={() => enableSource.mutate(folder.id)}>Enable {group.provider}</button>}
+            : <button className="text-xs text-blue-300" disabled={enableSource.isPending || group.provider === 'retired'} onClick={() => enableSource.mutate(folder.id)}>Enable {group.provider}</button>}
           <button className="text-xs text-slate-400" disabled={move.isPending} onClick={() => move.mutate({ id: folder.id, destination: null })}>Move to Ungrouped</button>
           <button className="text-xs text-red-300" disabled={move.isPending || deleteFolder.isPending} onClick={() => { if (window.confirm(`Delete collection "${folder.name}" and all of its images? This cannot be undone.`)) deleteFolder.mutate(folder.id); }}>Delete</button>
         </div>)}</div>

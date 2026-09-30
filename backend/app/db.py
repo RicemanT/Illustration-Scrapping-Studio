@@ -757,6 +757,13 @@ def init_db():
         (datetime.now(timezone.utc).isoformat(),),
     )
 
+    # Retire unsupported scrape configurations without rewriting image provenance.
+    from app.providers.booru import BOORU_SITES
+    from app.providers.gallery_dl import GALLERY_DL_PROVIDERS
+    supported = [*BOORU_SITES, *GALLERY_DL_PROVIDERS]
+    placeholders = ','.join('?' for _ in supported)
+    conn.execute(f'DELETE FROM collection_source WHERE provider NOT IN ({placeholders})', supported)
+    conn.execute(f"UPDATE artist_group SET provider='retired' WHERE provider NOT IN ({placeholders})", supported)
     conn.commit()
     conn.close()
 

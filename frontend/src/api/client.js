@@ -39,6 +39,7 @@ export const api = {
     enableSource: (id, folderId) => client.post(`/groups/${id}/folders/${folderId}/enable-source`),
     history: (id) => client.get('/sync/jobs/history', { params: { group_id: id, limit: 20 } }),
     delete: (id) => client.delete(`/groups/${id}`),
+    setProvider: (id, provider) => client.patch(`/groups/${id}/provider`, { provider }),
     blocked: (id) => client.get(`/groups/${id}/blocked`),
     block: (id, data) => client.post(`/groups/${id}/blocked`, data),
     unblock: (id, folderId) => client.delete(`/groups/${id}/blocked/${folderId}`),
@@ -136,8 +137,15 @@ export const api = {
     gelbooruConfig: () => client.get('/providers/gelbooru/config'),
     saveGelbooruConfig: (data) => client.put('/providers/gelbooru/config', data),
     galleryDlConfig: () => client.get('/providers/gallery-dl/config'),
+    saveDeviantArtMedia: (mode) => client.put('/providers/deviantart/media', { mode }),
+    saveDeviantArtConfig: (data) => client.put('/providers/deviantart/config', data),
     savePixivConfig: (data) => client.put('/providers/pixiv/config', data),
     saveTwitterConfig: (data) => client.put('/providers/twitter/config', data),
+    uploadDeviantArtCookies: (file) => {
+      const form = new FormData(); form.append('file', file);
+      return client.post('/providers/deviantart/cookies', form, { headers: { 'Content-Type': 'multipart/form-data' } });
+    },
+    removeDeviantArtCookies: () => client.delete('/providers/deviantart/cookies'),
     uploadTwitterCookies: (file) => {
       const form = new FormData();
       form.append('file', file);

@@ -10,8 +10,9 @@ Complete these steps in the Settings page of the instance you want to use. If th
 
 | Provider | Setup in this app |
 | --- | --- |
-| Danbooru, e621, yande.re | No additional credential fields currently exposed; availability/search restrictions depend on the site. |
+| Danbooru, e621 | No additional credential fields currently exposed; availability/search restrictions depend on the site. |
 | Gelbooru | Numeric user ID and API key |
+| DeviantArt | Public access; optional OAuth refresh token and custom API client |
 | Pixiv | Final OAuth refresh token |
 | Twitter / X | Signed-in cookies.txt upload recommended, especially for Jupyter |
 | ArtStation, Pawchive | No additional login controls for currently supported public sources; gallery-dl must be ready |
@@ -94,3 +95,73 @@ When the runtime is ready, no additional login setup is exposed for the public s
 Provider settings belong to the active backend library, normally `provider_settings.json`. Uploaded X cookies are stored under `.secrets/twitter.cookies.txt`. These paths are excluded from Git and credentials are not returned by the settings API. Private backups include them. Environment overrides can take precedence over saved settings; see [Development](DEVELOPMENT.md#configuration) if a saved change seems ineffective.
 
 Use the authenticated Jupyter URL when entering credentials remotely. Keep token/cookie exports private, and delete temporary exported copies when you no longer need them. For failures, share a redacted error/request ID rather than tokens, cookie files or the library database.
+
+
+## DeviantArt
+
+DeviantArt supports **artist collections**. Create a collection with DeviantArt checked, or enable it under an existing collection's Sources. Use a username such as `artist-name`, a profile URL (`https://www.deviantart.com/artist-name`), a gallery URL, or a single artwork URL. If your booru artist tag differs from the DeviantArt username, enter the correct URL in the DeviantArt source's provider-specific search. This integration does not provide arbitrary character/tag searches. Bulk artist lists work in DeviantArt groups; entries should be DeviantArt usernames. Protected collections remain excluded from bulk and scheduled scraping.
+
+Start with public access: no credentials are required for public API-accessible works. Availability depends on the site; private, mature, subscriber-only, or otherwise restricted works can require authorization and may remain unavailable. The app does not bypass access restrictions.
+
+For OAuth, use a **terminal**, not a notebook cell. Run inside the app directory:
+
+Windows:
+```powershell
+.\.venv\Scripts\gallery-dl.exe oauth:deviantart
+```
+
+Jupyter/Linux:
+```bash
+.venv/bin/gallery-dl oauth:deviantart
+```
+
+Follow gallery-dl's authorization instructions using your browser. Enter the final refresh-token in **Settings > DeviantArt OAuth** and save it. If you register a custom DeviantArt API application, configure gallery-dl with that client ID/secret before authorizing, and enter the same client ID and secret together with the resulting token in the app. Tokens must belong to the selected client. Refer to gallery-dl's [DeviantArt OAuth configuration](https://gdl-org.github.io/docs/configuration.html#extractor-deviantart-refresh-token) and [custom client instructions](https://gdl-org.github.io/docs/configuration.html#extractor-deviantart-client-id-client-secret). Never paste secrets into an issue, screenshot, or repository.
+
+For a custom API client, keep a private JSON file outside the repository, for example `deviantart-auth.json`:
+
+```json
+{"extractor": {"deviantart": {"client-id": "YOUR_CLIENT_ID", "client-secret": "YOUR_CLIENT_SECRET"}}}
+```
+
+Run `.venv/bin/gallery-dl --config /path/to/deviantart-auth.json oauth:deviantart` on Linux, or `.\.venv\Scripts\gallery-dl.exe --config C:\path\to\deviantart-auth.json oauth:deviantart` on Windows. Copy the displayed authorization URL into your browser if the remote server cannot open one. Follow the prompt to complete authorization; use the final refresh-token, not the callback code. Keep or remove the temporary credential file privately after configuration.
+
+Saving replaces all three DeviantArt credential fields. Empty fields clear saved values; to replace custom credentials, enter the full matching set. The Settings response shows only configured flags, never credential values. Credentials and the private OAuth refresh cache are stored on the backend you are connected to, so configure them again through the Jupyter-hosted app if you previously saved them only on your laptop. Saved means stored, not remotely validated: scraping reports authorization failures.
+
+The integration requests original downloads where the site permits them and otherwise uses gallery-dl's available artwork content. Preview substitution is disabled. It retains source metadata and stable artwork IDs; tags are provenance-only, like the other profile providers, and do not automatically replace your ground-truth tags. Existing resize/WebP settings still apply. Gallery discovery uses gallery-dl's throttling with a minimum API wait setting of two seconds; increasing download workers does not remove site throttling. Oldest-first is unavailable; dates filter extracted results and do not imply server-side date search.
+
+If a job fails: check the username/URL, confirm the work is accessible to your account, then verify your token and matching custom client credentials. Rate limits or site blocks may require waiting. Never treat a failed request as proof that the artist's gallery is empty.
+
+## Upgrading existing libraries
+
+Startup retires unsupported scrape configurations without deleting downloaded artwork or rewriting its original provenance. A group whose source has been retired displays **Choose a replacement provider**. Select its new group scrape provider, then explicitly enable that source and supply the correct profile query in member collections. Changing the group's provider alone never rewrites collection queries or enables scraping. Existing group directories and protected-folder lists remain intact.
+
+DeviantArt can rotate OAuth tokens during use. The app retains gallery-dl's refresh cache privately under the library's `.secrets/deviantart/` directory so later pages and restarts can authenticate. Changing or clearing credentials selects a separate cache; older cache files are not reused, but remain private backup material. Do not publish the library or its backups.
+
+
+### Original-download quota and published-image mode
+
+If DeviantArt returns **Free download limit reached**, the original-download endpoint has refused the request. Increasing workers, clearing app data, or immediately retrying does not remove this site-side quota. OAuth identifies your account; it does not remove the weekly download allowance.
+
+In **Settings > DeviantArt > Artwork download mode**, choose:
+
+- **Request originals; stop on quota** (default): preserve the existing original-request behavior and stop with an explanation when the quota blocks it. Non-downloadable works can still use their published artwork content, as before.
+- **Request originals; allow published fallback on quota**: retry the same discovery page once using published artwork only when this specific quota error occurs. The job and diagnostics log a warning, and imported source metadata records `published_after_original_quota`. Authentication failures and unrelated errors are not retried this way.
+- **Artwork page / published images**: try the full-view variants advertised on the artwork page, then the API artwork URL, without calling the original-file download endpoint. These may be resized or recompressed.
+- **Artwork page; allow thumbnail fallback**: use the same order, then try the largest advertised uncropped, unblurred page thumbnail. This applies only to DeviantArt static image posts, never video/archive previews. Thumbnail sizes vary; 1024 pixels is not guaranteed.
+
+Changes save immediately and preserve OAuth settings. Restart the failed job after selecting a mode. Existing images are not replaced or upgraded when the mode changes. Published images remain subject to your processing and minimum-dimension filters, account permissions, and ordinary provider rate limits.
+
+A successful listing does not guarantee media-file access. HTTP 401/403 on a listed artwork can mean account restrictions, an expired signed URL, or a site block. Save authorized OAuth credentials, verify the work is accessible to that account, and retry the job for fresh URLs. With a saved token, discovery uses authenticated API access instead of the public token. Published-image mode does not unlock restricted works.
+
+Artwork-page downloads record `studio_media_selection` (`fullview` or `thumbnail`) and actual decoded dimensions in source metadata; diagnostics record the selected version. Artwork-page access uses uploaded DeviantArt cookies when available, independently of OAuth API discovery. Without cookies, pages are fetched as a logged-out visitor. There is no automatic upgrade of earlier imports. MuHut?s Under the moonlight was verified as a 1280 x 1600 full-view JPEG; this is not the 1600 x 2000 original.
+
+### DeviantArt browser cookies (mature artwork-page access)
+
+If a work is visible in your signed-in browser but fails in the app, use **Settings ? DeviantArt ? DeviantArt browser cookies**:
+
+1. Sign in on deviantart.com and choose the appropriate Browsing Mode (Mature for eligible accounts viewing mature works). Verify the artwork is visible unblurred.
+2. Export that site?s cookies as Netscape `cookies.txt` using a trusted browser tool.
+3. Choose the file and click **Upload DeviantArt cookies**. It is saved privately on the backend serving this app, including when that backend runs on Jupyter.
+4. Start a new sync using an artwork-page download mode. Existing running jobs may retain their previous settings.
+
+Only DeviantArt cookies are retained. The upload validates format and presence of a non-expired login cookie; it does not prove the session still works. Re-export if the session expires or the site logs you out. **Remove DeviantArt cookies** removes the saved file without changing OAuth or download mode. Cookies cannot raise the original-download allowance or grant access your account lacks. Never commit or share the cookie file.

@@ -21,7 +21,7 @@ function CreateCollectionModal({ onClose }) {
   const groups = useQuery({ queryKey: ['groups'], queryFn: async () => (await api.groups.list()).data });
   const providers = providerData?.items || [
     { name: 'danbooru', available: true }, { name: 'gelbooru', available: true },
-    { name: 'e621', available: true }, { name: 'yandere', available: true },
+    { name: 'e621', available: true }, { name: 'deviantart', available: true, collection_types: ['artist'] },
   ];
 
   const createMutation = useMutation({
@@ -61,7 +61,7 @@ function CreateCollectionModal({ onClose }) {
           <label className="block text-slate-300">Group
             <select className="block w-full border rounded p-2" value={formData.group_id || ''} onChange={(event) => {
               const group = groups.data?.find((item) => item.id === Number(event.target.value));
-              setFormData({ ...formData, group_id: group?.id || null, sources: group ? [...new Set([...formData.sources, group.provider])] : formData.sources });
+              setFormData({ ...formData, group_id: group?.id || null, sources: group && providers.some(item => item.name === group.provider && (item.collection_types || ['artist','character','tag']).includes(formData.type)) ? [...new Set([...formData.sources, group.provider])] : formData.sources });
             }}><option value="">Ungrouped</option>{groups.data?.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select>
           </label>
           <label className="block text-sm">Collection type

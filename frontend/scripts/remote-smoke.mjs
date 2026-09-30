@@ -61,6 +61,9 @@ try {
   await until(()=>js(`[${JSON.stringify(prefix)},${JSON.stringify(prefix+'/')}].includes(location.pathname)`),'dashboard navigation');
   await cdp('Page.navigate',{url:base+'/settings'});
   await until(()=>js("document.querySelector('[aria-label=\"Maximum longest side\"]')?.value==='3072'"),'reconnect retained settings');
+  await until(()=>js("!!document.querySelector('[aria-label=\"DeviantArt download mode\"]')"),'DeviantArt download settings');
+  await js("(()=>{const el=document.querySelector('[aria-label=\"DeviantArt download mode\"]');Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(el,'published');el.dispatchEvent(new Event('change',{bubbles:true}));})()");
+  await until(async()=> (await (await fetch(base+'/api/providers/gallery-dl/config')).json()).deviantart.media_mode==='published','saved DeviantArt media mode');
   // Create with multiple sources, then edit an initially unconfigured source.
   await js("[...document.querySelectorAll('button')].find(e=>e.textContent.includes('New Collection')).click()");
   await until(()=>js("!!document.querySelector('input[placeholder=\"e.g., Quasarcake\"]')"),'create modal');
@@ -71,13 +74,13 @@ try {
   await until(async()=>{folder=(await (await fetch(base+'/api/folders/')).json()).find(f=>f.name==='Multi source fixture');return folder;},'multi-source collection created');
   if(folder.sources.filter(s=>s.enabled).length!==2)throw new Error('Creation lost selected sources');
   await cdp('Page.navigate',{url:base+'/folder/'+folder.id});
-  await until(()=>js("!!document.querySelector('[aria-label=\"Enable yandere\"]')"),'all source controls');
-  await js("document.querySelector('[aria-label=\"Enable yandere\"]').click()");
-  await until(async()=> (await (await fetch(base+'/api/folders/'+folder.id)).json()).sources.some(s=>s.provider==='yandere' && s.enabled),'added existing-collection source');
+  await until(()=>js("!!document.querySelector('[aria-label=\"Enable deviantart\"]')"),'all source controls');
+  await js("document.querySelector('[aria-label=\"Enable deviantart\"]').click()");
+  await until(async()=> (await (await fetch(base+'/api/folders/'+folder.id)).json()).sources.some(s=>s.provider==='deviantart' && s.enabled),'added existing-collection source');
   await until(()=>js("!document.querySelector('[aria-label=\"Enable danbooru\"]').disabled"),'source mutation settled');
   await js("document.querySelector('[aria-label=\"Enable danbooru\"]').click()");
   await until(async()=> (await (await fetch(base+'/api/folders/'+folder.id)).json()).sources.some(s=>s.provider==='danbooru' && !s.enabled),'source disabled');
-  const events=await (await fetch(base+'/api/diagnostics?limit=100')).json();
+  const events=await (await fetch(base+'/api/diagnostics?search=settings.storage&limit=100')).json();
   if(!events.items.some(item=>item.event==='settings.storage' || item.kind==='settings.storage')) {
     // Event name is schema-owned; inspect serialized entries for the exact event code.
     if(!JSON.stringify(events.items).includes('settings.storage'))throw new Error('Missing prefixed request diagnostics');

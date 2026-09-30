@@ -13,9 +13,11 @@ function Settings() {
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [scheduleMinutes, setScheduleMinutes] = useState(1440);
   const [scheduleLimit, setScheduleLimit] = useState(20);
+  const [deviantCredentials, setDeviantCredentials] = useState({ refresh_token: '', client_id: '', client_secret: '' });
   const [pixivToken, setPixivToken] = useState('');
   const [twitterBrowser, setTwitterBrowser] = useState('firefox');
   const [twitterProfile, setTwitterProfile] = useState('');
+  const [deviantCookieFile, setDeviantCookieFile] = useState(null);
   const [twitterCookieFile, setTwitterCookieFile] = useState(null);
 
   const { data: config } = useQuery({
@@ -101,6 +103,18 @@ function Settings() {
       queryClient.invalidateQueries({ queryKey: ['sync-history-brief'] });
     },
   });
+  const deviantMediaMutation = useMutation({
+    mutationFn: mode => api.providers.saveDeviantArtMedia(mode),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['gallery-dl-config'] }),
+  });
+  const deviantMutation = useMutation({
+    mutationFn: () => api.providers.saveDeviantArtConfig(deviantCredentials),
+    onSuccess: () => {
+      setDeviantCredentials({ refresh_token: '', client_id: '', client_secret: '' });
+      queryClient.invalidateQueries({ queryKey: ['gallery-dl-config'] });
+      queryClient.invalidateQueries({ queryKey: ['providers'] });
+    },
+  });
   const pixivMutation = useMutation({
     mutationFn: () => api.providers.savePixivConfig({ refresh_token: pixivToken.trim() }),
     onSuccess: () => {
@@ -115,6 +129,14 @@ function Settings() {
       queryClient.invalidateQueries({ queryKey: ['gallery-dl-config'] });
       queryClient.invalidateQueries({ queryKey: ['providers'] });
     },
+  });
+  const deviantCookieMutation = useMutation({
+    mutationFn: () => api.providers.uploadDeviantArtCookies(deviantCookieFile),
+    onSuccess: () => { setDeviantCookieFile(null); queryClient.invalidateQueries({ queryKey: ['gallery-dl-config'] }); },
+  });
+  const removeDeviantCookieMutation = useMutation({
+    mutationFn: () => api.providers.removeDeviantArtCookies(),
+    onSuccess: () => { deviantCookieMutation.reset(); queryClient.invalidateQueries({ queryKey: ['gallery-dl-config'] }); },
   });
   const twitterCookieMutation = useMutation({
     mutationFn: () => api.providers.uploadTwitterCookies(twitterCookieFile),
@@ -234,13 +256,43 @@ function Settings() {
       <section className="bg-[#0c1219] border border-[#202a34] rounded p-4">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <h2 className="font-semibold text-slate-100">Pixiv, Twitter / X, ArtStation, and Pawchive</h2>
+            <h2 className="font-semibold text-slate-100">DeviantArt, Pixiv, Twitter / X, ArtStation, and Pawchive</h2>
             <a href="https://github.com/RicemanT/Illustration-Scrapping-Studio/blob/main/docs/PROVIDER_SETUP.md" target="_blank" rel="noopener noreferrer" className="text-xs text-blue-300 underline">Step-by-step provider setup guide</a>
             <p className="mt-1 text-xs text-slate-400">Powered by gallery-dl {galleryConfig?.version || ''}. Originals and all assets in multi-image posts are imported; provider thumbnails are never substituted for failed video or archive media.</p>
           </div>
           <span className={`text-xs ${galleryConfig?.installed ? 'text-emerald-400' : 'text-red-400'}`}>{galleryConfig?.installed ? 'Runtime ready' : 'gallery-dl missing'}</span>
         </div>
 
+        <div className="mt-4 border-t border-[#202a34] pt-4 space-y-2">
+          <h3 className="text-sm font-medium">DeviantArt OAuth (optional)</h3>
+          <div className="space-y-2 rounded border border-[#202a34] p-3">
+            <h4 className="text-sm">DeviantArt browser cookies</h4>
+            <p className="text-xs text-slate-400">Sign in to DeviantArt, enable Mature browsing if appropriate for your account, and export deviantart.com cookies in Netscape cookies.txt format. Upload here for signed-in artwork-page access on this computer or Jupyter. OAuth remains separate; cookies do not increase the original-download quota.</p>
+            <p className="text-xs text-slate-400">{galleryConfig?.deviantart?.cookie_file_configured ? 'Cookie file saved' : 'No cookie file saved'}</p>
+            <input aria-label="DeviantArt cookies file" type="file" accept=".txt" onChange={e => {setDeviantCookieFile(e.target.files?.[0] || null); deviantCookieMutation.reset();}} className="text-xs" />
+            <button type="button" onClick={() => deviantCookieMutation.mutate()} disabled={!deviantCookieFile || deviantCookieMutation.isPending || removeDeviantCookieMutation.isPending} className="rounded bg-[#344a73] px-3 py-2 text-xs disabled:opacity-50">{deviantCookieMutation.isPending ? 'Uploading...' : 'Upload DeviantArt cookies'}</button>
+            {galleryConfig?.deviantart?.cookie_file_configured && <button type="button" onClick={() => removeDeviantCookieMutation.mutate()} disabled={deviantCookieMutation.isPending || removeDeviantCookieMutation.isPending} className="rounded border border-red-800 px-3 py-2 text-xs text-red-300">Remove DeviantArt cookies</button>}
+            {deviantCookieMutation.isSuccess && <p className="text-xs text-emerald-400">Validated and saved privately. Start a new sync to use these cookies. Site access has not been tested.</p>}
+            {(deviantCookieMutation.isError || removeDeviantCookieMutation.isError) && <p role="alert" className="text-xs text-red-400">{(deviantCookieMutation.error || removeDeviantCookieMutation.error)?.response?.data?.detail || (deviantCookieMutation.error || removeDeviantCookieMutation.error)?.message}</p>}
+          </div>
+
+          <label className="block text-sm">Artwork download mode <select aria-label="DeviantArt download mode" className="ml-2 rounded border border-[#202a34] bg-[#090d12] p-2" value={galleryConfig?.deviantart?.media_mode || 'original'} disabled={!galleryConfig || deviantMediaMutation.isPending} onChange={e => deviantMediaMutation.mutate(e.target.value)}>
+            <option value="original">Request originals; stop on quota</option>
+            <option value="prefer_original">Request originals; allow published fallback on quota</option>
+            <option value="published">Artwork page / published images</option>
+            <option value="published_preview">Artwork page; allow thumbnail fallback</option>
+          </select></label>
+          <p className="text-xs text-slate-400">Artwork-page images may be smaller than originals. Thumbnail fallback is optional, applies only to DeviantArt still images, and is recorded in image metadata. Cropped or blurred page previews are excluded. Applies to new jobs; existing images are unchanged. Changes save immediately without changing OAuth credentials.</p>
+          {deviantMediaMutation.isError && <p role="alert" className="text-xs text-red-400">{deviantMediaMutation.error.response?.data?.detail || deviantMediaMutation.error.message}</p>}
+
+          <p className="text-xs text-slate-400">Public galleries can work without a token. Account-restricted works require authorized access. Use an artist username or profile/gallery/artwork URL. Follow the provider setup guide above for OAuth on Windows or Jupyter.</p>
+          <p className="text-xs">{galleryConfig?.deviantart?.configured ? 'OAuth token saved' : 'Using public access'}{galleryConfig?.deviantart?.custom_client_configured ? ' / custom API client saved' : ''}</p>
+          {Object.keys(deviantCredentials).map(key => <input key={key} type="password" aria-label={`DeviantArt ${key}`} placeholder={key.replaceAll('_', ' ')} value={deviantCredentials[key]} onChange={e => setDeviantCredentials(old => ({ ...old, [key]: e.target.value }))} className="block w-full rounded border border-[#202a34] bg-[#090d12] px-3 py-2 text-sm" />)}
+          <p className="text-xs text-slate-400">Saving replaces these settings. Leave all fields empty to clear saved credentials. Custom client ID and secret must be entered together with a token issued for that client.</p>
+          <button className="rounded bg-[#344a73] px-3 py-2 text-xs" disabled={deviantMutation.isPending} onClick={() => deviantMutation.mutate()}>Save DeviantArt settings</button>
+          {deviantMutation.isSuccess && <p className="text-xs text-emerald-400">Settings saved. Credentials are verified when scraping.</p>}
+          {deviantMutation.isError && <p role="alert" className="text-xs text-red-400">{deviantMutation.error.response?.data?.detail || deviantMutation.error.message}</p>}
+        </div>
         <div className="mt-4 border-t border-[#202a34] pt-4">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-medium text-slate-200">Pixiv OAuth</h3>
