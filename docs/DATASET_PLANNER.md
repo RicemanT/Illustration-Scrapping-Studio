@@ -34,9 +34,14 @@ Character targets are the characters the planner tries to give enough images. Ei
 
 ### Priority series
 
-To favor the characters of particular series, for example games you want the model to know well, enter their series (copyright) tags under **Priority series** and choose **Add as priority**. Both sites name series characters `<character>_(<series>)`, such as `hina_(blue_archive)`, so the planner adds every such character tag with at least the chosen number of posts (default 30) on Danbooru and e621.
+To favor the characters of particular series, for example games you want the model to know well, enter their series (copyright) tags under **Priority series**, separately for Danbooru/Gelbooru and e621, and choose **Add as priority**. Series names differ between the sites, for example `sonic_(series)` on Danbooru and `sonic_the_hedgehog_(series)` on e621. Each tag is checked first: renamed tags follow their alias, and tags that are not series tags on that site are reported and skipped.
 
-Priority characters are topped up before other characters, and their character need is multiplied by the **priority character** weight (default 1.5). Each artist's image count does not change, so artist balance is preserved; what shifts is which images artists who draw these series contribute. Large series add many targets: Azur Lane alone has over 1,100 character tags with at least 30 Danbooru posts. Refreshing the most-posted list keeps priority characters. **Clear priority** unmarks them and removes the ones that were only added as priority. Characters whose tag lacks the series qualifier need a CSV row.
+- **Danbooru:** characters whose posts mostly belong to the series (related tags with an overlap of at least 0.5; the site returns at most 500), plus every tag named `<character>_(<series>)`, and `<character>_(<base>)` for `<base>_(series)` tags such as `fate_(series)`.
+- **e621:** characters whose tags imply the series, following sub-series (`twilight_sparkle_(mlp)` → `friendship_is_magic` → `my_little_pony`). Few anime characters on e621 imply their series, so anime series add little there.
+
+Only characters with at least the chosen number of posts are added (default 30). Large lists add many targets, so raise the minimum to keep priority meaningful: thirty popular series added about 7,500 Danbooru characters at 30 posts but about 3,000 at 300. The lookup runs in the background (large e621 series such as `disney` take a few minutes) and shows its progress.
+
+Priority characters are topped up before other characters, and their character need is multiplied by the **priority character** weight (default 1.5). Each artist's image count does not change, so artist balance is preserved; what shifts is which images artists who draw these series contribute. Refreshing the most-posted list keeps priority characters. **Clear priority** unmarks them and removes the ones that were only added as priority.
 
 ## 2. Harvest metadata
 
