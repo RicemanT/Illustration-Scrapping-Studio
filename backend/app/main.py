@@ -87,6 +87,8 @@ async def startup_event():
         recover_moves(LIBRARY_PATH)
         from app.services.dataset_jobs import recover
         recover()
+        from app.services import planner_store
+        planner_store.recover()
         image_service = ImageService(LIBRARY_PATH)
         migrated = image_service.migrate_to_collection_folders()
         recovered = image_service.reconcile_filesystem()
@@ -111,6 +113,10 @@ async def shutdown_event():
         await sync.stop_background_services()
         from app.services.dataset_jobs import shutdown
         await shutdown()
+        from app.services import planner_harvest
+        await planner_harvest.shutdown()
+        from app.routes.planner import close_thumbnail_client
+        await close_thumbnail_client()
         from app.services.diagnostics import emit
         emit("app.stopped", "Backend workers stopped")
     except Exception as exc:
@@ -139,6 +145,8 @@ from app.routes import collections, images, tags, sync, providers, search, impor
 from app.routes import dataset
 from app.routes import groups
 app.include_router(groups.router, prefix="/api/groups", tags=["groups"])
+from app.routes import planner
+app.include_router(planner.router, prefix="/api/planner", tags=["planner"])
 app.include_router(dataset.router, prefix="/api/dataset", tags=["dataset"])
 
 app.include_router(collections.router, prefix="/api/folders", tags=["folders"])

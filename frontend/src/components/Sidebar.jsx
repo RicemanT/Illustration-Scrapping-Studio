@@ -46,6 +46,7 @@ function Sidebar() {
             + New Collection
           </button>
           <Link to="/groups" className="block mt-3 text-xs text-blue-300">Groups / bulk lists</Link>
+          <Link to="/planner" className="block mt-1 text-xs text-blue-300">Dataset planner</Link>
         </div>
 
         {/* Search */}

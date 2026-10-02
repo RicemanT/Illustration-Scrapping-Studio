@@ -6,6 +6,7 @@ import CollectionView from './routes/CollectionView';
 import Settings from './routes/Settings';
 import Groups from './routes/Groups';
 import Logs from './routes/Logs';
+import Planner from './routes/Planner';
 
 function App() {
   return (
@@ -18,6 +19,7 @@ function App() {
         <Route path="settings" element={<Settings />} />
         <Route path="groups" element={<Groups />} />
         <Route path="groups/:groupId" element={<Groups />} />
+        <Route path="planner" element={<Planner />} />
       </Route>
     </Routes>
   );
