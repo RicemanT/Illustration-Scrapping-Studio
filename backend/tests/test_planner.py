@@ -346,5 +346,62 @@ class TagLookupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen, [1, 2])
 
 
+    async def test_danbooru_series_combines_related_overlap_and_qualified_names(self):
+        def tag(name, count, category=4):
+            return {'name': name, 'post_count': count, 'category': category, 'is_deprecated': False}
+
+        async def fake_get(self, url, params):
+            if url.endswith('related_tag.json'):
+                return [{'tag': tag('hakurei_reimu', 100), 'overlap_coefficient': 1.0},
+                        {'tag': tag('hatsune_miku', 900), 'overlap_coefficient': 0.01},
+                        {'tag': tag('touhou_project_group', 50, 3), 'overlap_coefficient': 1.0}]
+            return [tag('rare_girl_(touhou)', 4)] if params['page'] == 1 else []
+
+        with unittest.mock.patch.object(planner_tags._Paced, 'get', fake_get):
+            rows = await planner_tags.series_characters('danbooru', 'touhou')
+        self.assertEqual(rows, [{'tag': 'hakurei_reimu', 'post_count': 100}, {'tag': 'rare_girl_(touhou)', 'post_count': 4}])
+
+    async def test_e621_series_follows_sub_series_implications(self):
+        implications = {'my_little_pony': ['friendship_is_magic', 'bat_pony'], 'friendship_is_magic': ['twilight_sparkle_(mlp)', 'cutie_mark']}
+        categories = {'friendship_is_magic': 3, 'bat_pony': 5, 'twilight_sparkle_(mlp)': 4, 'cutie_mark': 0}
+
+        async def fake_get(self, url, params):
+            if url.endswith('tag_implications.json'):
+                return [{'antecedent_name': name} for name in implications.get(params['search[consequent_name]'], [])]
+            return [{'name': name, 'category': categories[name], 'post_count': 10} for name in params['search[name]'].split(',')]
+
+        with unittest.mock.patch.object(planner_tags._Paced, 'get', fake_get):
+            rows = await planner_tags.series_characters('e621', 'my_little_pony')
+        self.assertEqual(rows, [{'tag': 'twilight_sparkle_(mlp)', 'post_count': 10}])
+
+
+class SeriesJobTests(unittest.IsolatedAsyncioTestCase):
+    setUp = PlannerStoreTests.setUp
+    tearDown = PlannerStoreTests.tearDown
+
+    async def test_series_job_resolves_aliases_skips_non_series_and_marks_priority(self):
+        from app.routes import planner as routes
+
+        async def fake_check(family, tags):
+            table = {'umamusume': {'status': 'alias', 'replacement': 'equine_humanoid'},
+                     'equine_humanoid': {'status': 'ok', 'category': 'species'},
+                     'old_series': {'status': 'alias', 'replacement': 'my_little_pony'},
+                     'my_little_pony': {'status': 'ok', 'category': 'copyright'}}
+            return [{'tag': tag, **table[tag]} for tag in tags]
+
+        async def fake_series(family, series):
+            return [{'tag': 'twilight_sparkle_(mlp)', 'post_count': 500}, {'tag': 'tiny_pony_(mlp)', 'post_count': 3}]
+
+        routes._series_job.clear()
+        routes._series_job.update(status='running', total=2, done=0, current=None, results={}, error=None)
+        with unittest.mock.patch.object(planner_tags, 'check_tags', fake_check),                 unittest.mock.patch.object(planner_tags, 'series_characters', fake_series):
+            await routes._run_series(routes.SeriesRequest(e621=['umamusume', 'old_series'], min_posts=30))
+        job = routes._series_job
+        self.assertEqual(job['status'], 'completed', job.get('error'))
+        result = job['results']['e621']
+        self.assertEqual(result['series'], {'my_little_pony': 1})
+        self.assertIn('umamusume', result['skipped'])
+        self.assertEqual(store.status()['priority_characters'], {'e621': 1})
+
 if __name__ == '__main__':
     unittest.main()

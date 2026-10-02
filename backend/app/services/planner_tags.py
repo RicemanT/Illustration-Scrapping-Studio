@@ -3,8 +3,9 @@
 Tag vocabularies change: tags are renamed (aliased), deprecated or removed.
 `check_tags` reports the current state of a tag list on Danbooru (also used by
 Gelbooru) or e621. `top_characters` builds character targets from the sites'
-own post counts, and `series_characters` lists every character of a series,
-so users do not need an external list.
+own post counts, and `series_characters` lists the characters of a series
+(Danbooru related tags and name qualifiers; e621 tag implications), so users
+do not need an external list.
 """
 from __future__ import annotations
 
@@ -107,27 +108,85 @@ async def top_characters(family: str, count: int) -> list[dict]:
     return rows[:count]
 
 
-async def series_characters(family: str, copyright_tag: str) -> list[dict]:
-    """Every character tag named `<character>_(<series>)`, the convention both sites use.
+MIN_OVERLAP = 0.5  # share of a character's Danbooru posts that are in the series
+IMPLICATION_DEPTH = 4
 
-    Characters whose tag lacks the series qualifier are not found this way and
-    can be added through a character CSV.
+
+async def _danbooru_series(paced: _Paced, series: str) -> dict[str, int]:
+    """Related characters (by overlap) plus every `<name>_(<series>)` tag.
+
+    For `<base>_(series)` tags, `<name>_(<base>)` is searched too.
+
+    Danbooru character tags rarely imply their series, and many series do not
+    use a qualifier (touhou, hololive), so both sources are combined. The
+    related-tag sample returns at most 500 tags.
     """
+    base = SITE_URLS['danbooru']
+    found = {}
+    related = await paced.get(f'{base}/related_tag.json', {
+        'search[query]': series, 'search[category]': 'character', 'search[order]': 'Overlap', 'limit': 1000})
+    for item in related:
+        tag = item.get('tag') or {}
+        if tag.get('category') == 4 and not tag.get('is_deprecated') and item.get('overlap_coefficient', 0) >= MIN_OVERLAP:
+            found[tag['name']] = tag['post_count']
+    # fate_(series) characters are qualified "(fate)", sonic_(series) "(sonic)".
+    qualifiers = [series] + ([series.removesuffix('_(series)')] if series.endswith('_(series)') else [])
+    for qualifier in qualifiers:
+        params = {'search[category]': 4, 'search[order]': 'count', 'search[name_matches]': f'*_({qualifier})', 'limit': PAGE_LIMIT['danbooru']}
+        page = 1
+        while True:
+            batch = await paced.get(f'{base}/tags.json', {**params, 'page': page})
+            found.update({t['name']: t['post_count'] for t in batch if not t.get('is_deprecated')})
+            if len(batch) < PAGE_LIMIT['danbooru']:
+                break
+            page += 1
+    return found
+
+
+async def _e621_series(paced: _Paced, series: str) -> dict[str, int]:
+    """Characters whose tags imply the series, following sub-series implications.
+
+    e621 implies characters to their series (twilight_sparkle_(mlp) ->
+    friendship_is_magic -> my_little_pony); species and general tags that also
+    imply the series are skipped by category.
+    """
+    base = SITE_URLS['e621']
+    found, seen, frontier = {}, {series}, [series]
+    for _ in range(IMPLICATION_DEPTH):
+        antecedents = []
+        for consequent in frontier:
+            page = 1
+            while True:
+                batch = await paced.get(f'{base}/tag_implications.json', {
+                    'search[consequent_name]': consequent, 'search[status]': 'active', 'limit': PAGE_LIMIT['e621'], 'page': page})
+                antecedents += [item['antecedent_name'] for item in batch if item['antecedent_name'] not in seen]
+                if len(batch) < PAGE_LIMIT['e621']:
+                    break
+                page += 1
+        antecedents = list(dict.fromkeys(antecedents))
+        seen.update(antecedents)
+        frontier = []
+        for offset in range(0, len(antecedents), 50):
+            for tag in await paced.get(f'{base}/tags.json', {'search[name]': ','.join(antecedents[offset:offset + 50]), 'limit': 100}):
+                if tag['category'] == 4:
+                    found[tag['name']] = tag['post_count']
+                elif tag['category'] == 3:
+                    frontier.append(tag['name'])
+        if not frontier:
+            break
+    return found
+
+
+async def series_characters(family: str, copyright_tag: str) -> list[dict]:
+    """Every character of a series (copyright) on Danbooru or e621, most-posted first."""
     series = copyright_tag.strip().replace(' ', '_')
     if not series or any(c in series for c in '*,'):
         raise ValueError('Give one series tag, for example blue_archive')
-    base, limit = SITE_URLS[family], PAGE_LIMIT[family]
-    params = {'search[category]': 4, 'search[order]': 'count', 'search[name_matches]': f'*_({series})', 'limit': limit}
-    rows, page = [], 1
     paced = _Paced()
     try:
-        while True:
-            batch = await paced.get(f'{base}/tags.json', {**params, 'page': page})
-            rows.extend({'tag': t['name'], 'post_count': t['post_count']} for t in batch
-                        if t['post_count'] and not t.get('is_deprecated'))
-            if len(batch) < limit:
-                break
-            page += 1
+        found = await (_danbooru_series if family == 'danbooru' else _e621_series)(paced, series)
     finally:
         await paced.close()
-    return rows
+    rows = [{'tag': tag, 'post_count': count} for tag, count in found.items()
+            if count and tag not in PLACEHOLDER_CHARACTERS]
+    return sorted(rows, key=lambda row: (-row['post_count'], row['tag']))

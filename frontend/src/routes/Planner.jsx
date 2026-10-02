@@ -39,10 +39,14 @@ export default function Planner() {
   const importArtists = useMutation({ mutationFn: api.planner.importArtists, onSuccess: ({ data }) => { setNotice(`Artists: ${data.added} added, ${data.updated} updated, ${data.disabled} disabled.`); refresh(); } });
   const importCharacters = useMutation({ mutationFn: api.planner.importCharacters, onSuccess: ({ data }) => { setNotice(`Character targets: ${number(data.imported)} imported.`); refresh(); } });
   const [topCounts, setTopCounts] = useState({ danbooru: 3000, e621: 3000 });
-  const [series, setSeries] = useState('');
+  const [series, setSeries] = useState({ danbooru: '', e621: '' });
   const [seriesMinPosts, setSeriesMinPosts] = useState(30);
-  const addSeries = useMutation({ mutationFn: () => api.planner.prioritySeries({ series: series.split(/[\n,]/).map((item) => item.trim().replace(/ /g, '_')).filter(Boolean), min_posts: Number(seriesMinPosts) || 1 }),
-    onSuccess: ({ data }) => { setNotice(`Priority characters: ${Object.entries(data.results).map(([site, result]) => `${site} ${Object.entries(result.series).map(([name, count]) => `${name} ${number(count)}`).join(', ')} (${number(result.added)} new targets)`).join('; ')}.`); refresh(); } });
+  const seriesJob = useQuery({ queryKey: ['planner-series'], queryFn: async () => (await api.planner.seriesStatus()).data,
+    refetchInterval: (query) => query.state.data?.status === 'running' ? 1500 : false });
+  const addSeries = useMutation({ mutationFn: () => api.planner.prioritySeries({ ...Object.fromEntries(['danbooru', 'e621'].map((family) => [family, series[family].split(/[\n,]/).map((item) => item.trim().replace(/ /g, '_')).filter(Boolean)])), min_posts: Number(seriesMinPosts) || 1 }),
+    onSuccess: () => seriesJob.refetch() });
+  const seriesRunning = seriesJob.data?.status === 'running';
+  useEffect(() => { if (seriesJob.data?.status === 'completed') refresh(); }, [seriesJob.data?.status]);
   const clearPriority = useMutation({ mutationFn: api.planner.clearPriority, onSuccess: ({ data }) => { setNotice(`Priority cleared; ${number(data.removed)} series-only targets removed.`); refresh(); } });
   const fetchCharacters = useMutation({ mutationFn: () => api.planner.fetchCharacters({ danbooru: Number(topCounts.danbooru) || 0, e621: Number(topCounts.e621) || 0 }),
     onSuccess: ({ data }) => { setNotice(`Character targets: ${Object.entries(data.imported).map(([site, count]) => `${number(count)} ${site}`).join(', ')} fetched.`); refresh(); } });
@@ -82,12 +86,19 @@ export default function Planner() {
           <label className="block text-xs text-slate-400">Characters CSV <input type="file" accept=".csv,text/csv" aria-label="Characters CSV" className="block mt-1" disabled={importCharacters.isPending} onChange={upload(importCharacters)} /></label>
           <p className="pt-2">Priority series</p>
           <div className="flex flex-wrap items-end gap-2">
-            <label className="text-xs text-slate-400">Series tags<input className={`${field} block w-64`} placeholder="blue_archive, arknights" value={series} onChange={(event) => setSeries(event.target.value)} /></label>
+            <label className="text-xs text-slate-400">Danbooru / Gelbooru series<textarea className={`${field} block w-64 h-16`} placeholder="blue_archive, touhou, fate_(series)" value={series.danbooru} onChange={(event) => setSeries((old) => ({ ...old, danbooru: event.target.value }))} /></label>
+            <label className="text-xs text-slate-400">e621 series<textarea className={`${field} block w-64 h-16`} placeholder="my_little_pony, helluva_boss" value={series.e621} onChange={(event) => setSeries((old) => ({ ...old, e621: event.target.value }))} /></label>
             <label className="text-xs text-slate-400">Posts at least<input type="number" min={1} className={`${field} block w-24`} value={seriesMinPosts} onChange={(event) => setSeriesMinPosts(event.target.value)} /></label>
-            <button className={quiet} disabled={addSeries.isPending || !series.trim()} onClick={() => { setNotice(''); addSeries.mutate(); }}>{addSeries.isPending ? 'Adding…' : 'Add as priority'}</button>
-            <button className={quiet} disabled={clearPriority.isPending} onClick={() => clearPriority.mutate()}>Clear priority</button>
+            <button className={quiet} disabled={addSeries.isPending || seriesRunning || !(series.danbooru.trim() || series.e621.trim())} onClick={() => { setNotice(''); addSeries.mutate(); }}>{seriesRunning ? 'Looking up…' : 'Add as priority'}</button>
+            <button className={quiet} disabled={clearPriority.isPending || seriesRunning} onClick={() => clearPriority.mutate()}>Clear priority</button>
           </div>
-          <p className="text-xs text-slate-400">Adds every character tagged <code>name_(series)</code> on Danbooru and e621 as a priority target: they are topped up first and their character need counts more (see the priority weight). Each artist's image count does not change. Characters whose tag has no series qualifier need a CSV row.</p>
+          {seriesJob.data?.status === 'running' && <p className="text-xs text-slate-300">Looking up series {seriesJob.data.done}/{seriesJob.data.total}{seriesJob.data.current ? ` · ${seriesJob.data.current}` : ''}</p>}
+          {seriesJob.data?.status === 'failed' && <p role="alert" className="text-xs text-red-400">Series lookup failed: {seriesJob.data.error}</p>}
+          {seriesJob.data?.status === 'completed' && Object.entries(seriesJob.data.results || {}).map(([site, result]) => <div key={site} className="text-xs text-green-300">
+            <p>{site}: {number(result.priority)} priority characters ({number(result.added)} new targets). {Object.entries(result.series).map(([name, count]) => `${name} ${number(count)}`).join(' · ')}</p>
+            {Object.keys(result.skipped || {}).length > 0 && <p className="text-amber-300">Skipped: {Object.entries(result.skipped).map(([name, why]) => `${name} (${why})`).join(', ')}</p>}
+          </div>)}
+          <p className="text-xs text-slate-400">Enter each site's series (copyright) tags; names differ between sites, for example <code>sonic_(series)</code> on Danbooru and <code>sonic_the_hedgehog_(series)</code> on e621. Danbooru characters are found from related tags and <code>name_(series)</code> tags, e621 characters from tag implications. They become priority targets: topped up first, with character need multiplied by the priority weight. Each artist's image count does not change.</p>
         </div>
       </div>
       <table className="text-sm"><tbody>

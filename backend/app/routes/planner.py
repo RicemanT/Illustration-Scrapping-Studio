@@ -63,8 +63,8 @@ class CharacterFetch(BaseModel):
 
 
 class SeriesRequest(BaseModel):
-    series: list[str] = Field(min_length=1, max_length=50, description='Series (copyright) tags, e.g. blue_archive')
-    families: list[Literal['danbooru', 'e621']] = Field(default_factory=lambda: ['danbooru', 'e621'])
+    danbooru: list[str] = Field(default_factory=list, max_length=100, description='Danbooru series (copyright) tags; also used for Gelbooru')
+    e621: list[str] = Field(default_factory=list, max_length=100, description='e621 series (copyright) tags')
     min_posts: int = Field(30, ge=1, le=100000, description='Skip characters with fewer posts on the site')
 
 
@@ -89,25 +89,68 @@ async def fetch_characters(request: CharacterFetch):
     return {'imported': results}
 
 
+_series_job: dict = {'status': 'idle'}
+_series_task: asyncio.Task | None = None
+
+
+async def _run_series(request: SeriesRequest) -> None:
+    """Look up each series' characters and mark them as priority targets.
+
+    Series tags are checked first: renamed tags follow their alias, and tags
+    that are not series (copyright) tags on that site are reported and skipped.
+    """
+    job = _series_job
+    try:
+        for family in ('danbooru', 'e621'):
+            names = list(dict.fromkeys(name.strip().replace(' ', '_') for name in getattr(request, family) if name.strip()))
+            if not names:
+                continue
+            job['current'] = f'checking {family} series tags'
+            checked = await planner_tags.check_tags(family, names)
+            aliases = {item['tag']: item['replacement'] for item in checked if item['status'] == 'alias'}
+            resolved = await planner_tags.check_tags(family, list(aliases.values())) if aliases else []
+            category = {item['tag']: item for item in checked + resolved}
+            rows, per_series, skipped = [], {}, {}
+            for name in names:
+                series = aliases.get(name, name)
+                info = category.get(series, {})
+                if info.get('status') != 'ok' or info.get('category') != 'copyright':
+                    skipped[name] = 'not a series tag on ' + family + (f' (now {series})' if series != name else '')
+                    continue
+                job['current'] = f'{family}: {series}'
+                found = await planner_tags.series_characters(family, series)
+                kept = [row for row in found if row['post_count'] >= request.min_posts]
+                per_series[series] = len(kept)
+                rows.extend(kept)
+                job['done'] += 1
+            unique = list({row['tag']: row for row in rows}.values())
+            job['results'][family] = {**store.add_priority_characters(family, unique, 'series:' + ','.join(per_series)),
+                                      'series': per_series, 'skipped': skipped}
+        job['status'] = 'completed'
+    except Exception as exc:
+        job.update(status='failed', error=str(exc))
+    finally:
+        job['current'] = None
+
+
 @router.post('/characters/series')
 async def priority_series(request: SeriesRequest):
-    """Add every character of the given series as priority targets."""
-    results = {}
-    for family in request.families:
-        rows, per_series = [], {}
-        for series in request.series:
-            try:
-                found = await planner_tags.series_characters(family, series)
-            except ValueError as exc:
-                raise HTTPException(422, str(exc)) from exc
-            except httpx.HTTPError as exc:
-                raise HTTPException(502, f'{family} tag lookup failed: {exc}') from exc
-            kept = [row for row in found if row['post_count'] >= request.min_posts]
-            per_series[series] = len(kept)
-            rows.extend(kept)
-        unique = list({row['tag']: row for row in rows}.values())
-        results[family] = {**store.add_priority_characters(family, unique, 'series:' + ','.join(request.series)), 'series': per_series}
-    return {'results': results}
+    """Start adding every character of the given series as priority targets."""
+    global _series_task
+    if _series_task and not _series_task.done():
+        raise HTTPException(409, 'A series lookup is already running')
+    total = len({n for n in request.danbooru if n.strip()}) + len({n for n in request.e621 if n.strip()})
+    if not total:
+        raise HTTPException(422, 'Enter at least one series tag')
+    _series_job.clear()
+    _series_job.update(status='running', total=total, done=0, current=None, results={}, error=None)
+    _series_task = asyncio.get_running_loop().create_task(_run_series(request))
+    return _series_job
+
+
+@router.get('/characters/series')
+def priority_series_status():
+    return _series_job
 
 
 @router.delete('/characters/priority')

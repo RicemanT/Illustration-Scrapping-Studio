@@ -176,6 +176,7 @@ export const api = {
     fetchCharacters: (counts) => client.post('/planner/characters/fetch', counts),
     checkTags: (family, tags) => client.post('/planner/tags/check', { family, tags }),
     prioritySeries: (data) => client.post('/planner/characters/series', data),
+    seriesStatus: () => client.get('/planner/characters/series'),
     clearPriority: () => client.delete('/planner/characters/priority'),
     deliver: (runId, groupPrefix) => client.post(`/planner/runs/${runId}/deliver`, { group_prefix: groupPrefix }),
     delivery: (id) => client.get(`/planner/deliveries/${id}`),
