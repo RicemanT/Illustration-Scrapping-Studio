@@ -38,6 +38,9 @@ export default function Planner() {
   const refresh = () => client.invalidateQueries({ queryKey: ['planner-status'] });
   const importArtists = useMutation({ mutationFn: api.planner.importArtists, onSuccess: ({ data }) => { setNotice(`Artists: ${data.added} added, ${data.updated} updated, ${data.disabled} disabled.`); refresh(); } });
   const importCharacters = useMutation({ mutationFn: api.planner.importCharacters, onSuccess: ({ data }) => { setNotice(`Character targets: ${number(data.imported)} imported.`); refresh(); } });
+  const [topCounts, setTopCounts] = useState({ danbooru: 3000, e621: 3000 });
+  const fetchCharacters = useMutation({ mutationFn: () => api.planner.fetchCharacters({ danbooru: Number(topCounts.danbooru) || 0, e621: Number(topCounts.e621) || 0 }),
+    onSuccess: ({ data }) => { setNotice(`Character targets: ${Object.entries(data.imported).map(([site, count]) => `${number(count)} ${site}`).join(', ')} fetched.`); refresh(); } });
   const runs = status.data?.runs || [];
   useEffect(() => { if (!runId && runs.length) setRunId(runs[0].id); }, [runs, runId]);
   const upload = (mutation) => async (event) => {
@@ -48,18 +51,31 @@ export default function Planner() {
   return <div className="space-y-5 max-w-6xl">
     <div>
       <h1 className="text-xl font-semibold">Dataset planner</h1>
-      <p className="text-sm text-slate-400">Choose each artist's training images from post metadata before downloading anything. Planner data lives in {status.data?.path || 'the library planner folder'} and never changes your collections.</p>
+      <p className="text-sm text-slate-400">Choose each artist's training images from post metadata (tags, favorites, sizes) before downloading anything. The planner keeps its own data and never changes your collections.</p>
+      {status.data?.path && <p className="text-xs text-slate-500" title="Inside the active library. Set ARTIST_PLANNER_PATH before starting the backend to store it elsewhere.">Planner data: {status.data.path}</p>}
     </div>
-    {[status.error, importArtists.error, importCharacters.error].filter(Boolean).map((error, index) => <p role="alert" className="text-red-400" key={index}>{errorText(error)}</p>)}
+    {[status.error, importArtists.error, importCharacters.error, fetchCharacters.error].filter(Boolean).map((error, index) => <p role="alert" className="text-red-400" key={index}>{errorText(error)}</p>)}
     {fileError && <p role="alert" className="text-red-400">{fileError}</p>}
     {notice && <p role="status" className="text-green-300">{notice}</p>}
 
     <section className="rounded border border-slate-800 p-4 space-y-3">
       <h2 className="font-semibold">1. Inputs</h2>
-      <p className="text-xs text-slate-400">artists.csv needs site, display_name and query_tag columns; artists missing from a new upload are disabled, not deleted. characters.csv needs site and tag, in priority order. Both are built by the artist list project.</p>
-      <div className="flex flex-wrap gap-6 text-sm">
-        <label className="space-y-1"><span className="block">Artists (artists.csv)</span><input type="file" accept=".csv,text/csv" aria-label="Artists CSV" disabled={importArtists.isPending} onChange={upload(importArtists)} /></label>
-        <label className="space-y-1"><span className="block">Character targets (characters.csv)</span><input type="file" accept=".csv,text/csv" aria-label="Characters CSV" disabled={importCharacters.isPending} onChange={upload(importCharacters)} /></label>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+        <div className="space-y-1">
+          <label className="block">Artists CSV <input type="file" accept=".csv,text/csv" aria-label="Artists CSV" className="block mt-1" disabled={importArtists.isPending} onChange={upload(importArtists)} /></label>
+          <p className="text-xs text-slate-400">Columns: <code>site</code> (danbooru, gelbooru or e621) and <code>query_tag</code> (the exact site tag); <code>display_name</code>, <code>tag_id</code> and <code>post_count</code> are optional. Uploading again updates the list; artists no longer listed are disabled, and their harvested data is kept.</p>
+          <pre className="text-xs text-slate-500">{'site,query_tag,display_name\ndanbooru,example_artist,example artist\ne621,another_artist,'}</pre>
+        </div>
+        <div className="space-y-2">
+          <p>Character targets</p>
+          <div className="flex flex-wrap items-end gap-2">
+            <label className="text-xs text-slate-400">Top Danbooru<input type="number" min={0} max={50000} className={`${field} block w-24`} value={topCounts.danbooru} onChange={(event) => setTopCounts((old) => ({ ...old, danbooru: event.target.value }))} /></label>
+            <label className="text-xs text-slate-400">Top e621<input type="number" min={0} max={50000} className={`${field} block w-24`} value={topCounts.e621} onChange={(event) => setTopCounts((old) => ({ ...old, e621: event.target.value }))} /></label>
+            <button className={quiet} disabled={fetchCharacters.isPending} onClick={() => { setNotice(''); fetchCharacters.mutate(); }}>{fetchCharacters.isPending ? 'Fetching…' : 'Fetch most-posted characters'}</button>
+          </div>
+          <p className="text-xs text-slate-400">Fetches each site's characters by post count (Danbooru's list also covers Gelbooru), skipping placeholders such as fan_character. A count of 0 leaves that site's targets unchanged. Or upload your own CSV with <code>site</code> and <code>tag</code> columns in priority order; it replaces all targets.</p>
+          <label className="block text-xs text-slate-400">Characters CSV <input type="file" accept=".csv,text/csv" aria-label="Characters CSV" className="block mt-1" disabled={importCharacters.isPending} onChange={upload(importCharacters)} /></label>
+        </div>
       </div>
       <table className="text-sm"><tbody>
         {SITES.map((site) => { const entry = status.data?.artists?.[site]; return <tr key={site}><td className="pr-4 text-slate-400">{site}</td>
@@ -130,15 +146,15 @@ function RunPanel({ status, runId, setRunId, onChange }) {
   const start = useMutation({ mutationFn: () => api.planner.run(config), onSuccess: ({ data }) => { setRunId(data.id); onChange(); } });
   const exportRun = useMutation({ mutationFn: () => api.planner.exportRun(runId) });
   const set = (key, value) => setConfig((old) => ({ ...old, [key]: value }));
-  const list = (key) => (config?.[key] || []).join('\n');
-  const setList = (key, text) => set(key, text.split(/[\n,]/).map((item) => item.trim().replace(/ /g, '_')).filter(Boolean));
   return <section className="rounded border border-slate-800 p-4 space-y-3">
     <h2 className="font-semibold">3. Plan</h2>
-    <p className="text-xs text-slate-400">Each artist picks images in turns by quality (within the artist), new content, character need, tag rarity and pose/angle bonus. Characters are counted across all artists, so a needed character can come from anyone who draws it. Re-run after changing settings or reviewing; earlier runs are kept.</p>
+    <p className="text-xs text-slate-400">Each artist picks images in turns by quality (within the artist), new content, character need, tag rarity and a bonus for boost tags. Characters are counted across all artists, so a needed character can come from anyone who draws it. Re-run after changing settings or reviewing; earlier runs are kept.</p>
     {config && <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
       {NUMBER_FIELDS.map(([key, label]) => <label key={key} className="flex flex-col gap-1"><span className="text-slate-400">{label}</span>
         <input type="number" step="any" className={field} value={config[key] ?? ''} onChange={(event) => set(key, event.target.value === '' ? null : Number(event.target.value))} /></label>)}
-      <label className="flex items-center gap-2"><input type="checkbox" checked={config.exclude_multi_artist} onChange={(event) => set('exclude_multi_artist', event.target.checked)} />Skip posts credited to several artists</label>
+      <label className="flex flex-col gap-1" title="Sites list credited artists alphabetically, not by role, so every credited artist is kept in the manifest. Larger group collaborations are skipped."><span className="text-slate-400">Credited artists per post at most</span>
+        <input type="number" min={1} className={field} value={config.max_credited_artists ?? 2} onChange={(event) => set('max_credited_artists', Number(event.target.value) || 1)} /></label>
+      <label className="flex items-center gap-2" title="Import extracts up to three frames from each video, animation or ugoira"><input type="checkbox" checked={config.include_motion ?? true} onChange={(event) => set('include_motion', event.target.checked)} />Include videos, animations and ugoira</label>
       <label className="flex items-center gap-2"><input type="checkbox" checked={config.character_topup} onChange={(event) => set('character_topup', event.target.checked)} />Top up characters below their target</label>
       <label className="flex flex-col gap-1"><span className="text-slate-400">Ratings (blank = all)</span>
         <input className={field} value={(config.allowed_ratings || []).join(', ')} placeholder="general, sensitive, safe, questionable, explicit"
@@ -147,9 +163,11 @@ function RunPanel({ status, runId, setRunId, onChange }) {
     {config && <details className="text-sm"><summary className="cursor-pointer text-slate-300">Score weights and tag lists</summary>
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mt-3">{WEIGHT_FIELDS.map((key) => <label key={key} className="flex flex-col gap-1"><span className="text-slate-400">{key.replace('weight_', '')}</span>
         <input type="number" step="0.1" min={0} className={field} value={config[key]} onChange={(event) => set(key, Number(event.target.value))} /></label>)}</div>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
-        <label className="flex flex-col gap-1"><span className="text-slate-400">Blocked tags (post is skipped)</span><textarea className={`${field} h-36`} value={list('blocked_tags')} onChange={(event) => setList('blocked_tags', event.target.value)} /></label>
-        <label className="flex flex-col gap-1"><span className="text-slate-400">Boost tags (rare angles and poses)</span><textarea className={`${field} h-36`} value={list('boost_tags')} onChange={(event) => setList('boost_tags', event.target.value)} /></label>
+      <p className="text-xs text-slate-400 mt-3">Danbooru and e621 use different tag names, so each has its own lists; Gelbooru uses the Danbooru lists. Blocked tags skip a post. Boost tags favor useful but underrepresented concepts such as unusual camera angles, action, interaction, environments and lighting. Tags get renamed over time: use Check to compare a list with the live site.</p>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-2">
+        {['danbooru', 'e621'].flatMap((family) => ['blocked', 'boost'].map((kind) => <TagListEditor key={`${kind}-${family}`} family={family}
+          label={`${kind === 'blocked' ? 'Blocked' : 'Boost'} tags · ${family === 'danbooru' ? 'Danbooru and Gelbooru' : 'e621'}`}
+          value={config[`${kind}_tags_${family}`] || []} onChange={(tags) => set(`${kind}_tags_${family}`, tags)} />))}
       </div>
       <button className={`${quiet} mt-2`} onClick={() => setConfig(defaults.data)}>Reset to defaults</button>
     </details>}
@@ -160,13 +178,38 @@ function RunPanel({ status, runId, setRunId, onChange }) {
         {runs.map((run) => <option key={run.id} value={run.id}>Run #{run.id} · {run.status} · {run.created_at.slice(0, 16).replace('T', ' ')}</option>)}
       </select>}
       {selected?.status === 'completed' && <button className={quiet} disabled={exportRun.isPending} onClick={() => exportRun.mutate()}>Export manifest</button>}
-      {selected?.status === 'completed' && <button className={quiet} onClick={() => setConfig(selected.config)}>Load this run’s settings</button>}
+      {selected?.status === 'completed' && <button className={quiet} onClick={() => setConfig({ ...defaults.data, ...selected.config })}>Load this run’s settings</button>}
     </div>
     {[start.error, exportRun.error].filter(Boolean).map((error, index) => <p role="alert" className="text-red-400" key={index}>{errorText(error)}</p>)}
     {exportRun.data && <p className="text-sm text-green-300">Exported to {exportRun.data.data.path}: {exportRun.data.data.files.join(', ')}</p>}
     {selected?.error && <p className="text-red-400 text-sm">{selected.error}</p>}
     {selected?.summary && <RunSummary summary={selected.summary} />}
   </section>;
+}
+
+const TAG_STATUS = { alias: 'renamed', deprecated: 'deprecated', empty: 'no posts', missing: 'does not exist' };
+
+function TagListEditor({ family, label, value, onChange }) {
+  const [text, setText] = useState(value.join('\n'));
+  useEffect(() => { setText(value.join('\n')); }, [value.join('\n')]);
+  const check = useMutation({ mutationFn: () => api.planner.checkTags(family, value) });
+  const problems = check.data?.data.items.filter((item) => item.status !== 'ok') || [];
+  const renamed = problems.filter((item) => item.status === 'alias');
+  const unusable = problems.filter((item) => item.status !== 'alias');
+  const commit = (tags) => { check.reset(); onChange(tags); };
+  return <div className="flex flex-col gap-1">
+    <span className="text-slate-400">{label} ({value.length})</span>
+    <textarea className={`${field} h-36`} value={text} onChange={(event) => setText(event.target.value)}
+      onBlur={() => commit(text.split(/[\n,]/).map((item) => item.trim().replace(/ /g, '_')).filter(Boolean))} />
+    <div className="flex flex-wrap items-center gap-2">
+      <button className={quiet} disabled={check.isPending || !value.length} onClick={() => check.mutate()}>{check.isPending ? 'Checking…' : `Check on ${family === 'danbooru' ? 'Danbooru' : 'e621'}`}</button>
+      {check.data && !problems.length && <span className="text-xs text-green-300">All {value.length} tags are current.</span>}
+      {renamed.length > 0 && <button className={quiet} onClick={() => commit(value.map((tag) => renamed.find((item) => item.tag === tag)?.replacement || tag))}>Use current names ({renamed.length})</button>}
+      {unusable.length > 0 && <button className={quiet} onClick={() => commit(value.filter((tag) => !unusable.some((item) => item.tag === tag)))}>Remove unusable ({unusable.length})</button>}
+    </div>
+    {check.error && <p role="alert" className="text-xs text-red-400">{errorText(check.error)}</p>}
+    {problems.length > 0 && <ul className="text-xs text-amber-300 max-h-28 overflow-auto">{problems.map((item) => <li key={item.tag}>{item.tag}: {TAG_STATUS[item.status]}{item.replacement ? ` → ${item.replacement}` : ''}</li>)}</ul>}
+  </div>;
 }
 
 function RunSummary({ summary }) {

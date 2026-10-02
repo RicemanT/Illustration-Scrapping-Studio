@@ -19,7 +19,7 @@ from pathlib import Path
 
 import app.db as db
 from app.services.planner_select import (
-    PlannerConfig, RarityIndex, candidate_from_row, plan_family, rejection, score_artist,
+    MOTION_EXTS, PlannerConfig, RarityIndex, candidate_from_row, plan_family, real_artists, rejection, score_artist,
 )
 
 SITES = ('danbooru', 'gelbooru', 'e621')
@@ -120,7 +120,7 @@ def now() -> str:
 
 def planner_dir() -> Path:
     override = os.getenv('ARTIST_PLANNER_PATH')
-    return Path(override).expanduser().resolve() if override else db.DB_PATH.parent / 'planner'
+    return Path(override).expanduser().resolve() if override else db.LIBRARY_PATH / 'planner'
 
 
 def connect() -> sqlite3.Connection:
@@ -221,6 +221,19 @@ def import_characters(text: str) -> dict:
                          [(family, tag, *values) for (family, tag), values in targets.items()])
         conn.commit()
         return {'imported': len(targets), 'by_family': dict(Counter(family for family, _ in targets)), 'errors': []}
+    finally:
+        conn.close()
+
+
+def replace_family_characters(family: str, rows: list[dict], source: str) -> dict:
+    """Replace one family's targets (rows in priority order), keeping the other family."""
+    conn = connect()
+    try:
+        conn.execute('DELETE FROM character_target WHERE family=?', (family,))
+        conn.executemany('INSERT OR IGNORE INTO character_target (family, tag, post_count, rank, source) VALUES (?,?,?,?,?)',
+                         [(family, row['tag'], row.get('post_count'), rank, source) for rank, row in enumerate(rows, start=1)])
+        conn.commit()
+        return {'family': family, 'imported': len(rows)}
     finally:
         conn.close()
 
@@ -335,8 +348,8 @@ def _family_posts(conn, sites: tuple[str, ...]):
 
 def _plan_family(conn, family: str, config: PlannerConfig, log):
     sites = tuple(site for site in SITES if FAMILY[site] == family)
-    blocked = {t.replace(' ', '_') for t in config.blocked_tags}
-    boost = {t.replace(' ', '_') for t in config.boost_tags}
+    blocked = config.tag_set('blocked', family)
+    boost = config.tag_set('boost', family)
     overrides = {(r['artist_id'], r['site'], r['remote_id']): r['action'] for r in conn.execute('SELECT * FROM override')}
     ranked = [r['tag'] for r in conn.execute('SELECT tag FROM character_target WHERE family=? ORDER BY rank', (family,))]
     rarity = RarityIndex(config.rarity_min_df)
@@ -492,14 +505,15 @@ def export_manifest(run_id: int) -> Path:
         temp = target / 'manifest.jsonl.tmp'
         with open(temp, 'w', encoding='utf-8', newline='\n') as handle:
             for r in conn.execute("""SELECT s.*, a.tag artist_tag, a.display_name, p.md5, p.file_url, p.width, p.height,
-                                            p.rating, p.characters, p.copyrights
+                                            p.rating, p.characters, p.copyrights, p.artists, p.ext
                                      FROM selection s JOIN artist a ON a.id=s.artist_id
                                      JOIN post p ON p.artist_id=s.artist_id AND p.site=s.site AND p.remote_id=s.remote_id
                                      WHERE s.run_id=? ORDER BY a.site, a.display_name, s.pick_order""", (run_id,)):
                 ids[r['site']].append(r['remote_id'])
                 handle.write(json.dumps({
                     'site': r['site'], 'remote_id': r['remote_id'], 'artist_tag': r['artist_tag'], 'artist': r['display_name'],
-                    'role': r['role'], 'repeats': r['repeats'], 'md5': r['md5'], 'file_url': r['file_url'],
+                    'credited_artists': real_artists(r), 'role': r['role'], 'repeats': r['repeats'],
+                    'md5': r['md5'], 'file_url': r['file_url'], 'ext': r['ext'], 'motion': (r['ext'] or '') in MOTION_EXTS,
                     'width': r['width'], 'height': r['height'], 'rating': r['rating'],
                     'characters': (r['characters'] or '').split(), 'copyrights': (r['copyrights'] or '').split(),
                     'reasons': json.loads(r['reasons']),

@@ -79,6 +79,7 @@ Environment variables are read by the process; `.env` files are not automaticall
 | --- | --- |
 | `ARTIST_LIBRARY_PATH`, `--library` | Backend-owned persistent library root |
 | `ARTIST_DB_PATH`, `--database` | Optional database location; keep on local server storage |
+| `ARTIST_PLANNER_PATH` | Optional Dataset Planner folder (database, thumbnail cache, exports); defaults to `<library>/planner` |
 | `ARTIST_PROVIDER_SETTINGS_PATH` | Override provider settings JSON location |
 | `ARTIST_LOG_PATH` | Override diagnostics directory |
 | `ARTIST_CORS_ORIGINS` | Explicit comma-separated UI origins for a separate frontend |

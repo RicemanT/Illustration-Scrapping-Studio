@@ -3,11 +3,13 @@ import json
 import os
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from app.models import RemotePost
 from app.services import planner_harvest as harvest
 from app.services import planner_store as store
+from app.services import planner_tags
 from app.services.planner_select import (
     PlannerConfig, RarityIndex, candidate_from_row, plan_family, rejection, score_artist,
 )
@@ -28,27 +30,36 @@ def plan(rows_by_artist, config=None, targets=()):
     rarity = RarityIndex(config.rarity_min_df)
     pools, usable = {}, {}
     for artist_id, rows in rows_by_artist.items():
-        candidates = [candidate_from_row(r, locked=r.get('locked', False)) for r in rows if rejection(r, config, set(config.blocked_tags)) is None or r.get('locked')]
+        candidates = [candidate_from_row(r, locked=r.get('locked', False)) for r in rows if rejection(r, config, config.tag_set('blocked', 'danbooru')) is None or r.get('locked')]
         for c in candidates:
             rarity.add(c.general)
         usable[artist_id] = len({c.family for c in candidates})
         pools[artist_id] = candidates
-    pools = {a: score_artist(c, rarity, set(config.boost_tags), set(targets), config) for a, c in pools.items()}
+    pools = {a: score_artist(c, rarity, config.tag_set('boost', 'danbooru'), set(targets), config) for a, c in pools.items()}
     return plan_family(pools, usable, config, list(targets))
 
 
 class SelectionTests(unittest.TestCase):
     def test_rejections_explain_unusable_posts(self):
         config = PlannerConfig()
-        blocked = set(config.blocked_tags)
-        self.assertEqual(rejection(post(1, ext='webm'), config, blocked), 'animated')
+        blocked = config.tag_set('blocked', 'danbooru')
+        # Motion posts are kept by default; import extracts their frames.
+        self.assertIsNone(rejection(post(1, ext='webm'), config, blocked))
+        self.assertIsNone(rejection(post(1, ext='zip'), config, blocked))
+        self.assertEqual(rejection(post(1, ext='webm'), PlannerConfig(include_motion=False), blocked), 'motion')
+        self.assertEqual(rejection(post(1, ext='swf'), config, blocked), 'unsupported_format')
         self.assertEqual(rejection(post(1, width=600), config, blocked), 'low_resolution')
         self.assertEqual(rejection(post(1, width=800, height=4000), config, blocked), 'aspect_ratio')
         self.assertEqual(rejection(post(1, general='comic 1girl'), config, blocked), 'blocked_tag')
-        self.assertEqual(rejection(post(1, artists='artist_a artist_b'), config, blocked), 'multiple_artists')
+        self.assertIsNone(rejection(post(1, artists='artist_a artist_b'), config, blocked))
+        self.assertEqual(rejection(post(1, artists='artist_a artist_b artist_c'), config, blocked), 'too_many_artists')
+        self.assertEqual(rejection(post(1, artists='artist_a artist_b'), PlannerConfig(max_credited_artists=1), blocked), 'too_many_artists')
         self.assertEqual(rejection(post(1, file_url=None), config, blocked), 'no_file')
         # e621 lists warnings in the artist category; they are not collaborators.
-        self.assertIsNone(rejection(post(1, artists='artist_a conditional_dnp'), config, blocked))
+        self.assertIsNone(rejection(post(1, artists='artist_a artist_b conditional_dnp'), config, blocked))
+        # Each tag family uses its own vocabulary.
+        self.assertIsNone(rejection(post(1, general='low_res'), config, blocked))
+        self.assertEqual(rejection(post(1, general='low_res'), config, config.tag_set('blocked', 'e621')), 'blocked_tag')
         self.assertEqual(rejection(post(1, rating='explicit'), PlannerConfig(allowed_ratings=['general']), blocked), 'rating')
 
     def test_drops_small_artists_and_caps_large_ones(self):
@@ -164,6 +175,8 @@ class PlannerStoreTests(unittest.TestCase):
         self.assertEqual(len(lines), run['summary']['images'])
         self.assertEqual({line['site'] for line in lines}, {'danbooru', 'e621'})
         self.assertTrue((target / 'selected_e621_ids.txt').exists())
+        self.assertEqual(lines[0]['credited_artists'], ['artist_a'])
+        self.assertFalse(lines[0]['motion'])
         listed = store.list_artists(run_id=run_id, run_status='dropped')
         self.assertEqual([a['tag'] for a in listed['items']], ['artist_c'])
 
@@ -263,6 +276,47 @@ class HarvestTests(unittest.IsolatedAsyncioTestCase):
         artist = conn.execute('SELECT harvest_status, harvested_posts FROM artist').fetchone()
         conn.close()
         self.assertEqual(tuple(artist), ('done', 3))
+
+
+class TagLookupTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.old_interval = planner_tags.REQUEST_INTERVAL
+        planner_tags.REQUEST_INTERVAL = 0
+
+    async def asyncTearDown(self):
+        planner_tags.REQUEST_INTERVAL = self.old_interval
+
+    async def test_check_tags_reports_aliases_deprecations_and_missing(self):
+        responses = {
+            'tags.json': [{'name': 'from_below', 'category': 0, 'post_count': 10, 'is_deprecated': False},
+                          {'name': 'action', 'category': 0, 'post_count': 5, 'is_deprecated': True},
+                          {'name': 'thumbnail', 'category': 5, 'post_count': 0, 'is_deprecated': False}],
+            'tag_aliases.json': [{'antecedent_name': 'incoming_attack', 'consequent_name': 'attacking_viewer'}],
+        }
+
+        async def fake_get(self, url, params):
+            return responses[url.rsplit('/', 1)[1]]
+
+        with unittest.mock.patch.object(planner_tags._Paced, 'get', fake_get):
+            items = await planner_tags.check_tags('danbooru', ['from below', 'action', 'thumbnail', 'incoming_attack', 'made_up'])
+        status = {item['tag']: item['status'] for item in items}
+        self.assertEqual(status, {'from_below': 'ok', 'action': 'deprecated', 'thumbnail': 'empty',
+                                  'incoming_attack': 'alias', 'made_up': 'missing'})
+        self.assertEqual(items[3]['replacement'], 'attacking_viewer')
+
+    async def test_top_characters_pages_and_skips_placeholders(self):
+        pages = [[{'name': 'fan_character', 'post_count': 99}, {'name': 'judy_hopps', 'post_count': 50}],
+                 [{'name': 'nick_wilde', 'post_count': 40}, {'name': 'toriel', 'post_count': 30}], []]
+        seen = []
+
+        async def fake_get(self, url, params):
+            seen.append(params['page'])
+            return pages[params['page'] - 1]
+
+        with unittest.mock.patch.object(planner_tags._Paced, 'get', fake_get):
+            rows = await planner_tags.top_characters('e621', 3)
+        self.assertEqual([row['tag'] for row in rows], ['judy_hopps', 'nick_wilde', 'toriel'])
+        self.assertEqual(seen, [1, 2])
 
 
 if __name__ == '__main__':

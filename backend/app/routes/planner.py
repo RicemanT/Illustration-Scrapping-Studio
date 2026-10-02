@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.services import planner_harvest as harvest
 from app.services import planner_store as store
+from app.services import planner_tags
 from app.services.planner_select import PlannerConfig
 
 router = APIRouter()
@@ -52,6 +53,40 @@ def import_characters(upload: CsvUpload):
     if result['errors']:
         raise HTTPException(422, result)
     return result
+
+
+class CharacterFetch(BaseModel):
+    danbooru: int = Field(3000, ge=0, le=50000, description='Top Danbooru characters (also used for Gelbooru)')
+    e621: int = Field(3000, ge=0, le=50000)
+
+
+class TagCheck(BaseModel):
+    family: Literal['danbooru', 'e621']
+    tags: list[str] = Field(min_length=1, max_length=2000)
+
+
+@router.post('/characters/fetch')
+async def fetch_characters(request: CharacterFetch):
+    """Replace character targets with each site's most-posted characters."""
+    results = {}
+    for family in ('danbooru', 'e621'):
+        count = getattr(request, family)
+        if not count:
+            continue
+        try:
+            rows = await planner_tags.top_characters(family, count)
+        except httpx.HTTPError as exc:
+            raise HTTPException(502, f'{family} tag lookup failed: {exc}') from exc
+        results[family] = store.replace_family_characters(family, rows, 'top_by_post_count')['imported']
+    return {'imported': results}
+
+
+@router.post('/tags/check')
+async def check_tags(request: TagCheck):
+    try:
+        return {'family': request.family, 'items': await planner_tags.check_tags(request.family, request.tags)}
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f'{request.family} tag lookup failed: {exc}') from exc
 
 
 @router.get('/artists')

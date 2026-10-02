@@ -26,29 +26,64 @@ from typing import Iterable, Optional
 
 from pydantic import BaseModel, Field
 
-ANIMATED_EXTS = {'gif', 'webm', 'mp4', 'zip', 'swf', 'mov', 'avi', 'apng'}
-# e621 files warnings and placeholders under the artist category.
+from app.services.media import ARCHIVE_FORMATS, PIL_IMAGE_FORMATS, VIDEO_FORMATS
+
+# Formats the import pipeline can turn into training images. Videos, animated
+# images and ugoira/archives are kept: import extracts up to three frames.
+SUPPORTED_EXTS = PIL_IMAGE_FORMATS | VIDEO_FORMATS | ARCHIVE_FORMATS | {'jpg', 'apng'}
+MOTION_EXTS = {'gif', 'apng'} | VIDEO_FORMATS | ARCHIVE_FORMATS
+# Artist-category tags that are warnings or placeholders, not people
+# (e621; verified against the live tag API 2026-10-02).
 NON_ARTIST_TAGS = {
     'conditional_dnp', 'unknown_artist', 'anonymous_artist', 'sound_warning', 'epilepsy_warning',
-    'third-party_edit', 'avoid_posting', 'unknown_artist_signature', 'artist_request',
-    'banned_artist', 'jumpscare_warning', 'creator_name_unknown',
+    'third-party_edit', 'avoid_posting', 'unknown_artist_signature', 'jumpscare_warning',
 }
-DEFAULT_BLOCKED_TAGS = [
-    # Danbooru / Gelbooru
-    'comic', '4koma', '2koma', '3koma', 'multiple_4koma', 'manga', 'text-only_page', 'ai-generated', 'ai-assisted',
-    'animated', 'video', 'photo_(medium)', 'lowres', 'bad_id', 'thumbnail', 'paid_reward_available',
-    # e621
-    'ai_generated', 'ai_assisted', 'compression_artifacts', 'low_res',
-]
-DEFAULT_BOOST_TAGS = [
-    # Danbooru / Gelbooru camera, framing and pose vocabulary
-    'from_below', 'from_above', 'from_behind', 'dutch_angle', 'foreshortening', 'fisheye', 'pov',
-    'upside-down', 'wide_shot', 'very_wide_shot', 'perspective', 'dynamic_pose', 'incoming_attack',
-    'outstretched_hand', 'reaching_towards_viewer', 'mid-air', 'falling', 'multiple_views',
-    # e621 equivalents
-    'low-angle_view', 'high-angle_view', 'worm\'s-eye_view', 'bird\'s-eye_view', 'rear_view',
-    'first_person_view', 'three-quarter_view', 'action_pose',
-]
+FAMILIES = ('danbooru', 'e621')
+
+# Default tag lists, verified on 2026-10-02 against the live Danbooru and e621
+# tag APIs: every tag exists, is a current (non-deprecated, non-alias) name,
+# and has the expected category. Tags are renamed over time, so the Planner
+# page can re-check any list against the live sites.
+DEFAULT_BLOCKED_TAGS = {
+    'danbooru': ['comic', '4koma', '2koma', '3koma', 'multiple_4koma', 'text-only_page', 'ai-generated',
+                 'ai-assisted', 'photo_(medium)', 'lowres', 'upscaled'],
+    # e621 no longer accepts AI-generated uploads, so it has no AI tag to block.
+    'e621': ['comic', 'low_res', 'compression_artifacts', 'upscale'],
+}
+# Useful but underrepresented concepts: camera and composition, action and
+# poses, interaction, environments, vehicles, weather, lighting and effects.
+# Each is on well under 2% of the site's posts.
+DEFAULT_BOOST_TAGS = {
+    'danbooru': [
+        'from_below', 'from_above', 'foreshortening', 'fisheye', 'upside-down', 'sideways', 'wide_shot',
+        'very_wide_shot', 'perspective', 'vanishing_point', 'isometric', 'close-up', 'pov_hands',
+        'partially_underwater_shot', 'reflection',
+        'dynamic_pose', 'fighting_stance', 'attacking_viewer', 'punching', 'kicking', 'high_kick', 'jumping',
+        'midair', 'falling', 'running', 'flying', 'dancing', 'stretching', 'twisted_torso', 'climbing',
+        'swimming', 'diving', 'riding', 'dual_wielding', 'aiming_at_viewer', 'motion_blur', 'speed_lines',
+        'afterimage', 'explosion', 'splashing', 'hand_focus',
+        'hug_from_behind', 'princess_carry', 'piggyback', 'lifting_person', 'fighting', 'battle', 'crowd',
+        '6+girls', '6+boys',
+        'scenery', 'landscape', 'cityscape', 'architecture', 'ruins', 'street', 'alley', 'mecha',
+        'vehicle_focus', 'car', 'motorcycle', 'train', 'aircraft', 'ship', 'underwater', 'rain', 'snow',
+        'fog', 'starry_sky', 'aurora', 'sunset', 'fireworks', 'lightning', 'magic_circle',
+        'light_rays', 'sunbeam', 'dappled_sunlight', 'backlighting', 'silhouette', 'lens_flare', 'bokeh',
+        'neon_lights', 'caustics',
+    ],
+    'e621': [
+        'low-angle_view', 'high-angle_view', "worm's-eye_view", "bird's-eye_view", 'foreshortening',
+        'dutch_angle', 'fisheye_lens', 'perspective', 'close-up', 'reflection',
+        'action_pose', 'fighting_pose', 'fight', 'battle', 'jumping', 'midair', 'flying', 'running', 'falling',
+        'dancing', 'stretching', 'climbing', 'swimming', 'speed_lines', 'motion_blur', 'impact_lines',
+        'explosion', 'splash', 'hand_focus',
+        'hugging_from_behind', 'carrying_another', 'piggyback', 'hand_holding', 'crowd',
+        'scenery', 'landscape', 'cityscape', 'architecture', 'ruins', 'street', 'car', 'motorcycle', 'train',
+        'aircraft', 'spacecraft', 'mecha', 'underwater', 'raining', 'snow', 'fog', 'starry_sky', 'sunset',
+        'lightning', 'amazing_background',
+        'light_beam', 'sunbeam', 'backlighting', 'rim_light', 'silhouette', 'lens_flare', 'bokeh',
+        'depth_of_field',
+    ],
+}
 
 
 class PlannerConfig(BaseModel):
@@ -60,15 +95,18 @@ class PlannerConfig(BaseModel):
     min_short_side: int = Field(768, ge=0, le=20000)
     max_aspect_ratio: float = Field(2.5, ge=1.0, le=20.0)
     allowed_ratings: Optional[list[str]] = Field(None, description='None keeps every rating')
-    blocked_tags: list[str] = Field(default_factory=lambda: list(DEFAULT_BLOCKED_TAGS))
-    exclude_multi_artist: bool = True
+    include_motion: bool = Field(True, description='Keep videos, animations and ugoira; import extracts frames')
+    max_credited_artists: int = Field(2, ge=1, le=100, description='Skip posts crediting more real artists (group collabs)')
+    blocked_tags_danbooru: list[str] = Field(default_factory=lambda: list(DEFAULT_BLOCKED_TAGS['danbooru']))
+    blocked_tags_e621: list[str] = Field(default_factory=lambda: list(DEFAULT_BLOCKED_TAGS['e621']))
+    boost_tags_danbooru: list[str] = Field(default_factory=lambda: list(DEFAULT_BOOST_TAGS['danbooru']))
+    boost_tags_e621: list[str] = Field(default_factory=lambda: list(DEFAULT_BOOST_TAGS['e621']))
     min_year: Optional[int] = Field(None, ge=1990, le=2100)
     character_floor: int = Field(30, ge=0, le=100000)
     character_share_cap: float = Field(0.3, gt=0, le=1.0, description='Largest share of one artist taken by one character')
     character_topup: bool = True
     topup_max_per_artist: int = Field(10, ge=0, le=10000)
     rarity_min_df: int = Field(20, ge=1, le=1000000, description='Ignore tags rarer than this when scoring rarity')
-    boost_tags: list[str] = Field(default_factory=lambda: list(DEFAULT_BOOST_TAGS))
     # Measured on live Danbooru/e621 pools: heavier character/boost weights
     # crowded out artists' best original work; top-ups still fill floors.
     weight_quality: float = Field(1.0, ge=0, le=100)
@@ -76,6 +114,9 @@ class PlannerConfig(BaseModel):
     weight_character: float = Field(0.3, ge=0, le=100)
     weight_rarity: float = Field(0.5, ge=0, le=100)
     weight_boost: float = Field(0.3, ge=0, le=100)
+
+    def tag_set(self, kind: str, family: str) -> set[str]:
+        return {tag.strip().replace(' ', '_') for tag in getattr(self, f'{kind}_tags_{family}') if tag.strip()}
 
 
 def split(value: Optional[str]) -> tuple[str, ...]:
@@ -92,8 +133,11 @@ def rejection(row, config: PlannerConfig, blocked: set[str], banned: bool = Fals
         return 'banned_by_user'
     if not row['file_url']:
         return 'no_file'
-    if (row['ext'] or '').lower() in ANIMATED_EXTS:
-        return 'animated'
+    ext = (row['ext'] or '').lower()
+    if ext not in SUPPORTED_EXTS:
+        return 'unsupported_format'
+    if ext in MOTION_EXTS and not config.include_motion:
+        return 'motion'
     width, height = row['width'] or 0, row['height'] or 0
     if min(width, height) < max(config.min_short_side, 1):
         return 'low_resolution'
@@ -103,8 +147,8 @@ def rejection(row, config: PlannerConfig, blocked: set[str], banned: bool = Fals
         return 'rating'
     if blocked and blocked.intersection(split(row['general']) + split(row['meta'])):
         return 'blocked_tag'
-    if config.exclude_multi_artist and len(real_artists(row)) > 1:
-        return 'multiple_artists'
+    if len(real_artists(row)) > config.max_credited_artists:
+        return 'too_many_artists'
     if config.min_year and (row['created_at'] or '0')[:4] < str(config.min_year):
         return 'too_old'
     return None
