@@ -322,7 +322,8 @@ def status() -> dict:
             entry['enabled' if r['enabled'] else 'disabled'] += r['n']
             if r['enabled']:
                 entry['harvest'][r['harvest_status']] = entry['harvest'].get(r['harvest_status'], 0) + r['n']
-        posts = {r['site']: r['n'] for r in conn.execute('SELECT site, count(*) n FROM post GROUP BY site')}
+        # Counting post rows scans the whole (multi-GB) table; harvests keep per-artist totals.
+        posts = {r['site']: r['n'] for r in conn.execute('SELECT site, sum(harvested_posts) n FROM artist GROUP BY site')}
         characters = {r['family']: r['n'] for r in conn.execute('SELECT family, count(*) n FROM character_target GROUP BY family')}
         priority_characters = {r['family']: r['n'] for r in conn.execute('SELECT family, count(*) n FROM character_target WHERE priority=1 GROUP BY family')}
         overrides = {r['action']: r['n'] for r in conn.execute('SELECT action, count(*) n FROM override GROUP BY action')}

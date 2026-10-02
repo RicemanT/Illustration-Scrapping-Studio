@@ -133,4 +133,4 @@ Paths are on the machine running the backend. A video post can contribute up to 
 
 ## Resources
 
-Harvested metadata takes roughly 0.5–1 KB per post on disk. Planning holds every artist's best candidates in memory at once (up to the **Candidates kept per artist** setting, default 300), roughly 1–2 KB per candidate. Plan very large lists on a machine with enough memory, or lower the candidate setting.
+Harvested metadata takes about 2 KB per post on disk (a real harvest measured 1 GB for 536,000 posts), so millions of posts need tens of gigabytes. Planning reads the whole post table twice per run, which takes minutes on a hard disk at that size. Planning holds every artist's best candidates in memory at once (up to the **Candidates kept per artist** setting, default 300), roughly 1–2 KB per candidate. Plan very large lists on a machine with enough memory, or lower the candidate setting.
