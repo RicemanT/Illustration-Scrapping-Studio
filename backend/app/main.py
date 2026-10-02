@@ -113,8 +113,9 @@ async def shutdown_event():
         await sync.stop_background_services()
         from app.services.dataset_jobs import shutdown
         await shutdown()
-        from app.services import planner_harvest
+        from app.services import planner_harvest, planner_delivery
         await planner_harvest.shutdown()
+        await planner_delivery.shutdown()
         from app.routes.planner import close_thumbnail_client
         await close_thumbnail_client()
         from app.services.diagnostics import emit

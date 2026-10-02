@@ -32,6 +32,12 @@ Character targets are the characters the planner tries to give enough images. Ei
 - **Fetch most-posted characters:** fetches each site's character tags ranked by post count, for example the top 3,000 on Danbooru and on e621. Danbooru's list also covers Gelbooru, which uses the same tag names. Placeholders such as e621's `fan_character` are skipped. A count of 0 leaves that site's current targets unchanged.
 - **Upload a CSV** with `site` and `tag` columns, in priority order. This replaces all targets.
 
+### Priority series
+
+To favor the characters of particular series, for example games you want the model to know well, enter their series (copyright) tags under **Priority series** and choose **Add as priority**. Both sites name series characters `<character>_(<series>)`, such as `hina_(blue_archive)`, so the planner adds every such character tag with at least the chosen number of posts (default 30) on Danbooru and e621.
+
+Priority characters are topped up before other characters, and their character need is multiplied by the **priority character** weight (default 1.5). Each artist's image count does not change, so artist balance is preserved; what shifts is which images artists who draw these series contribute. Large series add many targets: Azur Lane alone has over 1,100 character tags with at least 30 Danbooru posts. Refreshing the most-posted list keeps priority characters. **Clear priority** unmarks them and removes the ones that were only added as priority. Characters whose tag lacks the series qualifier need a CSV row.
+
 ## 2. Harvest metadata
 
 The harvest pages through each enabled artist's posts, newest first, up to the per-artist limit (default 2,000). No images are downloaded. Each site runs at the app's normal pace of one request per second, and the three sites run in parallel. A page holds up to 200 Danbooru posts, 320 e621 posts or 100 Gelbooru posts, so harvest time grows with the size of your list: about 1,000 artists typically take under an hour.
@@ -103,7 +109,27 @@ Locks and bans take effect on the next plan run. Thumbnails are fetched by the b
 | `selected_<site>_ids.txt` | Selected post IDs for each site |
 | `summary.json` | The run's settings and summary |
 
-Downloading the selected posts into collections is not part of the planner yet.
+## 6. Download
+
+**Download run** downloads a completed run's selected posts into collections:
+
+- Each site gets a group named `<prefix> <site>` (default prefix `Planner`), and each artist an artist collection whose source query is the exact site tag. Existing planner collections are reused. If a group with that name exists for a different site, choose another prefix.
+- Downloads go through the normal import pipeline: original-quality files, the collection's quality floor, duplicate checks, sidecars with the `Drawn by <artist>` trigger, and up to three frames from each video, animation or ugoira.
+- Planner collections are **protected**, so Sync All, scheduled syncs and group scrapes skip them. Without this, a scheduled sync would scrape each artist's entire gallery. You can still sync a single collection manually.
+- Fresh metadata is fetched 100 posts per request on Danbooru and e621 (one at a time on Gelbooru). Downloads then use the app's normal request pace and worker count, so tens of thousands of posts take days. Check free disk space first; Settings shows it.
+
+Progress per site counts posts as **done** (new images added), **skipped** (already in the collection), **filtered** (below the collection's quality floor), **missing** (deleted from the site since the harvest) and **error**. **Stop** keeps finished downloads; **Resume** continues the rest and retries errors, also after a backend restart. Downloading the same run again reuses its collections and skips posts already present. Do not move or delete planner collections while a download runs.
+
+### Training layout
+
+**Export training layout** writes `<planner data>/exports/run-<id>/training/`:
+
+| File | Contents |
+| --- | --- |
+| `dataset.toml` | One `[[directory]]` block per collection with its path and `num_repeats`, for a diffusion-pipe dataset config; add your resolution and bucket settings there |
+| `folders.json`, `folders.csv` | Site, artist, tag, collection, path, image count and repeats, for other trainers |
+
+Paths are on the machine running the backend. A video post can contribute up to three images, so image counts can exceed the planned post counts.
 
 ## Resources
 

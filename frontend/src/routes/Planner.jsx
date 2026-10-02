@@ -39,6 +39,11 @@ export default function Planner() {
   const importArtists = useMutation({ mutationFn: api.planner.importArtists, onSuccess: ({ data }) => { setNotice(`Artists: ${data.added} added, ${data.updated} updated, ${data.disabled} disabled.`); refresh(); } });
   const importCharacters = useMutation({ mutationFn: api.planner.importCharacters, onSuccess: ({ data }) => { setNotice(`Character targets: ${number(data.imported)} imported.`); refresh(); } });
   const [topCounts, setTopCounts] = useState({ danbooru: 3000, e621: 3000 });
+  const [series, setSeries] = useState('');
+  const [seriesMinPosts, setSeriesMinPosts] = useState(30);
+  const addSeries = useMutation({ mutationFn: () => api.planner.prioritySeries({ series: series.split(/[\n,]/).map((item) => item.trim().replace(/ /g, '_')).filter(Boolean), min_posts: Number(seriesMinPosts) || 1 }),
+    onSuccess: ({ data }) => { setNotice(`Priority characters: ${Object.entries(data.results).map(([site, result]) => `${site} ${Object.entries(result.series).map(([name, count]) => `${name} ${number(count)}`).join(', ')} (${number(result.added)} new targets)`).join('; ')}.`); refresh(); } });
+  const clearPriority = useMutation({ mutationFn: api.planner.clearPriority, onSuccess: ({ data }) => { setNotice(`Priority cleared; ${number(data.removed)} series-only targets removed.`); refresh(); } });
   const fetchCharacters = useMutation({ mutationFn: () => api.planner.fetchCharacters({ danbooru: Number(topCounts.danbooru) || 0, e621: Number(topCounts.e621) || 0 }),
     onSuccess: ({ data }) => { setNotice(`Character targets: ${Object.entries(data.imported).map(([site, count]) => `${number(count)} ${site}`).join(', ')} fetched.`); refresh(); } });
   const runs = status.data?.runs || [];
@@ -54,7 +59,7 @@ export default function Planner() {
       <p className="text-sm text-slate-400">Choose each artist's training images from post metadata (tags, favorites, sizes) before downloading anything. The planner keeps its own data and never changes your collections.</p>
       {status.data?.path && <p className="text-xs text-slate-500" title="Inside the active library. Set ARTIST_PLANNER_PATH before starting the backend to store it elsewhere.">Planner data: {status.data.path}</p>}
     </div>
-    {[status.error, importArtists.error, importCharacters.error, fetchCharacters.error].filter(Boolean).map((error, index) => <p role="alert" className="text-red-400" key={index}>{errorText(error)}</p>)}
+    {[status.error, importArtists.error, importCharacters.error, fetchCharacters.error, addSeries.error, clearPriority.error].filter(Boolean).map((error, index) => <p role="alert" className="text-red-400" key={index}>{errorText(error)}</p>)}
     {fileError && <p role="alert" className="text-red-400">{fileError}</p>}
     {notice && <p role="status" className="text-green-300">{notice}</p>}
 
@@ -75,6 +80,14 @@ export default function Planner() {
           </div>
           <p className="text-xs text-slate-400">Fetches each site's characters by post count (Danbooru's list also covers Gelbooru), skipping placeholders such as fan_character. A count of 0 leaves that site's targets unchanged. Or upload your own CSV with <code>site</code> and <code>tag</code> columns in priority order; it replaces all targets.</p>
           <label className="block text-xs text-slate-400">Characters CSV <input type="file" accept=".csv,text/csv" aria-label="Characters CSV" className="block mt-1" disabled={importCharacters.isPending} onChange={upload(importCharacters)} /></label>
+          <p className="pt-2">Priority series</p>
+          <div className="flex flex-wrap items-end gap-2">
+            <label className="text-xs text-slate-400">Series tags<input className={`${field} block w-64`} placeholder="blue_archive, arknights" value={series} onChange={(event) => setSeries(event.target.value)} /></label>
+            <label className="text-xs text-slate-400">Posts at least<input type="number" min={1} className={`${field} block w-24`} value={seriesMinPosts} onChange={(event) => setSeriesMinPosts(event.target.value)} /></label>
+            <button className={quiet} disabled={addSeries.isPending || !series.trim()} onClick={() => { setNotice(''); addSeries.mutate(); }}>{addSeries.isPending ? 'Adding…' : 'Add as priority'}</button>
+            <button className={quiet} disabled={clearPriority.isPending} onClick={() => clearPriority.mutate()}>Clear priority</button>
+          </div>
+          <p className="text-xs text-slate-400">Adds every character tagged <code>name_(series)</code> on Danbooru and e621 as a priority target: they are topped up first and their character need counts more (see the priority weight). Each artist's image count does not change. Characters whose tag has no series qualifier need a CSV row.</p>
         </div>
       </div>
       <table className="text-sm"><tbody>
@@ -82,13 +95,14 @@ export default function Planner() {
           <td className="pr-4">{number(entry?.enabled)} artists{entry?.disabled ? ` (${number(entry.disabled)} disabled)` : ''}</td>
           <td className="pr-4">{number(status.data?.posts?.[site])} posts harvested</td>
           <td className="text-slate-400">{Object.entries(entry?.harvest || {}).map(([key, value]) => `${number(value)} ${key}`).join(' · ')}</td></tr>; })}
-        <tr><td className="pr-4 text-slate-400">characters</td><td colSpan={3}>{number(status.data?.characters?.danbooru)} Danbooru/Gelbooru · {number(status.data?.characters?.e621)} e621 targets</td></tr>
+        <tr><td className="pr-4 text-slate-400">characters</td><td colSpan={3}>{number(status.data?.characters?.danbooru)} Danbooru/Gelbooru · {number(status.data?.characters?.e621)} e621 targets{(status.data?.priority_characters?.danbooru || status.data?.priority_characters?.e621) ? ` · priority: ${number(status.data?.priority_characters?.danbooru)} Danbooru/Gelbooru, ${number(status.data?.priority_characters?.e621)} e621` : ''}</td></tr>
       </tbody></table>
     </section>
 
     <HarvestPanel status={status.data} onChange={refresh} />
     <RunPanel status={status.data} runId={runId} setRunId={setRunId} onChange={refresh} />
     {runId && <ReviewPanel runId={runId} />}
+    <DeliveryPanel status={status.data} runId={runId} onChange={refresh} />
   </div>;
 }
 
@@ -133,7 +147,7 @@ const NUMBER_FIELDS = [
   ['topup_max_per_artist', 'Character top-ups per artist at most'], ['candidate_pool', 'Candidates kept per artist'],
   ['min_year', 'Posts from year (blank = any)'],
 ];
-const WEIGHT_FIELDS = ['weight_quality', 'weight_novelty', 'weight_character', 'weight_rarity', 'weight_boost'];
+const WEIGHT_FIELDS = ['weight_quality', 'weight_novelty', 'weight_character', 'weight_rarity', 'weight_boost', 'priority_character_boost'];
 
 function RunPanel({ status, runId, setRunId, onChange }) {
   const defaults = useQuery({ queryKey: ['planner-defaults'], queryFn: async () => (await api.planner.defaults()).data, staleTime: Infinity });
@@ -161,7 +175,7 @@ function RunPanel({ status, runId, setRunId, onChange }) {
           onChange={(event) => { const values = event.target.value.split(',').map((item) => item.trim()).filter(Boolean); set('allowed_ratings', values.length ? values : null); }} /></label>
     </div>}
     {config && <details className="text-sm"><summary className="cursor-pointer text-slate-300">Score weights and tag lists</summary>
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mt-3">{WEIGHT_FIELDS.map((key) => <label key={key} className="flex flex-col gap-1"><span className="text-slate-400">{key.replace('weight_', '')}</span>
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mt-3">{WEIGHT_FIELDS.map((key) => <label key={key} className="flex flex-col gap-1"><span className="text-slate-400">{key === 'priority_character_boost' ? 'priority character ×' : key.replace('weight_', '')}</span>
         <input type="number" step="0.1" min={0} className={field} value={config[key]} onChange={(event) => set(key, Number(event.target.value))} /></label>)}</div>
       <p className="text-xs text-slate-400 mt-3">Danbooru and e621 use different tag names, so each has its own lists; Gelbooru uses the Danbooru lists. Blocked tags skip a post. Boost tags favor useful but underrepresented concepts such as unusual camera angles, action, interaction, environments and lighting. Tags get renamed over time: use Check to compare a list with the live site.</p>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-2">
@@ -212,13 +226,57 @@ function TagListEditor({ family, label, value, onChange }) {
   </div>;
 }
 
+const DELIVERY_STATES = ['done', 'skipped', 'filtered', 'missing', 'error', 'pending'];
+
+function DeliveryPanel({ status, runId, onChange }) {
+  const [prefix, setPrefix] = useState('Planner');
+  const deliveryId = status?.delivery_id;
+  const job = useQuery({ queryKey: ['planner-delivery', deliveryId], enabled: Boolean(deliveryId), queryFn: async () => (await api.planner.delivery(deliveryId)).data,
+    refetchInterval: (query) => ACTIVE.includes(query.state.data?.status) ? 2000 : false });
+  const data = job.data;
+  const active = ACTIVE.includes(data?.status);
+  const run = status?.runs?.find((item) => item.id === runId);
+  const harvesting = ACTIVE.includes(status?.harvest_job?.status);
+  const after = () => { onChange(); job.refetch(); };
+  const start = useMutation({ mutationFn: () => api.planner.deliver(runId, prefix), onSuccess: after });
+  const resume = useMutation({ mutationFn: () => api.planner.resumeDelivery(deliveryId), onSuccess: after });
+  const cancel = useMutation({ mutationFn: api.planner.cancelDelivery, onSuccess: after });
+  const layout = useMutation({ mutationFn: () => api.planner.trainingLayout(deliveryId) });
+  const sites = Object.keys(data?.progress?.sites || {});
+  return <section className="rounded border border-slate-800 p-4 space-y-3">
+    <h2 className="font-semibold">5. Download selected images</h2>
+    <p className="text-xs text-slate-400">Downloads the chosen run into collections: one group per site named “&lt;prefix&gt; &lt;site&gt;” and one artist collection per artist, with the usual sidecars, artist trigger, duplicate checks and frame extraction. Planner collections are protected from Sync All, scheduled and group syncs. Metadata is refreshed in batches of 100 posts; downloads use the normal request pace and worker count, so large plans take days and need plenty of disk space. Stopping keeps finished downloads, and Resume continues the rest. Delivering a run again reuses its collections and skips posts already downloaded.</p>
+    <div className="flex flex-wrap items-end gap-2 text-sm">
+      <label className="text-xs text-slate-400">Group name prefix<input className={`${field} block w-40`} value={prefix} maxLength={80} onChange={(event) => setPrefix(event.target.value)} /></label>
+      <button className={button} disabled={!run || run.status !== 'completed' || active || harvesting || start.isPending || !prefix.trim()} onClick={() => start.mutate()}>Download run #{runId || '—'}</button>
+      {active && <button className={quiet} disabled={cancel.isPending || data.status === 'cancelling'} onClick={() => cancel.mutate()}>Stop</button>}
+      {data && !active && data.status !== 'completed' && <button className={quiet} disabled={resume.isPending || harvesting} onClick={() => resume.mutate()}>Resume download #{data.id}</button>}
+      {data && !active && <button className={quiet} disabled={layout.isPending} onClick={() => layout.mutate()}>Export training layout</button>}
+      {harvesting && <span className="text-xs text-slate-400">Wait for the harvest to finish first.</span>}
+    </div>
+    {[start.error, resume.error, cancel.error, layout.error, job.error].filter(Boolean).map((error, index) => <p role="alert" className="text-red-400" key={index}>{errorText(error)}</p>)}
+    {layout.data && <p className="text-sm text-green-300">Training layout written to {layout.data.data.path}: {layout.data.data.files.join(', ')}. dataset.toml has diffusion-pipe [[directory]] blocks with each folder's repeats.</p>}
+    {data && <div className="text-sm space-y-1">
+      <p>Download #{data.id} of run #{data.run_id}: {data.status}{data.error ? ` — ${data.error}` : ''}</p>
+      {sites.map((site) => { const total = data.progress.sites[site].total || 0; const left = data.counts?.[`${site}:pending`] || 0; const state = data.progress.sites[site];
+        return <div key={site}>
+          <p className="text-slate-300">{site}: {number(total - left)}/{number(total)} posts · {DELIVERY_STATES.filter((key) => key !== 'pending' && data.counts?.[`${site}:${key}`]).map((key) => `${number(data.counts[`${site}:${key}`])} ${key}`).join(' · ') || 'starting'}{state.current ? ` · now ${state.current}` : ''}</p>
+          {state.blocked && <p className="text-red-400 text-xs">{state.blocked}</p>}
+          <div className="h-1 rounded bg-[#0c1219] overflow-hidden"><div className="h-full bg-blue-500" style={{ width: `${total ? Math.round((total - left) * 100 / total) : 0}%` }} /></div>
+        </div>; })}
+      <p className="text-xs text-slate-400">done = new images added · skipped = already in the collection · filtered = below the collection's quality floor · missing = deleted from the site since the harvest.</p>
+      <details><summary className="text-xs text-slate-400 cursor-pointer">Log</summary><pre className="max-h-40 overflow-auto text-xs text-slate-400 whitespace-pre-wrap">{(data.progress?.log || []).join('\n')}</pre></details>
+    </div>}
+  </section>;
+}
+
 function RunSummary({ summary }) {
   return <div className="space-y-3 text-sm">
     <p>{number(summary.artists_kept)} artists · {number(summary.images)} images · {number(summary.samples_per_pass)} training samples per pass · planned in {summary.seconds}s</p>
     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
       {Object.entries(summary.families || {}).map(([family, data]) => <div key={family} className="rounded border border-slate-800 p-3 space-y-1">
         <p className="font-semibold">{family === 'danbooru' ? 'Danbooru + Gelbooru' : 'e621'}</p>
-        <p>{number(data.artists_kept)} artists kept{Object.entries(data.artists_dropped || {}).map(([reason, count]) => ` · ${number(count)} dropped (${reason.replace(/_/g, ' ')})`).join('')}</p>
+        <p>{number(data.artists_kept)} {data.artists_kept === 1 ? 'artist' : 'artists'} kept{Object.entries(data.artists_dropped || {}).map(([reason, count]) => ` · ${number(count)} dropped (${reason.replace(/_/g, ' ')})`).join('')}</p>
         <p>{number(data.images)} images ({Object.entries(data.roles || {}).map(([role, count]) => `${number(count)} ${role.replace('_', ' ')}`).join(', ')}) · {number(data.samples_per_pass)} samples</p>
         <p>Characters: {number(data.characters_at_floor)} at target · {number(data.characters_partial)} partial · {number(data.characters_missing)} absent of {number(data.character_targets)}</p>
         <p className="text-xs text-slate-400">Posts skipped: {Object.entries(data.rejected_posts || {}).sort((a, b) => b[1] - a[1]).map(([reason, count]) => `${reason.replace(/_/g, ' ')} ${number(count)}`).join(' · ') || 'none'}</p>

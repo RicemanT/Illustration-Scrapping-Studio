@@ -3,7 +3,8 @@
 Tag vocabularies change: tags are renamed (aliased), deprecated or removed.
 `check_tags` reports the current state of a tag list on Danbooru (also used by
 Gelbooru) or e621. `top_characters` builds character targets from the sites'
-own post counts, so users do not need an external list.
+own post counts, and `series_characters` lists every character of a series,
+so users do not need an external list.
 """
 from __future__ import annotations
 
@@ -104,3 +105,29 @@ async def top_characters(family: str, count: int) -> list[dict]:
     finally:
         await paced.close()
     return rows[:count]
+
+
+async def series_characters(family: str, copyright_tag: str) -> list[dict]:
+    """Every character tag named `<character>_(<series>)`, the convention both sites use.
+
+    Characters whose tag lacks the series qualifier are not found this way and
+    can be added through a character CSV.
+    """
+    series = copyright_tag.strip().replace(' ', '_')
+    if not series or any(c in series for c in '*,'):
+        raise ValueError('Give one series tag, for example blue_archive')
+    base, limit = SITE_URLS[family], PAGE_LIMIT[family]
+    params = {'search[category]': 4, 'search[order]': 'count', 'search[name_matches]': f'*_({series})', 'limit': limit}
+    rows, page = [], 1
+    paced = _Paced()
+    try:
+        while True:
+            batch = await paced.get(f'{base}/tags.json', {**params, 'page': page})
+            rows.extend({'tag': t['name'], 'post_count': t['post_count']} for t in batch
+                        if t['post_count'] and not t.get('is_deprecated'))
+            if len(batch) < limit:
+                break
+            page += 1
+    finally:
+        await paced.close()
+    return rows

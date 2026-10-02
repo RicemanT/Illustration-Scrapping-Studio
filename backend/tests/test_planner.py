@@ -101,6 +101,15 @@ class SelectionTests(unittest.TestCase):
         self.assertIn('character_topup', roles)
         self.assertEqual(result.unmet_characters, [])
 
+    def test_priority_characters_get_a_larger_character_need(self):
+        rows = [post(1, characters='normal_hero', fav_count=5), post(2, characters='gacha_hero', fav_count=5)] + [post(i, fav_count=1) for i in range(3, 10)]
+        config = PlannerConfig(min_images=1, max_images=1, character_floor=5, weight_character=1.0, weight_novelty=0, weight_rarity=0, weight_boost=0, character_topup=False)
+        rarity = RarityIndex(config.rarity_min_df)
+        pool = score_artist([candidate_from_row(r) for r in rows], rarity, set(), {'normal_hero', 'gacha_hero'}, config)
+        result = plan_family({1: pool}, {1: 9}, config, ['gacha_hero', 'normal_hero'], priority={'gacha_hero'})
+        self.assertEqual([p['remote_id'] for p in result.picks], ['2'])
+        self.assertEqual(result.picks[0]['reasons']['character_need'], 1.5)
+
     def test_locks_are_kept_and_count_toward_quota(self):
         rows = [post(i) for i in range(1, 11)]
         rows[0]['locked'] = True
@@ -179,6 +188,24 @@ class PlannerStoreTests(unittest.TestCase):
         self.assertFalse(lines[0]['motion'])
         listed = store.list_artists(run_id=run_id, run_status='dropped')
         self.assertEqual([a['tag'] for a in listed['items']], ['artist_c'])
+
+    def test_priority_characters_rank_first_and_survive_top_list_refresh(self):
+        store.replace_family_characters('danbooru', [{'tag': 'miku'}, {'tag': 'reimu'}], 'top')
+        result = store.add_priority_characters('danbooru', [{'tag': 'reimu'}, {'tag': 'hina_(blue_archive)', 'post_count': 99}], 'series:blue_archive')
+        self.assertEqual((result['priority'], result['added']), (2, 1))
+        conn = store.connect()
+        order = [r[0] for r in conn.execute("SELECT tag FROM character_target WHERE family='danbooru' ORDER BY priority DESC, rank")]
+        conn.close()
+        self.assertEqual(order[2], 'miku')
+        self.assertEqual(set(order[:2]), {'reimu', 'hina_(blue_archive)'})
+        # Refreshing the most-posted list keeps priority targets.
+        store.replace_family_characters('danbooru', [{'tag': 'marisa'}], 'top')
+        self.assertEqual(store.status()['priority_characters'], {'danbooru': 2})
+        # Clearing removes series-only targets and unmarks the rest.
+        self.assertEqual(store.clear_priority_characters(), 1)
+        conn = store.connect()
+        self.assertEqual(sorted(r[0] for r in conn.execute('SELECT tag FROM character_target')), ['marisa', 'reimu'])
+        conn.close()
 
     def test_recover_marks_interrupted_work(self):
         conn = store.connect()

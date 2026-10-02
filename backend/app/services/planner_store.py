@@ -99,6 +99,28 @@ CREATE TABLE IF NOT EXISTS run_artist (
     repeats INTEGER NOT NULL,
     PRIMARY KEY (run_id, artist_id)
 );
+CREATE TABLE IF NOT EXISTS delivery (
+    id INTEGER PRIMARY KEY,
+    run_id INTEGER NOT NULL REFERENCES run(id),
+    status TEXT NOT NULL,
+    group_prefix TEXT NOT NULL,
+    progress TEXT NOT NULL,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    finished_at TEXT
+);
+CREATE TABLE IF NOT EXISTS delivery_item (
+    delivery_id INTEGER NOT NULL REFERENCES delivery(id) ON DELETE CASCADE,
+    site TEXT NOT NULL,
+    remote_id TEXT NOT NULL,
+    artist_id INTEGER NOT NULL,
+    folder_id INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    images INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    PRIMARY KEY (delivery_id, site, remote_id, artist_id)
+);
+CREATE INDEX IF NOT EXISTS delivery_item_pending ON delivery_item(delivery_id, site, status);
 CREATE TABLE IF NOT EXISTS selection (
     run_id INTEGER NOT NULL REFERENCES run(id) ON DELETE CASCADE,
     artist_id INTEGER NOT NULL,
@@ -131,6 +153,10 @@ def connect() -> sqlite3.Connection:
     conn.execute('PRAGMA journal_mode = WAL')
     conn.execute('PRAGMA foreign_keys = ON')
     conn.executescript(SCHEMA)
+    columns = {row['name'] for row in conn.execute('PRAGMA table_info(character_target)')}
+    if 'priority' not in columns:
+        conn.execute('ALTER TABLE character_target ADD COLUMN priority INTEGER NOT NULL DEFAULT 0')
+        conn.commit()
     return conn
 
 
@@ -141,6 +167,7 @@ def recover() -> None:
         conn.execute("UPDATE harvest_job SET status='interrupted', finished_at=? WHERE status IN ('queued','running','cancelling')", (now(),))
         conn.execute("UPDATE artist SET harvest_status='pending' WHERE harvest_status='running'")
         conn.execute("UPDATE run SET status='interrupted', finished_at=? WHERE status='running'", (now(),))
+        conn.execute("UPDATE delivery SET status='interrupted', finished_at=? WHERE status IN ('queued','running','cancelling')", (now(),))
         conn.commit()
     finally:
         conn.close()
@@ -226,14 +253,47 @@ def import_characters(text: str) -> dict:
 
 
 def replace_family_characters(family: str, rows: list[dict], source: str) -> dict:
-    """Replace one family's targets (rows in priority order), keeping the other family."""
+    """Replace one family's ranked targets, keeping the other family and priority targets."""
     conn = connect()
     try:
-        conn.execute('DELETE FROM character_target WHERE family=?', (family,))
+        priority = {r['tag'] for r in conn.execute('SELECT tag FROM character_target WHERE family=? AND priority=1', (family,))}
+        conn.execute('DELETE FROM character_target WHERE family=? AND priority=0', (family,))
         conn.executemany('INSERT OR IGNORE INTO character_target (family, tag, post_count, rank, source) VALUES (?,?,?,?,?)',
-                         [(family, row['tag'], row.get('post_count'), rank, source) for rank, row in enumerate(rows, start=1)])
+                         [(family, row['tag'], row.get('post_count'), rank, source) for rank, row in enumerate(rows, start=1)
+                          if row['tag'] not in priority])
         conn.commit()
         return {'family': family, 'imported': len(rows)}
+    finally:
+        conn.close()
+
+
+def add_priority_characters(family: str, rows: list[dict], source: str) -> dict:
+    """Mark characters as priority targets, adding any that are not targets yet."""
+    conn = connect()
+    try:
+        next_rank = (conn.execute('SELECT max(rank) FROM character_target WHERE family=?', (family,)).fetchone()[0] or 0) + 1
+        added = 0
+        for row in rows:
+            updated = conn.execute('UPDATE character_target SET priority=1 WHERE family=? AND tag=?', (family, row['tag'])).rowcount
+            if not updated:
+                conn.execute('INSERT INTO character_target (family, tag, post_count, rank, source, priority) VALUES (?,?,?,?,?,1)',
+                             (family, row['tag'], row.get('post_count'), next_rank, source))
+                next_rank += 1
+                added += 1
+        conn.commit()
+        return {'family': family, 'priority': len(rows), 'added': added}
+    finally:
+        conn.close()
+
+
+def clear_priority_characters() -> int:
+    """Unmark every priority target; targets that were only priority are removed."""
+    conn = connect()
+    try:
+        removed = conn.execute("DELETE FROM character_target WHERE priority=1 AND source LIKE 'series:%'").rowcount
+        conn.execute('UPDATE character_target SET priority=0')
+        conn.commit()
+        return removed
     finally:
         conn.close()
 
@@ -264,10 +324,13 @@ def status() -> dict:
                 entry['harvest'][r['harvest_status']] = entry['harvest'].get(r['harvest_status'], 0) + r['n']
         posts = {r['site']: r['n'] for r in conn.execute('SELECT site, count(*) n FROM post GROUP BY site')}
         characters = {r['family']: r['n'] for r in conn.execute('SELECT family, count(*) n FROM character_target GROUP BY family')}
+        priority_characters = {r['family']: r['n'] for r in conn.execute('SELECT family, count(*) n FROM character_target WHERE priority=1 GROUP BY family')}
         overrides = {r['action']: r['n'] for r in conn.execute('SELECT action, count(*) n FROM override GROUP BY action')}
         job = conn.execute('SELECT * FROM harvest_job ORDER BY id DESC LIMIT 1').fetchone()
+        delivery = conn.execute('SELECT id FROM delivery ORDER BY id DESC LIMIT 1').fetchone()
         runs = [run_row(r) for r in conn.execute('SELECT * FROM run ORDER BY id DESC LIMIT 10')]
-        return {'artists': dict(artists), 'posts': posts, 'characters': characters, 'overrides': overrides,
+        return {'artists': dict(artists), 'posts': posts, 'characters': characters, 'priority_characters': priority_characters,
+                'overrides': overrides, 'delivery_id': delivery['id'] if delivery else None,
                 'harvest_job': harvest_row(job) if job else None, 'runs': runs, 'path': str(planner_dir())}
     finally:
         conn.close()
@@ -351,7 +414,9 @@ def _plan_family(conn, family: str, config: PlannerConfig, log):
     blocked = config.tag_set('blocked', family)
     boost = config.tag_set('boost', family)
     overrides = {(r['artist_id'], r['site'], r['remote_id']): r['action'] for r in conn.execute('SELECT * FROM override')}
-    ranked = [r['tag'] for r in conn.execute('SELECT tag FROM character_target WHERE family=? ORDER BY rank', (family,))]
+    target_rows = conn.execute('SELECT tag, priority FROM character_target WHERE family=? ORDER BY priority DESC, rank', (family,)).fetchall()
+    ranked = [r['tag'] for r in target_rows]
+    priority = {r['tag'] for r in target_rows if r['priority']}
     rarity = RarityIndex(config.rarity_min_df)
     rejections = Counter()
     # Pass 1: tag document frequencies over usable posts.
@@ -391,7 +456,7 @@ def _plan_family(conn, family: str, config: PlannerConfig, log):
         pools.setdefault(artist_id, [])
         usable_counts.setdefault(artist_id, 0)
     log(f'{family}: scoring done for {len(pools)} artists; selecting')
-    result = plan_family(pools, usable_counts, config, ranked)
+    result = plan_family(pools, usable_counts, config, ranked, priority)
     return result, rejections, ranked
 
 

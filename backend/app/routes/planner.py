@@ -8,6 +8,8 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from app.db import LIBRARY_PATH
+from app.services import planner_delivery as delivery
 from app.services import planner_harvest as harvest
 from app.services import planner_store as store
 from app.services import planner_tags
@@ -60,6 +62,12 @@ class CharacterFetch(BaseModel):
     e621: int = Field(3000, ge=0, le=50000)
 
 
+class SeriesRequest(BaseModel):
+    series: list[str] = Field(min_length=1, max_length=50, description='Series (copyright) tags, e.g. blue_archive')
+    families: list[Literal['danbooru', 'e621']] = Field(default_factory=lambda: ['danbooru', 'e621'])
+    min_posts: int = Field(30, ge=1, le=100000, description='Skip characters with fewer posts on the site')
+
+
 class TagCheck(BaseModel):
     family: Literal['danbooru', 'e621']
     tags: list[str] = Field(min_length=1, max_length=2000)
@@ -79,6 +87,32 @@ async def fetch_characters(request: CharacterFetch):
             raise HTTPException(502, f'{family} tag lookup failed: {exc}') from exc
         results[family] = store.replace_family_characters(family, rows, 'top_by_post_count')['imported']
     return {'imported': results}
+
+
+@router.post('/characters/series')
+async def priority_series(request: SeriesRequest):
+    """Add every character of the given series as priority targets."""
+    results = {}
+    for family in request.families:
+        rows, per_series = [], {}
+        for series in request.series:
+            try:
+                found = await planner_tags.series_characters(family, series)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+            except httpx.HTTPError as exc:
+                raise HTTPException(502, f'{family} tag lookup failed: {exc}') from exc
+            kept = [row for row in found if row['post_count'] >= request.min_posts]
+            per_series[series] = len(kept)
+            rows.extend(kept)
+        unique = list({row['tag']: row for row in rows}.values())
+        results[family] = {**store.add_priority_characters(family, unique, 'series:' + ','.join(request.series)), 'series': per_series}
+    return {'results': results}
+
+
+@router.delete('/characters/priority')
+def clear_priority():
+    return {'removed': store.clear_priority_characters()}
 
 
 @router.post('/tags/check')
@@ -159,6 +193,60 @@ def export(run_id: int):
         raise HTTPException(404, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
+    return {'path': str(target), 'files': sorted(p.name for p in target.iterdir())}
+
+
+class DeliveryRequest(BaseModel):
+    group_prefix: str = Field('Planner', min_length=1, max_length=80, description='Groups are named "<prefix> <site>"')
+
+
+@router.post('/runs/{run_id}/deliver')
+async def start_delivery(run_id: int, request: DeliveryRequest):
+    if harvest._task and not harvest._task.done():
+        raise HTTPException(409, 'Wait for the harvest to finish before downloading')
+    try:
+        job = delivery.create_delivery(run_id, request.group_prefix, LIBRARY_PATH)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    delivery.launch(job['id'])
+    return job
+
+
+@router.get('/deliveries/{delivery_id}')
+def get_delivery(delivery_id: int):
+    job = delivery.get_delivery(delivery_id)
+    if not job:
+        raise HTTPException(404, 'Delivery not found')
+    return job
+
+
+@router.post('/deliveries/{delivery_id}/resume')
+async def resume_delivery(delivery_id: int):
+    try:
+        job = delivery.resume_delivery(delivery_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    delivery.launch(delivery_id)
+    return job
+
+
+@router.post('/deliveries/cancel')
+def cancel_delivery():
+    if not delivery.cancel():
+        raise HTTPException(409, 'No delivery is running')
+    return {'ok': True}
+
+
+@router.post('/deliveries/{delivery_id}/layout')
+def training_layout(delivery_id: int):
+    try:
+        target = delivery.export_training_layout(delivery_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
     return {'path': str(target), 'files': sorted(p.name for p in target.iterdir())}
 
 

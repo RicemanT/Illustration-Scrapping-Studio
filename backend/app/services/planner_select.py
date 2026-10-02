@@ -114,6 +114,7 @@ class PlannerConfig(BaseModel):
     weight_character: float = Field(0.3, ge=0, le=100)
     weight_rarity: float = Field(0.5, ge=0, le=100)
     weight_boost: float = Field(0.3, ge=0, le=100)
+    priority_character_boost: float = Field(1.5, ge=1, le=10, description='Character-need multiplier for priority targets')
 
     def tag_set(self, kind: str, family: str) -> set[str]:
         return {tag.strip().replace(' ', '_') for tag in getattr(self, f'{kind}_tags_{family}') if tag.strip()}
@@ -262,9 +263,10 @@ class FamilyResult:
 
 
 class Selector:
-    def __init__(self, config: PlannerConfig, targets: set[str]):
+    def __init__(self, config: PlannerConfig, targets: set[str], priority: set[str] = frozenset()):
         self.config = config
         self.targets = targets
+        self.priority = priority
         self.character_counts: Counter = Counter()
         self.used_md5: set = set()
 
@@ -278,8 +280,8 @@ class Selector:
         else:
             novelty = 0.0
         floor = cfg.character_floor
-        need = max(((floor - self.character_counts[ch]) / floor for ch in c.characters
-                    if ch in self.targets and self.character_counts[ch] < floor), default=0.0) if floor else 0.0
+        need = max(((floor - self.character_counts[ch]) / floor * (cfg.priority_character_boost if ch in self.priority else 1.0)
+                    for ch in c.characters if ch in self.targets and self.character_counts[ch] < floor), default=0.0) if floor else 0.0
         gain = (cfg.weight_quality * c.quality + cfg.weight_novelty * novelty + cfg.weight_character * need
                 + cfg.weight_rarity * c.rarity + cfg.weight_boost * c.boost)
         return {'gain': round(gain, 4), 'quality': round(c.quality, 4), 'novelty': round(novelty, 4),
@@ -374,14 +376,15 @@ class Selector:
 
 
 def plan_family(artists: dict[int, list[Candidate]], usable_counts: dict[int, int], config: PlannerConfig,
-                ranked_targets: list[str]) -> FamilyResult:
+                ranked_targets: list[str], priority: set[str] = frozenset()) -> FamilyResult:
     """Select images for every artist in one tag family.
 
     `artists` maps artist IDs to scored candidate pools; `usable_counts` gives
     each artist's usable posts after collapsing parent/child families.
+    `ranked_targets` lists characters by priority (priority targets first).
     """
     targets = set(ranked_targets)
-    selector = Selector(config, targets)
+    selector = Selector(config, targets, priority)
     result = FamilyResult()
     plans = []
     for artist_id in sorted(artists):
