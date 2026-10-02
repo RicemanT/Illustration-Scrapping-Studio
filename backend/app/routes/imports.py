@@ -12,7 +12,8 @@ from app.providers.booru import BOORU_SITES, ProviderAuthenticationError, get_ge
 from app.providers.gallery_dl import GALLERY_DL_PROVIDERS, provider_ready
 from app.providers.registry import create_provider, max_provider_limit, supported_provider
 from app.services.images import ImageService
-from app.services.media import ARCHIVE_FORMATS, StaticPreviewUnavailable, VIDEO_FORMATS, download_importable_image, download_importable_images, ensure_image_meets_folder_quality, normalized_format, run_blocking_safely
+from app.services.media import StaticPreviewUnavailable
+from app.services.post_ingest import ingest_post
 from app.services.queries import provider_query_for_folder, validate_collection_query
 from app.services.settings import get_parallel_workers
 
@@ -135,7 +136,6 @@ async def _run_import(job_id: str, batch_id: int, collection_id: int, provider_n
         semaphore = asyncio.Semaphore(workers)
 
         async def process_one(index: int, remote_id: str) -> None:
-            temp_paths: list[str] = []
             key = f"{remote_id}:{index}"
             async with semaphore:
                 conn = get_connection()
@@ -158,66 +158,10 @@ async def _run_import(job_id: str, batch_id: int, collection_id: int, provider_n
                         job["progress"]["current_file"] = dict(file_progress)
                         job["progress"]["active_files"] = list(active_files.values())
 
-                    image_id = await run_blocking_safely(
-                        image_service.check_existing_by_source,
-                        post.provider,
-                        post.remote_id,
-                        collection_id,
-                    )
-                    motion_candidate = normalized_format(post.format) in VIDEO_FORMATS | ARCHIVE_FORMATS | {"gif", "webp", "png", "avif"}
-                    if image_id and normalized_format(post.format) not in VIDEO_FORMATS | ARCHIVE_FORMATS | {"gif"}:
-                        await run_blocking_safely(image_service._add_source_record, image_id, post)
-                        is_new = False
-                        new_count = 0
-                        message = f"Already have source {remote_id}; skipped media download"
-                        transfer = None
-                        frame_ids = []
-                        frame_count = 0
-                    else:
-                        frame_ids, frame_count = await run_blocking_safely(
-                            image_service.existing_frames, post.provider, post.remote_id, collection_id,
-                        ) if motion_candidate else ([], 0)
-                    if not (image_id and normalized_format(post.format) not in VIDEO_FORMATS | ARCHIVE_FORMATS | {"gif"}) and frame_count and all(frame_ids[:frame_count]):
-                        image_id = frame_ids[0]
-                        is_new = False
-                        new_count = 0
-                        message = f"Already have all {frame_count} distinct frame(s) for {remote_id}; skipped media download"
-                        transfer = None
-                    elif not (image_id and normalized_format(post.format) not in VIDEO_FORMATS | ARCHIVE_FORMATS | {"gif"}):
-                        from app.services.server import require_space
-                        await run_blocking_safely(require_space, LIBRARY_PATH)
-                        if motion_candidate:
-                            items = await download_importable_images(provider, post, progress=report_file)
-                        else:
-                            items = [await download_importable_image(provider, post, progress=report_file)]
-                        temp_paths = [path for path, _, _ in items]
-                        new_count = 0
-                        image_id = None
-                        for path, ingest_post, derived_media_source in items:
-                            prior_id = await run_blocking_safely(
-                                image_service.check_existing_by_source,
-                                ingest_post.provider, ingest_post.remote_id, collection_id,
-                            )
-                            if prior_id:
-                                image_id = image_id or prior_id
-                                continue
-                            try:
-                                await run_blocking_safely(ensure_image_meets_folder_quality, path, folder_filters)
-                            except StaticPreviewUnavailable as exc:
-                                emit("media.filtered", "Media skipped by quality requirements", "INFO", reason=str(exc))
-                                continue
-                            current_id, item_is_new = await run_blocking_safely(
-                                image_service.ingest_image, path, ingest_post, collection_id,
-                                derived_from_preview=derived_media_source == "provider_preview",
-                                original_media_format=post.format, original_media_url=post.image_url,
-                                derived_media_source=derived_media_source,
-                            )
-                            image_id = image_id or current_id
-                            new_count += int(item_is_new)
-                        is_new = new_count > 0
-                        message = f"Imported {new_count} frame(s) from {remote_id}" if is_new else f"Already had or filtered all frames for {remote_id}"
-                        file_progress.update({"stage": "complete", "percent": 100, "eta_seconds": 0})
-                        transfer = dict(file_progress)
+                    result = await ingest_post(provider, post, collection_id, folder_filters, image_service,
+                                               LIBRARY_PATH, report_file, file_progress)
+                    image_id, new_count, message, transfer = result["image_id"], result["new_count"], result["message"], result["transfer"]
+                    is_new = new_count > 0
                     conn = get_connection()
                     try:
                         conn.execute("UPDATE import_item SET status = ?, image_id = ?, error = NULL WHERE batch_id = ? AND remote_id = ?", ("downloaded" if is_new else "skipped", image_id, batch_id, remote_id))
@@ -243,8 +187,6 @@ async def _run_import(job_id: str, batch_id: int, collection_id: int, provider_n
                     transfer = None
                     message = f"{remote_id}: {exc}"
                 finally:
-                    for path in temp_paths:
-                        Path(path).unlink(missing_ok=True)
                     active_files.pop(key, None)
                 emit("import.item", message, remote_id=remote_id)
                 job["progress"]["completed"] += 1

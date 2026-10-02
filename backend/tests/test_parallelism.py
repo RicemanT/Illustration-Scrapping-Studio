@@ -139,8 +139,8 @@ class ParallelSyncTests(unittest.IsolatedAsyncioTestCase):
             return None, True
 
         with patch("app.routes.imports.create_provider", return_value=FakeProvider()), patch(
-            "app.routes.imports.download_importable_image", side_effect=fake_download
-        ), patch("app.routes.imports.ensure_image_meets_folder_quality"), patch.object(
+            "app.services.post_ingest.download_importable_image", side_effect=fake_download
+        ), patch("app.services.post_ingest.ensure_image_meets_folder_quality"), patch.object(
             import_routes.ImageService, "ingest_image", side_effect=fake_ingest
         ):
             await import_routes._run_import(
@@ -188,8 +188,8 @@ class ParallelSyncTests(unittest.IsolatedAsyncioTestCase):
             return None, True
 
         with patch("app.routes.imports.create_provider", return_value=FakeProvider()), patch(
-            "app.routes.imports.download_importable_images", new=AsyncMock(return_value=items)
-        ) as download, patch("app.routes.imports.ensure_image_meets_folder_quality"), patch.object(
+            "app.services.post_ingest.download_importable_images", new=AsyncMock(return_value=items)
+        ) as download, patch("app.services.post_ingest.ensure_image_meets_folder_quality"), patch.object(
             import_routes.ImageService, "ingest_image", side_effect=fake_ingest
         ):
             await import_routes._run_import("three-frame-import", batch_id, self.folder.id, "danbooru", ["7"])
@@ -252,7 +252,7 @@ class ParallelSyncTests(unittest.IsolatedAsyncioTestCase):
 
         download = AsyncMock(side_effect=AssertionError("repeat source was downloaded"))
         with patch("app.routes.imports.create_provider", return_value=FakeProvider()), patch(
-            "app.routes.imports.download_importable_image", download
+            "app.services.post_ingest.download_importable_image", download
         ), patch.object(
             import_routes.ImageService, "check_existing_by_source", return_value=88
         ), patch.object(import_routes.ImageService, "_add_source_record") as refresh_source:
