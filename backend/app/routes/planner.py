@@ -118,7 +118,13 @@ async def _run_series(request: SeriesRequest) -> None:
                     skipped[name] = 'not a series tag on ' + family + (f' (now {series})' if series != name else '')
                     continue
                 job['current'] = f'{family}: {series}'
-                found = await planner_tags.series_characters(family, series)
+                try:
+                    found = await planner_tags.series_characters(family, series)
+                except httpx.HTTPError as exc:
+                    # One failing series must not discard the others' results.
+                    skipped[name] = f'lookup failed after retries: {exc}'.splitlines()[0][:200]
+                    job['done'] += 1
+                    continue
                 kept = [row for row in found if row['post_count'] >= request.min_posts]
                 per_series[series] = len(kept)
                 rows.extend(kept)

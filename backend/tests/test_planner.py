@@ -375,6 +375,27 @@ class TagLookupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows, [{'tag': 'twilight_sparkle_(mlp)', 'post_count': 10}])
 
 
+    async def test_server_errors_are_retried(self):
+        import httpx
+        calls = []
+
+        def handler(request):
+            calls.append(1)
+            if len(calls) < 3:
+                return httpx.Response(500, request=request)
+            return httpx.Response(200, json=[{'name': 'judy_hopps', 'post_count': 5}], request=request)
+
+        old_delay = planner_tags.RETRY_DELAY
+        planner_tags.RETRY_DELAY = 0
+        try:
+            paced = planner_tags._Paced()
+            paced.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+            self.assertEqual(await paced.get('https://e621.net/tags.json', {}), [{'name': 'judy_hopps', 'post_count': 5}])
+            await paced.close()
+        finally:
+            planner_tags.RETRY_DELAY = old_delay
+        self.assertEqual(len(calls), 3)
+
 class SeriesJobTests(unittest.IsolatedAsyncioTestCase):
     setUp = PlannerStoreTests.setUp
     tearDown = PlannerStoreTests.tearDown
@@ -402,6 +423,27 @@ class SeriesJobTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['series'], {'my_little_pony': 1})
         self.assertIn('umamusume', result['skipped'])
         self.assertEqual(store.status()['priority_characters'], {'e621': 1})
+
+    async def test_one_failing_series_does_not_discard_the_others(self):
+        import httpx
+        from app.routes import planner as routes
+
+        async def fake_check(family, tags):
+            return [{'tag': tag, 'status': 'ok', 'category': 'copyright'} for tag in tags]
+
+        async def fake_series(family, series):
+            if series == 'fire_emblem':
+                raise httpx.HTTPError('500 Internal Server Error')
+            return [{'tag': f'hero_({series})', 'post_count': 500}]
+
+        routes._series_job.clear()
+        routes._series_job.update(status='running', total=2, done=0, current=None, results={}, error=None)
+        with unittest.mock.patch.object(planner_tags, 'check_tags', fake_check),                 unittest.mock.patch.object(planner_tags, 'series_characters', fake_series):
+            await routes._run_series(routes.SeriesRequest(danbooru=['fire_emblem', 'touhou']))
+        result = routes._series_job['results']['danbooru']
+        self.assertEqual(routes._series_job['status'], 'completed')
+        self.assertEqual(result['series'], {'touhou': 1})
+        self.assertIn('fire_emblem', result['skipped'])
 
 if __name__ == '__main__':
     unittest.main()

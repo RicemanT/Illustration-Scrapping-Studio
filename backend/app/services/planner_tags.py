@@ -25,6 +25,8 @@ CATEGORY_NAMES = {
 # verified 2026-10-02; Danbooru has no populated equivalents).
 PLACEHOLDER_CHARACTERS = {'fan_character', 'anon', 'background_character', 'unnamed_character'}
 REQUEST_INTERVAL = 1.0
+RETRY_ATTEMPTS = 4
+RETRY_DELAY = 5.0
 
 
 class _Paced:
@@ -35,12 +37,21 @@ class _Paced:
         self.client = httpx.AsyncClient(timeout=60, headers={'User-Agent': USER_AGENT})
 
     async def get(self, url: str, params: dict):
-        wait = REQUEST_INTERVAL - (time.monotonic() - self.last)
-        if wait > 0:
-            await asyncio.sleep(wait)
-        self.last = time.monotonic()
-        response = await self.client.get(url, params=params)
-        response.raise_for_status()
+        # Danbooru intermittently answers heavy related-tag queries with 500.
+        for attempt in range(RETRY_ATTEMPTS):
+            wait = REQUEST_INTERVAL - (time.monotonic() - self.last)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self.last = time.monotonic()
+            try:
+                response = await self.client.get(url, params=params)
+                response.raise_for_status()
+                break
+            except httpx.HTTPError as exc:
+                status = getattr(getattr(exc, 'response', None), 'status_code', None)
+                if attempt + 1 == RETRY_ATTEMPTS or (status is not None and status != 429 and status < 500):
+                    raise
+                await asyncio.sleep(RETRY_DELAY * (attempt + 1))
         data = response.json()
         if isinstance(data, dict):
             # e621 wraps empty results as {"tags": []} / {"tag_aliases": []}.
