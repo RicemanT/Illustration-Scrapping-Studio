@@ -172,11 +172,28 @@ async def check_tags(request: TagCheck):
         raise HTTPException(502, f'{request.family} tag lookup failed: {exc}') from exc
 
 
+class EnableOnly(BaseModel):
+    lines: list[str] = Field(min_length=1, max_length=20000)
+
+
+@router.post('/artists/enable-only')
+def enable_only(request: EnableOnly):
+    result = store.enable_only(request.lines)
+    if not result['enabled']:
+        raise HTTPException(422, {'errors': ['None of these artists are on the list'], **result})
+    return result
+
+
+@router.post('/artists/enable-all')
+def enable_all():
+    return {'enabled': store.enable_all()}
+
+
 @router.get('/artists')
 def artists(site: Optional[str] = None, q: str = '', run_id: Optional[int] = None,
-            run_status: Optional[Literal['kept', 'dropped']] = None,
+            run_status: Optional[Literal['kept', 'dropped']] = None, flagged: bool = False,
             offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500)):
-    return store.list_artists(site, q, run_id, run_status, offset, limit)
+    return store.list_artists(site, q, run_id, run_status, offset, limit, flagged)
 
 
 @router.get('/artists/{artist_id}')
@@ -288,6 +305,30 @@ def cancel_delivery():
     if not delivery.cancel():
         raise HTTPException(409, 'No delivery is running')
     return {'ok': True}
+
+
+class PruneRequest(BaseModel):
+    confirmed: Literal[True]
+
+
+@router.get('/deliveries/{delivery_id}/prune')
+def prune_preview(delivery_id: int):
+    try:
+        return delivery.prune_delivery(delivery_id, apply=False)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post('/deliveries/{delivery_id}/prune')
+def prune_apply(delivery_id: int, request: PruneRequest):
+    try:
+        return delivery.prune_delivery(delivery_id, apply=True, library=LIBRARY_PATH)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except (RuntimeError, ValueError, FileExistsError) as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.post('/deliveries/{delivery_id}/layout')

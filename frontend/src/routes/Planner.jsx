@@ -47,6 +47,10 @@ export default function Planner() {
     onSuccess: () => seriesJob.refetch() });
   const seriesRunning = seriesJob.data?.status === 'running';
   useEffect(() => { if (seriesJob.data?.status === 'completed') refresh(); }, [seriesJob.data?.status]);
+  const [scope, setScope] = useState('');
+  const enableOnly = useMutation({ mutationFn: () => api.planner.enableOnly(scope.split('\n').map((line) => line.trim()).filter(Boolean)),
+    onSuccess: ({ data }) => { setNotice(`Planning limited to ${number(data.enabled)} artists.${data.unknown.length ? ` Not on the list: ${data.unknown.slice(0, 20).join(', ')}${data.unknown.length > 20 ? '…' : ''}.` : ''}${data.ambiguous.length ? ` On several sites, so all were enabled: ${data.ambiguous.slice(0, 20).join(', ')}.` : ''}`); refresh(); } });
+  const enableAll = useMutation({ mutationFn: api.planner.enableAll, onSuccess: ({ data }) => { setNotice(`Enabled ${number(data.enabled)} more artists; every listed artist is in scope again.`); refresh(); } });
   const clearPriority = useMutation({ mutationFn: api.planner.clearPriority, onSuccess: ({ data }) => { setNotice(`Priority cleared; ${number(data.removed)} series-only targets removed.`); refresh(); } });
   const fetchCharacters = useMutation({ mutationFn: () => api.planner.fetchCharacters({ danbooru: Number(topCounts.danbooru) || 0, e621: Number(topCounts.e621) || 0 }),
     onSuccess: ({ data }) => { setNotice(`Character targets: ${Object.entries(data.imported).map(([site, count]) => `${number(count)} ${site}`).join(', ')} fetched.`); refresh(); } });
@@ -63,7 +67,7 @@ export default function Planner() {
       <p className="text-sm text-slate-400">Choose each artist's training images from post metadata (tags, favorites, sizes) before downloading anything. The planner keeps its own data and never changes your collections.</p>
       {status.data?.path && <p className="text-xs text-slate-500" title="Inside the active library. Set ARTIST_PLANNER_PATH before starting the backend to store it elsewhere.">Planner data: {status.data.path}</p>}
     </div>
-    {[status.error, importArtists.error, importCharacters.error, fetchCharacters.error, addSeries.error, clearPriority.error].filter(Boolean).map((error, index) => <p role="alert" className="text-red-400" key={index}>{errorText(error)}</p>)}
+    {[status.error, importArtists.error, importCharacters.error, fetchCharacters.error, addSeries.error, clearPriority.error, enableOnly.error, enableAll.error].filter(Boolean).map((error, index) => <p role="alert" className="text-red-400" key={index}>{errorText(error)}</p>)}
     {fileError && <p role="alert" className="text-red-400">{fileError}</p>}
     {notice && <p role="status" className="text-green-300">{notice}</p>}
 
@@ -101,11 +105,20 @@ export default function Planner() {
           <p className="text-xs text-slate-400">Enter each site's series (copyright) tags; names differ between sites, for example <code>sonic_(series)</code> on Danbooru and <code>sonic_the_hedgehog_(series)</code> on e621. Danbooru characters are found from related tags and <code>name_(series)</code> tags, e621 characters from tag implications. They become priority targets: topped up first, with character need multiplied by the priority weight. Each artist's image count does not change.</p>
         </div>
       </div>
+      <details className="text-sm"><summary className="cursor-pointer">Limit planning to some artists (for a pilot)</summary>
+        <div className="mt-2 space-y-2">
+          <p className="text-xs text-slate-400">One artist per line: the tag or display name, optionally with a site first (<code>e621,some_artist</code>). Other artists stay on the list but are left out of harvests, plans and downloads until you enable everyone again.</p>
+          <textarea aria-label="Artists to keep in scope" className={`${field} block w-full h-28`} value={scope} onChange={(event) => setScope(event.target.value)} placeholder={'danbooru,example_artist\nanother artist'} />
+          <div className="flex flex-wrap gap-2"><button className={quiet} disabled={enableOnly.isPending || !scope.trim()} onClick={() => { setNotice(''); enableOnly.mutate(); }}>Enable only these</button>
+            <button className={quiet} disabled={enableAll.isPending} onClick={() => { setNotice(''); enableAll.mutate(); }}>Enable all listed artists</button></div>
+        </div>
+      </details>
       <table className="text-sm"><tbody>
         {SITES.map((site) => { const entry = status.data?.artists?.[site]; return <tr key={site}><td className="pr-4 text-slate-400">{site}</td>
-          <td className="pr-4">{number(entry?.enabled)} artists{entry?.disabled ? ` (${number(entry.disabled)} disabled)` : ''}</td>
+          <td className="pr-4">{number(entry?.enabled)} {entry?.enabled === 1 ? 'artist' : 'artists'}{entry?.disabled ? ` (${number(entry.disabled)} disabled)` : ''}</td>
           <td className="pr-4">{number(status.data?.posts?.[site])} posts harvested</td>
           <td className="text-slate-400">{Object.entries(entry?.harvest || {}).map(([key, value]) => `${number(value)} ${key}`).join(' · ')}</td></tr>; })}
+        <tr><td className="pr-4 text-slate-400">scope</td><td colSpan={3}>{number(Object.values(status.data?.artists || {}).reduce((sum, entry) => sum + (entry.enabled || 0), 0))} of {number(status.data?.listed_artists)} listed artists enabled for planning</td></tr>
         <tr><td className="pr-4 text-slate-400">characters</td><td colSpan={3}>{number(status.data?.characters?.danbooru)} Danbooru/Gelbooru · {number(status.data?.characters?.e621)} e621 targets{(status.data?.priority_characters?.danbooru || status.data?.priority_characters?.e621) ? ` · priority: ${number(status.data?.priority_characters?.danbooru)} Danbooru/Gelbooru, ${number(status.data?.priority_characters?.e621)} e621` : ''}</td></tr>
       </tbody></table>
     </section>
@@ -253,6 +266,8 @@ function DeliveryPanel({ status, runId, onChange }) {
   const resume = useMutation({ mutationFn: () => api.planner.resumeDelivery(deliveryId), onSuccess: after });
   const cancel = useMutation({ mutationFn: api.planner.cancelDelivery, onSuccess: after });
   const layout = useMutation({ mutationFn: () => api.planner.trainingLayout(deliveryId) });
+  const prunePreview = useMutation({ mutationFn: () => api.planner.prunePreview(deliveryId) });
+  const pruneApply = useMutation({ mutationFn: () => api.planner.pruneApply(deliveryId), onSuccess: () => prunePreview.reset() });
   const sites = Object.keys(data?.progress?.sites || {});
   return <section className="rounded border border-slate-800 p-4 space-y-3">
     <h2 className="font-semibold">5. Download selected images</h2>
@@ -263,9 +278,24 @@ function DeliveryPanel({ status, runId, onChange }) {
       {active && <button className={quiet} disabled={cancel.isPending || data.status === 'cancelling'} onClick={() => cancel.mutate()}>Stop</button>}
       {data && !active && data.status !== 'completed' && <button className={quiet} disabled={resume.isPending || harvesting} onClick={() => resume.mutate()}>Resume download #{data.id}</button>}
       {data && !active && <button className={quiet} disabled={layout.isPending} onClick={() => layout.mutate()}>Export training layout</button>}
+      {data && !active && <button className={quiet} disabled={prunePreview.isPending || pruneApply.isPending} onClick={() => { pruneApply.reset(); prunePreview.mutate(); }}>Remove images no longer selected…</button>}
       {harvesting && <span className="text-xs text-slate-400">Wait for the harvest to finish first.</span>}
     </div>
-    {[start.error, resume.error, cancel.error, layout.error, job.error].filter(Boolean).map((error, index) => <p role="alert" className="text-red-400" key={index}>{errorText(error)}</p>)}
+    {[start.error, resume.error, cancel.error, layout.error, job.error, prunePreview.error, pruneApply.error].filter(Boolean).map((error, index) => <p role="alert" className="text-red-400" key={index}>{errorText(error)}</p>)}
+    {prunePreview.data && <div className="rounded border border-amber-700/60 p-3 text-sm space-y-2">
+      {prunePreview.data.data.images ? <>
+        <p>{number(prunePreview.data.data.images)} images in {number(prunePreview.data.data.collections)} collections came from an earlier planner download but are not selected by run #{data?.run_id}, for example posts you banned since. Removing them keeps your training folders matching the plan.</p>
+        <p className="text-xs text-slate-400">Images you imported yourself are never included. Removed images go to each collection's recovery, which keeps only the latest removal: this replaces any earlier "Recover last deletion" batch in those collections.</p>
+        <div className="flex gap-2"><button className="rounded border border-red-800 px-3 py-2 text-sm text-red-200 disabled:opacity-40" disabled={pruneApply.isPending} onClick={() => pruneApply.mutate()}>{pruneApply.isPending ? 'Removing…' : `Remove ${number(prunePreview.data.data.images)} images`}</button>
+          <button className={quiet} onClick={() => prunePreview.reset()}>Cancel</button></div>
+      </> : <p>Every planner image in these collections is still selected by run #{data?.run_id}. Nothing to remove.</p>}
+    </div>}
+    {pruneApply.data && <p className="text-sm text-green-300">Removed {number(pruneApply.data.data.removed)} images. Export the training layout again to refresh image counts.</p>}
+    <details className="text-xs text-slate-400"><summary className="cursor-pointer">Check styles with a GPU (optional)</summary>
+      <div className="mt-2 space-y-1"><p>After a download, <code>tools/planner_style_check.py</code> flags images far from their artist's usual style, such as sketches, photos, 3D renders or guest art. It runs outside the app in any Python environment with torch, torchvision, numpy and Pillow, on one GPU. Flagged images show up in Review above.</p>
+        <pre className="whitespace-pre-wrap text-slate-300">python tools/planner_style_check.py --library "{status?.library || '<library folder>'}"{status?.custom_path ? ` --planner "${status.path}"` : ''} --pause 0.1</pre>
+        <p>Add <code>--device cuda:1</code> to pick a GPU, <code>--ban</code> to ban everything flagged, or <code>--threshold 4</code> to flag fewer images. After banning, run the plan again, download it and remove images no longer selected.</p></div>
+    </details>
     {layout.data && <p className="text-sm text-green-300">Training layout written to {layout.data.data.path}: {layout.data.data.files.join(', ')}. dataset.toml has diffusion-pipe [[directory]] blocks with each folder's repeats.</p>}
     {data && <div className="text-sm space-y-1">
       <p>Download #{data.id} of run #{data.run_id}: {data.status}{data.error ? ` — ${data.error}` : ''}</p>
@@ -304,9 +334,10 @@ function ReviewPanel({ runId }) {
   const [search, setSearch] = useState('');
   const [offset, setOffset] = useState(0);
   const [artistId, setArtistId] = useState(null);
-  const params = { run_id: runId, site: site || undefined, run_status: runStatus || undefined, q: search || undefined, offset, limit: 50 };
+  const [flagged, setFlagged] = useState(false);
+  const params = { run_id: runId, site: site || undefined, run_status: runStatus || undefined, q: search || undefined, flagged: flagged || undefined, offset, limit: 50 };
   const artists = useQuery({ queryKey: ['planner-artists', params], queryFn: async () => (await api.planner.artists(params)).data, placeholderData: (old) => old });
-  useEffect(() => setOffset(0), [site, runStatus, search, runId]);
+  useEffect(() => setOffset(0), [site, runStatus, search, runId, flagged]);
   return <section className="rounded border border-slate-800 p-4 space-y-3">
     <h2 className="font-semibold">4. Review run #{runId}</h2>
     <p className="text-xs text-slate-400">Lock an image to always include it, or ban it to never include it. Locks and bans apply from the next plan run. Thumbnails are fetched by the backend and cached in the planner folder.</p>
@@ -314,6 +345,7 @@ function ReviewPanel({ runId }) {
       <input className={field} placeholder="Search artists" value={search} onChange={(event) => setSearch(event.target.value)} />
       <select className={field} value={site} onChange={(event) => setSite(event.target.value)}><option value="">All sites</option>{SITES.map((item) => <option key={item}>{item}</option>)}</select>
       <select className={field} value={runStatus} onChange={(event) => setRunStatus(event.target.value)}><option value="">Kept and dropped</option><option value="kept">Kept</option><option value="dropped">Dropped</option></select>
+      <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={flagged} onChange={(event) => setFlagged(event.target.checked)} />Only artists with style flags</label>
     </div>
     {artists.error && <p role="alert" className="text-red-400">{errorText(artists.error)}</p>}
     <div className="grid grid-cols-1 md:grid-cols-[18rem_1fr] gap-4">
@@ -321,7 +353,7 @@ function ReviewPanel({ runId }) {
         <div className="max-h-[36rem] overflow-auto divide-y divide-slate-800 text-sm">
           {artists.data?.items.map((item) => <button key={item.id} onClick={() => setArtistId(item.id)} className={`block w-full text-left py-1.5 px-1 ${item.id === artistId ? 'text-blue-300' : ''}`}>
             {item.display_name} <span className="text-xs text-slate-500">{item.site}</span>
-            <span className="block text-xs text-slate-400">{item.run_status === 'kept' ? `${item.selected} images × ${item.repeats}` : item.run_status === 'dropped' ? `dropped: ${String(item.run_reason).replace(/_/g, ' ')} (${item.usable} usable)` : `${item.harvest_status}, not in this run`}</span>
+            <span className="block text-xs text-slate-400">{item.run_status === 'kept' ? `${item.selected} images × ${item.repeats}` : item.run_status === 'dropped' ? `dropped: ${String(item.run_reason).replace(/_/g, ' ')} (${item.usable} usable)` : `${item.harvest_status}, not in this run`}{item.style_flags ? ` · ${item.style_flags} style flag${item.style_flags === 1 ? '' : 's'}` : ''}</span>
           </button>)}
         </div>
         <div className="flex items-center gap-2 text-xs text-slate-400">
@@ -360,10 +392,11 @@ function Tiles({ artistId, items, onAction, busy }) {
     {items.map((item) => {
       const reasons = item.reasons ? Object.entries(item.reasons).map(([key, value]) => `${key}: ${value}`).join('\n') : '';
       const url = item.site === 'e621' ? `https://e621.net/posts/${item.remote_id}` : item.site === 'gelbooru' ? `https://gelbooru.com/index.php?page=post&s=view&id=${item.remote_id}` : `https://danbooru.donmai.us/posts/${item.remote_id}`;
-      return <div key={`${item.site}-${item.remote_id}`} className={`rounded border p-1 text-xs space-y-1 ${item.override === 'lock' ? 'border-green-600' : item.override === 'ban' ? 'border-red-700 opacity-60' : 'border-slate-800'}`}>
+      return <div key={`${item.site}-${item.remote_id}`} className={`rounded border p-1 text-xs space-y-1 ${item.override === 'lock' ? 'border-green-600' : item.override === 'ban' ? 'border-red-700 opacity-60' : item.style_flag ? 'border-amber-500' : 'border-slate-800'}`}>
         <a href={url} target="_blank" rel="noreferrer" title={`${item.characters || 'no character tags'}\n${item.width}×${item.height} · ${item.rating}\n${reasons}`}>
           <img src={backendAssetUrl(`/api/planner/thumbs/${artistId}/${item.site}/${item.remote_id}`)} alt="" loading="lazy" className="w-full h-28 object-contain bg-black/30" />
         </a>
+        {item.style_flag && !item.override && <div className="text-amber-300" title={`Style distance ${item.style_flag.distance.toFixed(3)} from this artist's median`}>Off-style (z {item.style_flag.score.toFixed(1)})</div>}
         <div className="flex justify-between text-slate-400"><span>{item.role ? item.role.replace('_', ' ') : `♥ ${item.fav_count ?? item.score ?? 0}`}</span>{item.gain != null && <span title={reasons}>{item.gain.toFixed(2)}</span>}</div>
         <div className="flex gap-1">
           {item.override !== 'lock' && <button className="flex-1 rounded bg-green-900/60 px-1 disabled:opacity-40" disabled={busy} onClick={() => onAction(item, 'lock')}>Lock</button>}

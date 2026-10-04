@@ -25,6 +25,10 @@ e621,another_artist,
 
 Uploading again updates existing artists and adds new ones. Artists missing from the new file are disabled, not deleted; their harvested data is kept and they return if you list them again.
 
+### Limiting planning to some artists
+
+To try settings on a small group first (a pilot), open **Limit planning to some artists**, enter one artist per line (the tag or display name, optionally with a site first, such as `e621,some_artist`) and choose **Enable only these**. The other artists stay on the list but are left out of harvests, plans and downloads. **Enable all listed artists** brings everyone back. Artists you removed from the CSV stay out.
+
 ### Character targets
 
 Character targets are the characters the planner tries to give enough images. Either:
@@ -125,6 +129,24 @@ Locks and bans take effect on the next plan run. Thumbnails are fetched by the b
 
 Progress per site counts posts as **done** (new images added), **skipped** (already in the collection), **filtered** (below the collection's quality floor), **missing** (deleted from the site since the harvest) and **error**. **Stop** keeps finished downloads; **Resume** continues the rest and retries errors, also after a backend restart. Downloading the same run again reuses its collections and skips posts already present. Do not move or delete planner collections while a download runs.
 
+### Removing images a run no longer selects
+
+Downloading another run adds its new images but keeps everything already downloaded, including posts you have since banned. **Remove images no longer selected…** first shows how many planner images in the run's collections the run does not select, then removes them on confirmation, so the training folders match the plan. Only images an earlier planner download added are considered; images you imported yourself and other providers' images are never removed. Removed images go to the collection's recovery, which keeps only the latest removal per collection, so this replaces any earlier **Recover last deletion** batch there.
+
+### Checking styles with a GPU
+
+`tools/planner_style_check.py` flags downloaded images that sit far from their artist's usual style, such as sketches, photos, 3D renders or guest art. It reduces each image to style statistics from a standard VGG16 network (the mean and spread of its feature maps at four depths) and flags images whose distance from the artist's median style is unusually large (robust z-score above 3.5 by default). Artists with fewer than 8 downloaded images are skipped.
+
+The app does not need PyTorch. Run the script in any Python environment that has torch, torchvision, numpy and Pillow, while no planner download is running:
+
+```bash
+python tools/planner_style_check.py --library /path/to/library --pause 0.1
+```
+
+It downloads the VGG16 weights once. On one GPU it handles several hundred images a second; `--pause` waits between batches to keep a shared GPU cool, `--device` picks the GPU (`cuda:1`, or `cpu`), and `--threshold` changes how unusual an image must be. Results go to `<planner data>/exports/style-check-download-<id>.csv`, and flagged images show an **Off-style** badge in Review; **Only artists with style flags** finds them. Ban the ones you agree with, or rerun with `--ban` to ban every flagged post (locked posts are skipped). Then run the plan again, download it, and remove images no longer selected.
+
+Treat flags as suggestions. These statistics are dominated by colour, so an artist's rare light or pastel piece can be flagged while a screenshot with drawing-app interface in it is not. `--grayscale` judges line work, shading and texture without colour; compare both on a pilot before relying on either.
+
 ### Training layout
 
 **Export training layout** writes `<planner data>/exports/run-<id>/training/`:
@@ -135,6 +157,10 @@ Progress per site counts posts as **done** (new images added), **skipped** (alre
 | `folders.json`, `folders.csv` | Site, artist, tag, collection, path, image count and repeats, for other trainers |
 
 Paths are on the machine running the backend. A video post can contribute up to three images, so image counts can exceed the planned post counts.
+
+## Saving disk space
+
+Downloaded images follow **Settings → Processing**. For a large dataset, a lower **Max dimension** (for example 1536 instead of 2000), JPEG quality around 95 instead of 100, and lossy WebP (lossless off, quality around 90) for PNG sources roughly halve storage compared with the defaults. Settings apply to images downloaded afterwards; images already downloaded keep their format.
 
 ## Resources
 

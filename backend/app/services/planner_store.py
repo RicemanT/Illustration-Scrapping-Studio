@@ -121,6 +121,15 @@ CREATE TABLE IF NOT EXISTS delivery_item (
     PRIMARY KEY (delivery_id, site, remote_id, artist_id)
 );
 CREATE INDEX IF NOT EXISTS delivery_item_pending ON delivery_item(delivery_id, site, status);
+CREATE TABLE IF NOT EXISTS style_flag (
+    artist_id INTEGER NOT NULL REFERENCES artist(id) ON DELETE CASCADE,
+    site TEXT NOT NULL,
+    remote_id TEXT NOT NULL,
+    distance REAL NOT NULL,
+    score REAL NOT NULL,
+    checked_at TEXT NOT NULL,
+    PRIMARY KEY (artist_id, site, remote_id)
+);
 CREATE TABLE IF NOT EXISTS selection (
     run_id INTEGER NOT NULL REFERENCES run(id) ON DELETE CASCADE,
     artist_id INTEGER NOT NULL,
@@ -156,6 +165,12 @@ def connect() -> sqlite3.Connection:
     columns = {row['name'] for row in conn.execute('PRAGMA table_info(character_target)')}
     if 'priority' not in columns:
         conn.execute('ALTER TABLE character_target ADD COLUMN priority INTEGER NOT NULL DEFAULT 0')
+        conn.commit()
+    columns = {row['name'] for row in conn.execute('PRAGMA table_info(artist)')}
+    if 'in_list' not in columns:
+        # in_list: on the latest artists CSV. enabled: also part of the current plan scope.
+        conn.execute('ALTER TABLE artist ADD COLUMN in_list INTEGER NOT NULL DEFAULT 1')
+        conn.execute('UPDATE artist SET in_list=enabled')
         conn.commit()
     return conn
 
@@ -208,7 +223,7 @@ def import_artists(text: str, disable_missing: bool = True) -> dict:
         added = updated = 0
         for (site, tag), (name, tag_id, count) in parsed.items():
             if (site, tag) in existing:
-                conn.execute('UPDATE artist SET display_name=?, tag_id=?, listed_post_count=?, enabled=1 WHERE id=?',
+                conn.execute('UPDATE artist SET display_name=?, tag_id=?, listed_post_count=?, enabled=1, in_list=1 WHERE id=?',
                              (name, tag_id, count, existing[(site, tag)]))
                 updated += 1
             else:
@@ -219,9 +234,62 @@ def import_artists(text: str, disable_missing: bool = True) -> dict:
         if disable_missing:
             missing = [artist_id for key, artist_id in existing.items() if key not in parsed]
             for artist_id in missing:
-                disabled += conn.execute('UPDATE artist SET enabled=0 WHERE id=? AND enabled=1', (artist_id,)).rowcount
+                disabled += conn.execute('UPDATE artist SET enabled=0, in_list=0 WHERE id=? AND in_list=1', (artist_id,)).rowcount
         conn.commit()
         return {'imported': len(parsed), 'added': added, 'updated': updated, 'disabled': disabled, 'errors': []}
+    finally:
+        conn.close()
+
+
+def enable_only(lines: list[str]) -> dict:
+    """Limit planning to the listed artists (for a pilot); the rest stay listed but disabled.
+
+    Each line is a tag or display name, optionally prefixed with a site
+    ("e621,some_artist" or "e621:some_artist"). Unknown lines change nothing.
+    """
+    conn = connect()
+    try:
+        artists = conn.execute('SELECT id, site, tag, display_name FROM artist WHERE in_list=1').fetchall()
+        by_name = defaultdict(list)
+        for a in artists:
+            for key in {a['tag'].casefold(), a['tag'].replace('_', ' ').casefold(), a['display_name'].casefold()}:
+                by_name[key].append(a)
+        chosen, unknown, ambiguous = set(), [], []
+        for raw in lines:
+            line = raw.strip()
+            if not line:
+                continue
+            site = None
+            for separator in (',', ':'):
+                head, _, rest = line.partition(separator)
+                if rest and head.strip().lower() in SITES:
+                    site, line = head.strip().lower(), rest.strip()
+                    break
+            matches = [a for a in by_name.get(line.casefold(), []) if site is None or a['site'] == site]
+            if not matches:
+                unknown.append(raw.strip())
+            elif len({a['id'] for a in matches}) > 1 and site is None:
+                ambiguous.append(raw.strip())
+                chosen.update(a['id'] for a in matches)
+            else:
+                chosen.update(a['id'] for a in matches)
+        if not chosen:
+            return {'enabled': 0, 'unknown': unknown, 'ambiguous': ambiguous}
+        conn.execute('UPDATE artist SET enabled=0 WHERE in_list=1')
+        conn.executemany('UPDATE artist SET enabled=1 WHERE id=?', [(i,) for i in chosen])
+        conn.commit()
+        return {'enabled': len(chosen), 'unknown': unknown, 'ambiguous': ambiguous}
+    finally:
+        conn.close()
+
+
+def enable_all() -> int:
+    """Enable every artist on the latest artists CSV again."""
+    conn = connect()
+    try:
+        changed = conn.execute('UPDATE artist SET enabled=1 WHERE in_list=1 AND enabled=0').rowcount
+        conn.commit()
+        return changed
     finally:
         conn.close()
 
@@ -327,12 +395,16 @@ def status() -> dict:
         characters = {r['family']: r['n'] for r in conn.execute('SELECT family, count(*) n FROM character_target GROUP BY family')}
         priority_characters = {r['family']: r['n'] for r in conn.execute('SELECT family, count(*) n FROM character_target WHERE priority=1 GROUP BY family')}
         overrides = {r['action']: r['n'] for r in conn.execute('SELECT action, count(*) n FROM override GROUP BY action')}
+        style_flags = conn.execute('SELECT count(*) FROM style_flag').fetchone()[0]
+        listed = conn.execute('SELECT count(*) FROM artist WHERE in_list=1').fetchone()[0]
         job = conn.execute('SELECT * FROM harvest_job ORDER BY id DESC LIMIT 1').fetchone()
         delivery = conn.execute('SELECT id FROM delivery ORDER BY id DESC LIMIT 1').fetchone()
         runs = [run_row(r) for r in conn.execute('SELECT * FROM run ORDER BY id DESC LIMIT 10')]
         return {'artists': dict(artists), 'posts': posts, 'characters': characters, 'priority_characters': priority_characters,
-                'overrides': overrides, 'delivery_id': delivery['id'] if delivery else None,
-                'harvest_job': harvest_row(job) if job else None, 'runs': runs, 'path': str(planner_dir())}
+                'overrides': overrides, 'style_flags': style_flags, 'listed_artists': listed,
+                'delivery_id': delivery['id'] if delivery else None,
+                'harvest_job': harvest_row(job) if job else None, 'runs': runs, 'path': str(planner_dir()),
+                'library': str(db.LIBRARY_PATH), 'custom_path': planner_dir() != db.LIBRARY_PATH / 'planner'}
     finally:
         conn.close()
 
@@ -352,10 +424,12 @@ def run_row(row) -> dict:
 
 
 def list_artists(site: str | None = None, query: str = '', run_id: int | None = None, run_status: str | None = None,
-                 offset: int = 0, limit: int = 100) -> dict:
+                 offset: int = 0, limit: int = 100, flagged: bool = False) -> dict:
     conn = connect()
     try:
         where, params = ['a.enabled=1'], []
+        if flagged:
+            where.append('EXISTS (SELECT 1 FROM style_flag f WHERE f.artist_id=a.id)')
         if site:
             where.append('a.site=?'); params.append(site)
         if query:
@@ -366,7 +440,8 @@ def list_artists(site: str | None = None, query: str = '', run_id: int | None = 
         sql_where = ' AND '.join(where)
         join_params = [run_id] if run_id else []
         total = conn.execute(f'SELECT count(*) FROM artist a {join} WHERE {sql_where}', join_params + params).fetchone()[0]
-        columns = 'a.*' + (', ra.status run_status, ra.reason run_reason, ra.usable, ra.selected, ra.repeats' if run_id else '')
+        columns = 'a.*, (SELECT count(*) FROM style_flag f WHERE f.artist_id=a.id) style_flags' + (
+            ', ra.status run_status, ra.reason run_reason, ra.usable, ra.selected, ra.repeats' if run_id else '')
         rows = conn.execute(f'SELECT {columns} FROM artist a {join} WHERE {sql_where} ORDER BY a.site, a.display_name LIMIT ? OFFSET ?',
                             join_params + params + [limit, offset]).fetchall()
         return {'items': [dict(r) for r in rows], 'total': total}
@@ -382,6 +457,8 @@ def artist_detail(artist_id: int, run_id: int | None, runners_up: int = 40) -> d
         if not artist:
             raise LookupError('Artist not found')
         overrides = {(r['site'], r['remote_id']): r['action'] for r in conn.execute('SELECT * FROM override WHERE artist_id=?', (artist_id,))}
+        flags = {(r['site'], r['remote_id']): {'distance': r['distance'], 'score': r['score']}
+                 for r in conn.execute('SELECT * FROM style_flag WHERE artist_id=?', (artist_id,))}
         selected = []
         if run_id:
             for r in conn.execute("""SELECT s.*, p.preview_url, p.file_url, p.width, p.height, p.rating, p.characters, p.fav_count, p.score
@@ -390,6 +467,7 @@ def artist_detail(artist_id: int, run_id: int | None, runners_up: int = 40) -> d
                 item = dict(r)
                 item['reasons'] = json.loads(item['reasons'])
                 item['override'] = overrides.get((r['site'], r['remote_id']))
+                item['style_flag'] = flags.get((r['site'], r['remote_id']))
                 selected.append(item)
         chosen = {(s['site'], s['remote_id']) for s in selected}
         others = []
@@ -399,7 +477,8 @@ def artist_detail(artist_id: int, run_id: int | None, runners_up: int = 40) -> d
             if (r['site'], r['remote_id']) not in chosen and len(others) < runners_up:
                 others.append({**dict(r), 'override': overrides.get((r['site'], r['remote_id']))})
         run_artist = conn.execute('SELECT * FROM run_artist WHERE run_id=? AND artist_id=?', (run_id, artist_id)).fetchone() if run_id else None
-        return {'artist': dict(artist), 'run': dict(run_artist) if run_artist else None, 'selected': selected, 'runners_up': others}
+        return {'artist': dict(artist), 'run': dict(run_artist) if run_artist else None, 'selected': selected, 'runners_up': others,
+                'style_flags': len(flags)}
     finally:
         conn.close()
 

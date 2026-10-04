@@ -340,6 +340,66 @@ async def shutdown() -> None:
         await asyncio.gather(_task, return_exceptions=True)
 
 
+def stale_images(delivery_id: int) -> dict[int, list[int]]:
+    """Images in this delivery's collections that the run no longer selects.
+
+    Only images that an earlier planner delivery put into the collection are
+    considered: every source of the image must be a post some delivery
+    assigned to that collection, and none may be in this delivery. Manual
+    imports and other providers' images are never touched.
+    """
+    conn = connect()
+    try:
+        keep, planned = defaultdict(set), defaultdict(set)
+        for r in conn.execute('SELECT folder_id, site, remote_id FROM delivery_item WHERE delivery_id=?', (delivery_id,)):
+            keep[r['folder_id']].add((r['site'], r['remote_id']))
+        if not keep:
+            return {}
+        marks = ','.join('?' * len(keep))
+        for r in conn.execute(f'SELECT DISTINCT folder_id, site, remote_id FROM delivery_item WHERE folder_id IN ({marks})', list(keep)):
+            planned[r['folder_id']].add((r['site'], r['remote_id']))
+    finally:
+        conn.close()
+    stale = {}
+    main = db.get_connection()
+    try:
+        for folder_id in keep:
+            sources = defaultdict(set)
+            for r in main.execute("""SELECT i.id, s.provider, s.remote_id FROM image i JOIN image_source s ON s.image_id=i.id
+                                     WHERE i.folder_id=?""", (folder_id,)):
+                # Motion frames are stored as "<post id>:frame:<n>".
+                sources[r['id']].add((r['provider'], str(r['remote_id']).split(':', 1)[0]))
+            ids = [image_id for image_id, posts in sources.items()
+                   if posts <= planned[folder_id] and not posts & keep[folder_id]]
+            if ids:
+                stale[folder_id] = sorted(ids)
+    finally:
+        main.close()
+    return stale
+
+
+def prune_delivery(delivery_id: int, apply: bool, library: Path | None = None) -> dict:
+    """Preview, or apply, removing stale images through the recoverable bulk removal.
+
+    Each collection keeps one recovery batch, so applying replaces any earlier
+    "Recover last deletion" batch in the affected collections.
+    """
+    job = get_delivery(delivery_id)
+    if not job:
+        raise LookupError('Delivery not found')
+    if job['status'] in ACTIVE:
+        raise RuntimeError('Wait for the download to finish or stop it first')
+    stale = stale_images(delivery_id)
+    result = {'collections': len(stale), 'images': sum(len(ids) for ids in stale.values()), 'removed': 0}
+    if apply and stale:
+        import uuid
+        from app.services.collections import CollectionService
+        service = CollectionService()
+        for folder_id, ids in stale.items():
+            result['removed'] += len(service.remove_images(folder_id, ids, library or db.LIBRARY_PATH, uuid.uuid4().hex))
+    return result
+
+
 def export_training_layout(delivery_id: int) -> Path:
     """Write each delivered folder's path, image count and repeats for trainers.
 
