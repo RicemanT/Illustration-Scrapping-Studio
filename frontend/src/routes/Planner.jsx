@@ -14,6 +14,20 @@ const errorText = (error) => {
 };
 const number = (value) => Number(value || 0).toLocaleString();
 
+// Form values survive leaving the page; stored per browser only.
+function usePersisted(key, initial) {
+  const [value, setValue] = useState(() => {
+    try {
+      const raw = window.localStorage.getItem('planner:' + key);
+      return raw === null ? initial : JSON.parse(raw);
+    } catch { return initial; }
+  });
+  useEffect(() => {
+    try { window.localStorage.setItem('planner:' + key, JSON.stringify(value)); } catch { /* storage unavailable */ }
+  }, [key, value]);
+  return [value, setValue];
+}
+
 async function readText(event) {
   const file = event.target.files?.[0];
   event.target.value = '';
@@ -24,7 +38,7 @@ async function readText(event) {
 
 export default function Planner() {
   const client = useQueryClient();
-  const [runId, setRunId] = useState(null);
+  const [runId, setRunId] = usePersisted('runId', null);
   const [notice, setNotice] = useState('');
   const [fileError, setFileError] = useState('');
   const status = useQuery({
@@ -38,16 +52,16 @@ export default function Planner() {
   const refresh = () => client.invalidateQueries({ queryKey: ['planner-status'] });
   const importArtists = useMutation({ mutationFn: api.planner.importArtists, onSuccess: ({ data }) => { setNotice(`Artists: ${data.added} added, ${data.updated} updated, ${data.disabled} disabled.`); refresh(); } });
   const importCharacters = useMutation({ mutationFn: api.planner.importCharacters, onSuccess: ({ data }) => { setNotice(`Character targets: ${number(data.imported)} imported.`); refresh(); } });
-  const [topCounts, setTopCounts] = useState({ danbooru: 3000, e621: 3000 });
-  const [series, setSeries] = useState({ danbooru: '', e621: '' });
-  const [seriesMinPosts, setSeriesMinPosts] = useState(30);
+  const [topCounts, setTopCounts] = usePersisted('topCounts', { danbooru: 3000, e621: 3000 });
+  const [series, setSeries] = usePersisted('series', { danbooru: '', e621: '' });
+  const [seriesMinPosts, setSeriesMinPosts] = usePersisted('seriesMinPosts', 30);
   const seriesJob = useQuery({ queryKey: ['planner-series'], queryFn: async () => (await api.planner.seriesStatus()).data,
     refetchInterval: (query) => query.state.data?.status === 'running' ? 1500 : false });
   const addSeries = useMutation({ mutationFn: () => api.planner.prioritySeries({ ...Object.fromEntries(['danbooru', 'e621'].map((family) => [family, series[family].split(/[\n,]/).map((item) => item.trim().replace(/ /g, '_')).filter(Boolean)])), min_posts: Number(seriesMinPosts) || 1 }),
     onSuccess: () => seriesJob.refetch() });
   const seriesRunning = seriesJob.data?.status === 'running';
   useEffect(() => { if (seriesJob.data?.status === 'completed') refresh(); }, [seriesJob.data?.status]);
-  const [scope, setScope] = useState('');
+  const [scope, setScope] = usePersisted('scope', '');
   const enableOnly = useMutation({ mutationFn: () => api.planner.enableOnly(scope.split('\n').map((line) => line.trim()).filter(Boolean)),
     onSuccess: ({ data }) => { setNotice(`Planning limited to ${number(data.enabled)} artists.${data.unknown.length ? ` Not on the list: ${data.unknown.slice(0, 20).join(', ')}${data.unknown.length > 20 ? '…' : ''}.` : ''}${data.ambiguous.length ? ` On several sites, so all were enabled: ${data.ambiguous.slice(0, 20).join(', ')}.` : ''}`); refresh(); } });
   const enableAll = useMutation({ mutationFn: api.planner.enableAll, onSuccess: ({ data }) => { setNotice(`Enabled ${number(data.enabled)} more artists; every listed artist is in scope again.`); refresh(); } });
@@ -55,7 +69,8 @@ export default function Planner() {
   const fetchCharacters = useMutation({ mutationFn: () => api.planner.fetchCharacters({ danbooru: Number(topCounts.danbooru) || 0, e621: Number(topCounts.e621) || 0 }),
     onSuccess: ({ data }) => { setNotice(`Character targets: ${Object.entries(data.imported).map(([site, count]) => `${number(count)} ${site}`).join(', ')} fetched.`); refresh(); } });
   const runs = status.data?.runs || [];
-  useEffect(() => { if (!runId && runs.length) setRunId(runs[0].id); }, [runs, runId]);
+  // A remembered run may be gone (another library, or older than the ten listed): fall back to the latest.
+  useEffect(() => { if (runs.length && !runs.some((run) => run.id === runId)) setRunId(runs[0].id); }, [runs, runId]);
   const upload = (mutation) => async (event) => {
     setFileError(''); setNotice('');
     try { const text = await readText(event); if (text) mutation.mutate(text); } catch (error) { setFileError(error.message); }
@@ -131,8 +146,8 @@ export default function Planner() {
 }
 
 function HarvestPanel({ status, onChange }) {
-  const [sites, setSites] = useState(SITES);
-  const [maxPosts, setMaxPosts] = useState(2000);
+  const [sites, setSites] = usePersisted('harvestSites', SITES);
+  const [maxPosts, setMaxPosts] = usePersisted('harvestMaxPosts', 2000);
   const [refreshAll, setRefreshAll] = useState(false);
   const job = status?.harvest_job;
   const running = ACTIVE.includes(job?.status);
@@ -175,8 +190,9 @@ const WEIGHT_FIELDS = ['weight_quality', 'weight_novelty', 'weight_character', '
 
 function RunPanel({ status, runId, setRunId, onChange }) {
   const defaults = useQuery({ queryKey: ['planner-defaults'], queryFn: async () => (await api.planner.defaults()).data, staleTime: Infinity });
-  const [config, setConfig] = useState(null);
-  useEffect(() => { if (defaults.data && !config) setConfig(defaults.data); }, [defaults.data, config]);
+  const [config, setConfig] = usePersisted('config', null);
+  // Saved settings keep their values; settings added in newer versions take their defaults.
+  useEffect(() => { if (defaults.data) setConfig((old) => old ? { ...defaults.data, ...old } : defaults.data); }, [defaults.data]);
   const runs = status?.runs || [];
   const selected = runs.find((run) => run.id === runId);
   const running = runs.some((run) => run.status === 'running');
@@ -253,7 +269,7 @@ function TagListEditor({ family, label, value, onChange }) {
 const DELIVERY_STATES = ['done', 'skipped', 'filtered', 'missing', 'error', 'pending'];
 
 function DeliveryPanel({ status, runId, onChange }) {
-  const [prefix, setPrefix] = useState('Planner');
+  const [prefix, setPrefix] = usePersisted('deliveryPrefix', 'Planner');
   const deliveryId = status?.delivery_id;
   const job = useQuery({ queryKey: ['planner-delivery', deliveryId], enabled: Boolean(deliveryId), queryFn: async () => (await api.planner.delivery(deliveryId)).data,
     refetchInterval: (query) => ACTIVE.includes(query.state.data?.status) ? 2000 : false });
@@ -329,8 +345,8 @@ function RunSummary({ summary }) {
 }
 
 function ReviewPanel({ runId }) {
-  const [site, setSite] = useState('');
-  const [runStatus, setRunStatus] = useState('');
+  const [site, setSite] = usePersisted('reviewSite', '');
+  const [runStatus, setRunStatus] = usePersisted('reviewStatus', '');
   const [search, setSearch] = useState('');
   const [offset, setOffset] = useState(0);
   const [artistId, setArtistId] = useState(null);
