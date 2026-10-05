@@ -11,6 +11,7 @@ import DatasetTools from '../components/DatasetTools';
 import LocalFilters from '../components/LocalFilters';
 import TagExplorer from '../components/TagExplorer';
 import FilterReview from '../components/FilterReview';
+import PlannerCandidates from '../components/PlannerCandidates';
 import { ActiveTransferProgress, formatTransferSummary, SyncProgressDetails } from '../components/SyncProgress';
 
 function CollectionView() {
@@ -117,6 +118,30 @@ function CollectionView() {
     queryFn: async () => (await api.folders.latestBulkRecovery(id)).data,
   });
   const availableUndoToken = undoToken || latestRecoveryData?.recovery?.token;
+  // Planner collections: target, completion and the wildcard candidates below the gallery.
+  const { data: plannerFolder } = useQuery({
+    queryKey: ['planner-folder', id],
+    queryFn: async () => { try { return (await api.planner.folder(id)).data; } catch (error) { if (error.response?.status === 404) return null; throw error; } },
+    retry: false,
+  });
+  const folderComplete = Boolean(plannerFolder?.completed_at);
+  const [candidatesHotkeys, setCandidatesHotkeys] = useState(false);
+  const completeMutation = useMutation({
+    meta: { successMessage: 'Folder status saved' },
+    mutationFn: (complete) => api.planner.completeFolder(id, complete),
+    onSuccess: (response) => {
+      queryClient.setQueryData(['planner-folder', id], response.data);
+      refreshFolderViews(queryClient, id);
+      queryClient.invalidateQueries({ queryKey: ['planner-candidates', Number(id)] });
+    },
+  });
+  const toggleComplete = () => {
+    if (folderComplete) {
+      if (confirm('Reopen this folder? Its images go back to pending and you can remove or accept images again.')) completeMutation.mutate(false);
+    } else if (confirm(`Accept this folder as complete? All ${collection.image_count} images become accepted and are locked: future plans select exactly these images.`)) {
+      completeMutation.mutate(true);
+    }
+  };
 
   const jobFinished = ['completed', 'failed', 'canceled'].includes(syncJob?.status);
   const syncTargetsThisFolder = Boolean(syncJob) && (
@@ -229,21 +254,21 @@ function CollectionView() {
 
   useEffect(() => {
     const handleKeyDown = (event) => {
-      if (tab !== 'gallery' || document.querySelector('[aria-modal="true"]')) return;
+      if (tab !== 'gallery' || candidatesHotkeys || document.querySelector('[aria-modal="true"]')) return;
       if (event.target instanceof HTMLElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target.tagName)) return;
       if (event.key.toLowerCase() === 'q') {
         event.preventDefault();
         const allSelected = images.length > 0 && images.every((image) => selected.has(image.id));
         togglePage();
       }
-      if (event.key.toLowerCase() === 'w' && selected.size > 0 && !bulkRemoveMutation.isPending) {
+      if (event.key.toLowerCase() === 'w' && selected.size > 0 && !bulkRemoveMutation.isPending && !folderComplete) {
         event.preventDefault();
         confirmDeleteSelected();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [images, selected.size, bulkRemoveMutation, tab]);
+  }, [images, selected.size, bulkRemoveMutation, tab, candidatesHotkeys, folderComplete]);
 
   const handleSync = (provider) => {
     const limitNum = Math.min(Math.max(parseInt(syncLimit, 10) || 20, 1), 320);
@@ -287,6 +312,17 @@ function CollectionView() {
               </span>
             </div>
           </div>
+          {plannerFolder && <div className="ml-auto mr-3 flex flex-col items-end gap-1">
+            <button type="button" onClick={toggleComplete} disabled={completeMutation.isPending}
+              className={folderComplete ? 'rounded-lg border border-emerald-700 px-4 py-2 text-sm text-emerald-200 hover:bg-emerald-950/50 disabled:opacity-50'
+                : 'rounded-lg bg-emerald-700 px-6 py-3 text-base font-bold text-white shadow hover:bg-emerald-600 disabled:opacity-50'}>
+              {completeMutation.isPending ? 'Saving...' : folderComplete ? 'Reopen folder' : 'Accept folder'}
+            </button>
+            <span className={`text-xs ${folderComplete ? 'text-emerald-300' : collection.image_count < (plannerFolder.target || 0) ? 'text-amber-300' : 'text-slate-400'}`}>
+              {folderComplete ? `Complete since ${new Date(plannerFolder.completed_at).toLocaleDateString()} · ` : 'Pending · '}{collection.image_count}{plannerFolder.target ? ` / ${plannerFolder.target}` : ''} images
+            </span>
+            {completeMutation.isError && <span className="text-xs text-red-300">{completeMutation.error.response?.data?.detail || completeMutation.error.message}</span>}
+          </div>}
           <button
             onClick={handleDelete}
             disabled={deleteMutation.isPending}
@@ -365,7 +401,7 @@ function CollectionView() {
       </div>
 
       {/* Image Gallery */}
-      <div className="gallery-surface border border-[#202a34] rounded">
+      <div className={`gallery-surface border rounded ${plannerFolder && tab === 'gallery' && !candidatesHotkeys ? 'border-blue-900' : 'border-[#202a34]'}`}>
         <div className="p-2 border-b border-[#202a34] flex flex-wrap items-center gap-2">
           {['gallery','duplicates','tags','import','dataset'].map((name) => <button key={name} onClick={() => setTab(name)} className={`px-3 py-1 text-xs rounded ${tab === name ? 'bg-[#273451] text-blue-200' : 'text-slate-400 hover:text-slate-200'}`}>{name}</button>)}
           {tab === 'gallery' && <>
@@ -374,7 +410,7 @@ function CollectionView() {
             <select value={sort} onChange={(e) => { setSort(e.target.value); setOffset(0); }} className="px-2 py-1 bg-[#090d12] border border-[#202a34] rounded text-xs"><option value="newest">Newest</option><option value="oldest">Oldest</option><option value="width">Width</option><option value="height">Height</option></select>
             {selected.size > 0 && <span className="text-xs text-blue-300">{selected.size} selected across pages <button onClick={() => setSelected(new Set())}>Clear selection</button></span>}
             <button type="button" onClick={togglePage} disabled={images.length === 0} className="px-2 py-1 text-xs rounded bg-[#273451] text-blue-200 hover:bg-[#354666] disabled:opacity-50">{images.length > 0 && images.every((image) => selected.has(image.id)) ? 'Deselect page (Q)' : 'Select page (Q)'}</button>
-            {selected.size > 0 && <button type="button" onClick={confirmDeleteSelected} disabled={bulkRemoveMutation.isPending} className="px-2 py-1 text-xs rounded bg-red-900/60 text-red-200 hover:bg-red-800 disabled:opacity-50">Delete selected (W)</button>}
+            {selected.size > 0 && <button type="button" onClick={confirmDeleteSelected} disabled={bulkRemoveMutation.isPending || folderComplete} title={folderComplete ? 'Reopen the folder to remove images' : undefined} className="px-2 py-1 text-xs rounded bg-red-900/60 text-red-200 hover:bg-red-800 disabled:opacity-50">Delete selected (W)</button>}
             {availableUndoToken && <button type="button" onClick={() => undoMutation.mutate()} disabled={undoMutation.isPending} className="px-2 py-1 text-xs rounded bg-emerald-900/60 text-emerald-200 hover:bg-emerald-800 disabled:opacity-50">Recover last deletion{latestRecoveryData?.recovery?.image_count ? ` (${latestRecoveryData.recovery.image_count})` : ''}</button>}
           </>}
         </div>
@@ -409,6 +445,8 @@ function CollectionView() {
         )}
       </div>
 
+      {tab === 'gallery' && plannerFolder && <PlannerCandidates key={id} folderId={Number(id)} context={{ ...plannerFolder, images: collection.image_count }} tileHeight={tileHeight}
+        hotkeysActive={candidatesHotkeys} onHover={setCandidatesHotkeys} />}
       {tab === 'gallery' && <FilterReview key={`${id}-${JSON.stringify(filters)}`} collectionId={Number(id)} filters={filters} />}
       {syncMutation.isError && (
         <div className="bg-red-950/50 border border-red-900 rounded-lg p-4 text-red-300">

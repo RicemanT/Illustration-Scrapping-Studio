@@ -111,6 +111,142 @@ class PruneTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(removed_post, picked)
 
 
+class CurationTests(unittest.IsolatedAsyncioTestCase):
+    setUp = test_planner_delivery.DeliveryTests.setUp
+    tearDown = test_planner_delivery.DeliveryTests.tearDown
+    factory = test_planner_delivery.DeliveryTests.factory
+
+    async def _delivered_folder(self):
+        job = delivery.create_delivery(self.run_id, 'Planner', self.root)
+        await delivery.run_delivery(job['id'], asyncio.Event(), self.factory, self.root)
+        main = db.get_connection()
+        folder_id = main.execute("SELECT id FROM collection WHERE name='Artist X'").fetchone()[0]
+        main.close()
+        return folder_id
+
+    def _picked(self, run_id):
+        conn = store.connect()
+        try:
+            return {r[0] for r in conn.execute("SELECT remote_id FROM selection WHERE run_id=? AND site='danbooru'", (run_id,))}
+        finally:
+            conn.close()
+
+    async def test_candidates_accept_and_complete_freeze_the_selection(self):
+        from app.services import planner_curation as curation
+        folder_id = await self._delivered_folder()
+        context = curation.folder_context(folder_id)
+        self.assertEqual((context['tag'], context['target'], context['images'], context['completed_at']), ('artist_x', 5, 4, None))
+        present = {r for r in self._picked(self.run_id) if r != '3'}
+        listed = curation.candidates(folder_id)
+        # Everything harvested that is not in the folder: the unselected post and deleted post 3.
+        self.assertEqual({i['remote_id'] for i in listed['items']}, {str(i) for i in range(1, 7)} - present)
+        extra = next(i['remote_id'] for i in listed['items'] if i['remote_id'] != '3')
+        store.set_override(1, 'danbooru', extra, 'ban')
+        self.assertNotIn(extra, {i['remote_id'] for i in curation.candidates(folder_id)['items']})
+        self.assertIn(extra, {i['remote_id'] for i in curation.candidates(folder_id, include_banned=True)['items']})
+
+        result = curation.accept_posts(folder_id, [('danbooru', extra), ('danbooru', 'nope')])
+        self.assertEqual(result, {'accepted': 1, 'by_site': {'danbooru': [extra]}})
+        run = store.run_plan(PlannerConfig(min_images=3, max_images=5, character_floor=0))
+        self.assertIn(extra, self._picked(run))
+
+        context = curation.set_complete(folder_id, True)
+        self.assertTrue(context['completed_at'])
+        main = db.get_connection()
+        statuses = {r[0] for r in main.execute('SELECT review_status FROM image WHERE folder_id=?', (folder_id,))}
+        main.close()
+        self.assertEqual(statuses, {'accepted'})
+        with self.assertRaises(ValueError):
+            curation.accept_posts(folder_id, [('danbooru', '3')])
+        # A completed collection selects exactly its images, even with a larger target.
+        run = store.run_plan(PlannerConfig(min_images=3, max_images=50, character_floor=0))
+        self.assertEqual(self._picked(run), present)
+
+        curation.set_complete(folder_id, False)
+        main = db.get_connection()
+        statuses = {r[0] for r in main.execute('SELECT review_status FROM image WHERE folder_id=?', (folder_id,))}
+        main.close()
+        self.assertEqual(statuses, {'pending'})
+        # After reopening, removing an image still bans its post.
+        main = db.get_connection()
+        image, post = main.execute("""SELECT i.id, s.remote_id FROM image i JOIN image_source s ON s.image_id=i.id
+                                     WHERE i.folder_id=? LIMIT 1""", (folder_id,)).fetchone()
+        main.close()
+        from app.services.collections import CollectionService
+        CollectionService().remove_images(folder_id, [image], self.root, 'ab' * 16)
+        self.assertEqual(delivery.ban_removed_images(), 1)
+        self.assertNotIn(post, self._picked(store.run_plan(PlannerConfig(min_images=3, max_images=5, character_floor=0))))
+
+    async def test_removing_an_accepted_image_turns_its_lock_into_a_ban(self):
+        from app.services import planner_curation as curation
+        folder_id = await self._delivered_folder()
+        extra = next(i['remote_id'] for i in curation.candidates(folder_id)['items'] if i['remote_id'] != '3')
+        curation.accept_posts(folder_id, [('danbooru', extra)])
+        # Not imported yet: nothing to ban.
+        self.assertEqual(delivery.ban_removed_images(), 0)
+        main = db.get_connection()
+        batch = main.execute("INSERT INTO import_batch (collection_id, provider, status, created_at) VALUES (?, 'danbooru', 'completed', 'x')",
+                             (folder_id,)).lastrowid
+        image = main.execute('SELECT id FROM image WHERE folder_id=? LIMIT 1', (folder_id,)).fetchone()[0]
+        main.execute("INSERT INTO import_item (batch_id, remote_id, status, image_id) VALUES (?, ?, 'downloaded', ?)", (batch, extra, image))
+        main.commit()
+        main.close()
+        # Imported, then removed by hand (its image is not in the folder).
+        self.assertEqual(delivery.ban_removed_images(), 1)
+        conn = store.connect()
+        action = conn.execute("SELECT action FROM override WHERE artist_id=1 AND site='danbooru' AND remote_id=?", (extra,)).fetchone()[0]
+        conn.close()
+        self.assertEqual(action, 'ban')
+        self.assertEqual(delivery.ban_removed_images(), 0)
+
+    async def test_routes_reject_other_folders_and_previews_are_resized_and_cached(self):
+        import io
+        from unittest import mock
+        import httpx
+        from fastapi import HTTPException
+        from PIL import Image
+        from app.routes import planner as routes
+        folder_id = await self._delivered_folder()
+        with self.assertRaises(HTTPException) as caught:
+            routes.folder_context(folder_id + 100)
+        self.assertEqual(caught.exception.status_code, 404)
+        routes.complete_folder(folder_id, routes.CompleteRequest(complete=True))
+        with self.assertRaises(HTTPException) as caught:
+            routes.accept_candidates(folder_id, routes.AcceptRequest(posts=[{'site': 'danbooru', 'remote_id': '3'}]))
+        self.assertEqual(caught.exception.status_code, 409)
+
+        self.assertEqual(routes._variant_urls('danbooru', 'https://cdn.donmai.us/180x180/ab/cd/x.jpg', 'https://cdn.donmai.us/original/x.png', 'view')[0],
+                         'https://cdn.donmai.us/720x720/ab/cd/x.jpg')
+        self.assertEqual(routes._variant_urls('e621', 'https://static1.e621.net/data/preview/ab/cd/x.jpg', None, 'grid'),
+                         ['https://static1.e621.net/data/sample/ab/cd/x.jpg', 'https://static1.e621.net/data/preview/ab/cd/x.jpg'])
+        self.assertEqual(routes._variant_urls('gelbooru', 'https://img3.gelbooru.com/thumbnails/ab/cd/thumbnail_x.jpg', None, 'grid')[0],
+                         'https://img3.gelbooru.com/samples/ab/cd/sample_x.jpg')
+
+        conn = store.connect()
+        conn.execute("UPDATE post SET preview_url='https://cdn.donmai.us/180x180/a/b/2.jpg', file_url='https://cdn.donmai.us/original/a/b/2.png' WHERE site='danbooru' AND remote_id='2'")
+        conn.commit()
+        conn.close()
+        requested = []
+
+        def handler(request):
+            requested.append(str(request.url))
+            if '/720x720/' in str(request.url):
+                return httpx.Response(404)
+            out = io.BytesIO()
+            Image.new('RGB', (3000, 2000), (10, 20, 30)).save(out, 'PNG')
+            return httpx.Response(200, content=out.getvalue(), headers={'content-type': 'image/png'})
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        with mock.patch.object(routes, '_client', lambda: client):
+            response = await routes.post_preview(1, 'danbooru', '2', size='view')
+            again = await routes.post_preview(1, 'danbooru', '2', size='view')
+        await client.aclose()
+        self.assertEqual(requested, ['https://cdn.donmai.us/720x720/a/b/2.jpg', 'https://cdn.donmai.us/original/a/b/2.png'])
+        self.assertEqual(response.path, again.path)
+        with Image.open(response.path) as image:
+            self.assertEqual(image.size, (1024, 683))
+
+
 class RecencyTests(unittest.TestCase):
     setUp = test_planner.PlannerStoreTests.setUp
     tearDown = test_planner.PlannerStoreTests.tearDown

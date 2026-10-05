@@ -387,15 +387,43 @@ def ban_removed_images() -> int:
             removed += [key for key in posts if (key[1], key[2]) not in present and key not in locked and key not in banned_already]
     finally:
         main.close()
-    if removed:
+    # Posts accepted from the candidates section are locked; removing their
+    # image later turns the lock into a ban.
+    conn = connect()
+    try:
+        accepted = conn.execute("""SELECT p.folder_id, p.artist_id, p.site, p.remote_id, p.seen FROM accepted_post p
+                                   JOIN artist a ON a.id=p.artist_id WHERE a.completed_at IS NULL""").fetchall()
+    finally:
+        conn.close()
+    unaccepted = []
+    main = db.get_connection()
+    try:
+        by_folder = defaultdict(list)
+        for r in accepted:
+            by_folder[r['folder_id']].append(r)
+        for folder_id, rows in by_folder.items():
+            if not main.execute('SELECT 1 FROM collection WHERE id=?', (folder_id,)).fetchone():
+                continue
+            present = {(r['provider'], str(r['remote_id']).split(':', 1)[0]) for r in main.execute(
+                'SELECT s.provider, s.remote_id FROM image i JOIN image_source s ON s.image_id=i.id WHERE i.folder_id=?', (folder_id,))}
+            # An accepted post still downloading has no image yet; only act once it was in the folder.
+            unaccepted += [r for r in rows if (r['site'], r['remote_id']) not in present
+                           and (r['seen'] or main.execute("""SELECT 1 FROM import_batch b JOIN import_item t ON t.batch_id=b.id
+                                                WHERE b.collection_id=? AND b.provider=? AND t.remote_id=? AND t.image_id IS NOT NULL""",
+                                            (folder_id, r['site'], r['remote_id'])).fetchone())]
+    finally:
+        main.close()
+    if removed or unaccepted:
         conn = connect()
         try:
             conn.executemany("INSERT OR REPLACE INTO override (artist_id, site, remote_id, action, created_at) VALUES (?,?,?,'ban',?)",
-                             [(*key, now()) for key in removed])
+                             [(*key, now()) for key in removed] + [(r['artist_id'], r['site'], r['remote_id'], now()) for r in unaccepted])
+            conn.executemany('DELETE FROM accepted_post WHERE folder_id=? AND site=? AND remote_id=?',
+                             [(r['folder_id'], r['site'], r['remote_id']) for r in unaccepted])
             conn.commit()
         finally:
             conn.close()
-    return len(removed)
+    return len(removed) + len(unaccepted)
 
 
 def stale_images(delivery_id: int) -> dict[int, list[int]]:

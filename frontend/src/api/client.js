@@ -202,6 +202,10 @@ export const api = {
     run: (config) => client.post('/planner/runs', config),
     getRun: (id) => client.get(`/planner/runs/${id}`),
     exportRun: (id) => client.post(`/planner/runs/${id}/export`),
+    folder: (folderId) => client.get(`/planner/folders/${folderId}`),
+    candidates: (folderId, params) => client.get(`/planner/folders/${folderId}/candidates`, { params }),
+    acceptCandidates: (folderId, posts) => client.post(`/planner/folders/${folderId}/accept`, { posts }),
+    completeFolder: (folderId, complete) => client.post(`/planner/folders/${folderId}/complete`, { complete }),
   },
   exports: {
     validate: (folderId) => client.get(`/exports/validate/${folderId}`),

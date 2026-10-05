@@ -121,6 +121,16 @@ CREATE TABLE IF NOT EXISTS delivery_item (
     PRIMARY KEY (delivery_id, site, remote_id, artist_id)
 );
 CREATE INDEX IF NOT EXISTS delivery_item_pending ON delivery_item(delivery_id, site, status);
+CREATE INDEX IF NOT EXISTS delivery_item_folder ON delivery_item(folder_id);
+CREATE TABLE IF NOT EXISTS accepted_post (
+    folder_id INTEGER NOT NULL,
+    artist_id INTEGER NOT NULL,
+    site TEXT NOT NULL,
+    remote_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    seen INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (folder_id, site, remote_id)
+);
 CREATE TABLE IF NOT EXISTS style_flag (
     artist_id INTEGER NOT NULL REFERENCES artist(id) ON DELETE CASCADE,
     site TEXT NOT NULL,
@@ -171,6 +181,10 @@ def connect() -> sqlite3.Connection:
         # in_list: on the latest artists CSV. enabled: also part of the current plan scope.
         conn.execute('ALTER TABLE artist ADD COLUMN in_list INTEGER NOT NULL DEFAULT 1')
         conn.execute('UPDATE artist SET in_list=enabled')
+        conn.commit()
+    if 'completed_at' not in columns:
+        # Set when the artist's collection is accepted as complete by hand.
+        conn.execute('ALTER TABLE artist ADD COLUMN completed_at TEXT')
         conn.commit()
     return conn
 
@@ -494,6 +508,8 @@ def _plan_family(conn, family: str, config: PlannerConfig, log):
     blocked = config.tag_set('blocked', family)
     boost = config.tag_set('boost', family)
     overrides = {(r['artist_id'], r['site'], r['remote_id']): r['action'] for r in conn.execute('SELECT * FROM override')}
+    # Collections accepted as complete keep exactly their locked images.
+    completed = {r['id'] for r in conn.execute('SELECT id FROM artist WHERE completed_at IS NOT NULL')}
     target_rows = conn.execute('SELECT tag, priority FROM character_target WHERE family=? ORDER BY priority DESC, rank', (family,)).fetchall()
     ranked = [r['tag'] for r in target_rows]
     priority = {r['tag'] for r in target_rows if r['priority']}
@@ -519,6 +535,8 @@ def _plan_family(conn, family: str, config: PlannerConfig, log):
             # Styles drift over the years; recent work is the most consistent.
             window = sorted(rows, key=lambda r: (r['created_at'] or '', int(r['remote_id']) if str(r['remote_id']).isdigit() else 0),
                             reverse=True)[:config.newest_posts_per_artist]
+        if current in completed:
+            window = [r for r in rows if overrides.get((r['artist_id'], r['site'], r['remote_id'])) == 'lock']
         for r in window:
             action = overrides.get((r['artist_id'], r['site'], r['remote_id']))
             reason = rejection(r, config, blocked, banned=action == 'ban')

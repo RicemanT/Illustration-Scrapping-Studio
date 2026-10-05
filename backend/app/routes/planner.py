@@ -12,6 +12,7 @@ from app.db import LIBRARY_PATH
 from app.services import planner_delivery as delivery
 from app.services import planner_harvest as harvest
 from app.services import planner_store as store
+from app.services import planner_curation as curation
 from app.services import planner_tags
 from app.services.planner_select import PlannerConfig
 
@@ -368,6 +369,127 @@ def _client() -> httpx.AsyncClient:
         _thumb_client = httpx.AsyncClient(timeout=20, follow_redirects=True,
                                           headers={'User-Agent': 'ArtistCollectionBuilder/1.0 (https://github.com/artist-collection)'})
     return _thumb_client
+
+
+class PostRef(BaseModel):
+    site: Literal['danbooru', 'gelbooru', 'e621']
+    remote_id: str = Field(min_length=1, max_length=64)
+
+
+class AcceptRequest(BaseModel):
+    posts: list[PostRef] = Field(min_length=1, max_length=500)
+
+
+class CompleteRequest(BaseModel):
+    complete: bool
+
+
+@router.get('/folders/{folder_id}')
+def folder_context(folder_id: int):
+    context = curation.folder_context(folder_id)
+    if context is None:
+        raise HTTPException(404, 'This collection was not created by the Dataset Planner')
+    return context
+
+
+@router.get('/folders/{folder_id}/candidates')
+def folder_candidates(folder_id: int, include_filtered: bool = False, include_banned: bool = False,
+                      sort: Literal['popular', 'newest'] = 'popular', offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=200)):
+    try:
+        return curation.candidates(folder_id, include_filtered, include_banned, sort, offset, limit)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.post('/folders/{folder_id}/accept')
+def accept_candidates(folder_id: int, request: AcceptRequest):
+    try:
+        return curation.accept_posts(folder_id, [(p.site, p.remote_id) for p in request.posts])
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post('/folders/{folder_id}/complete')
+def complete_folder(folder_id: int, request: CompleteRequest):
+    try:
+        return curation.set_complete(folder_id, request.complete)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+_preview_slots = asyncio.Semaphore(6)
+
+
+def _variant_urls(site: str, preview: str | None, original: str | None, size: str) -> list[str]:
+    """Larger preview variants first, the original last (downscaled when used)."""
+    urls = []
+    if preview:
+        if site == 'danbooru' and '/180x180/' in preview:
+            urls.append(preview.replace('/180x180/', '/360x360/' if size == 'grid' else '/720x720/'))
+        elif site == 'e621' and '/data/preview/' in preview:
+            urls.append(preview.replace('/data/preview/', '/data/sample/'))
+        elif site == 'gelbooru' and '/thumbnails/' in preview:
+            urls.append(preview.replace('/thumbnails/', '/samples/').replace('/thumbnail_', '/sample_'))
+    if original:
+        urls.append(original)
+    if preview:
+        urls.append(preview)
+    return urls
+
+
+@router.get('/previews/{artist_id}/{site}/{remote_id}')
+async def post_preview(artist_id: int, site: Literal['danbooru', 'gelbooru', 'e621'], remote_id: str,
+                       size: Literal['grid', 'view'] = 'grid'):
+    """A readable preview of a harvested post (grid ~400 px, viewer ~1024 px), cached."""
+    if not remote_id.isdigit():
+        raise HTTPException(404, 'Unknown post')
+    path = store.planner_dir() / 'thumbs' / size / site / f'{remote_id}.jpg'
+    if not path.exists():
+        conn = store.connect()
+        try:
+            row = conn.execute('SELECT preview_url, file_url, ext FROM post WHERE artist_id=? AND site=? AND remote_id=?', (artist_id, site, remote_id)).fetchone()
+        finally:
+            conn.close()
+        if not row:
+            raise HTTPException(404, 'Unknown post')
+        from app.providers import pacing
+        from PIL import Image
+        import io
+        headers = {'Referer': 'https://gelbooru.com/'} if site == 'gelbooru' else {}
+        longest = 400 if size == 'grid' else 1024
+        data = None
+        # Never pull a whole video just for a preview.
+        original = None if (row['ext'] or '').lower() in {'mp4', 'webm', 'zip', 'swf'} else row['file_url']
+        for url in _variant_urls(site, row['preview_url'], original, size):
+            if not url or not url.startswith('https://'):
+                continue
+            async with _preview_slots:
+                await pacing.pacer(site, 'download').wait(pacing.interval(site, 'download'))
+                try:
+                    response = await _client().get(url, headers=headers)
+                except httpx.HTTPError:
+                    continue
+            if response.status_code != 200 or not response.headers.get('content-type', '').startswith('image/'):
+                continue
+            try:
+                with Image.open(io.BytesIO(response.content)) as image:
+                    image = image.convert('RGB')
+                    image.thumbnail((longest, longest), Image.LANCZOS)
+                    out = io.BytesIO()
+                    image.save(out, 'JPEG', quality=88)
+                    data = out.getvalue()
+                break
+            except Exception:
+                continue
+        if data is None:
+            raise HTTPException(502, 'No preview could be loaded for this post')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_suffix('.tmp')
+        temp.write_bytes(data)
+        temp.replace(path)
+    return FileResponse(path, headers={'Cache-Control': 'max-age=604800'})
 
 
 @router.get('/thumbs/{artist_id}/{site}/{remote_id}')
