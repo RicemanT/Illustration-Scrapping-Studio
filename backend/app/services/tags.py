@@ -15,6 +15,8 @@ TAG_CATEGORIES = ("artist", "character", "copyright", "species", "general", "met
 TAG_CATEGORY_ORDER = {category: index for index, category in enumerate(TAG_CATEGORIES)}
 DEFAULT_GROUND_TRUTH_CATEGORIES = ("artist", "character", "copyright", "species", "general")
 GROUND_TRUTH_TAG_PROVIDERS = frozenset({"danbooru", "gelbooru", "e621"})
+QUALITY_MARKS = ("masterpiece", "best quality", "low quality")
+AESTHETIC_MARKS = ("very aesthetic", "aesthetic")
 
 
 def normalize_tag(tag: str) -> str:
@@ -48,10 +50,12 @@ class TagService:
         source_tags = self._source_tags(conn, image_id, included_categories)
         overrides = self._override_rows(conn, image_id)
         tags = self._effective_tags(conn, image_id)
+        quality_tags = self._quality_tags(conn, image_id)
         conn.close()
         return {
             "image_id": image_id,
             "tags": tags,
+            "quality_tags": quality_tags,
             "source_tags": source_tags,
             "overrides": overrides,
             "included_categories": included_categories,
@@ -142,6 +146,9 @@ class TagService:
         if not conn.execute("SELECT 1 FROM image WHERE id = ?", (image_id,)).fetchone():
             conn.close()
             raise LookupError("Image not found")
+        # Committed quality tags are managed by the marks, not by overrides.
+        managed = {tag.casefold() for tag in self._quality_tags(conn, image_id)}
+        desired = [tag for tag in desired if tag.casefold() not in managed]
         before = self._override_rows(conn, image_id)
         source = self._source_tags(conn, image_id, self._included_categories(conn, image_id))
         source_keys = {tag.casefold(): tag for tag in source}
@@ -583,7 +590,7 @@ class TagService:
             row["tag"].casefold(): row["category"] for row in additions
         }
         source_categories = self._source_category_map(conn, image_id, included_categories)
-        return sorted(
+        result = sorted(
             result,
             key=lambda tag: TAG_CATEGORY_ORDER.get(
                 addition_categories.get(tag.casefold())
@@ -591,6 +598,21 @@ class TagService:
                 len(TAG_CATEGORY_ORDER),
             ),
         )
+        # Quality and aesthetic tags committed by accepting the folder always
+        # come last, after every other category.
+        quality = self._quality_tags(conn, image_id)
+        if quality:
+            keys = {tag.casefold() for tag in quality}
+            result = [tag for tag in result if tag.casefold() not in keys] + quality
+        return result
+
+    @staticmethod
+    def _quality_tags(conn, image_id: int) -> list[str]:
+        row = conn.execute("SELECT quality_tags FROM image WHERE id = ?", (image_id,)).fetchone()
+        try:
+            return normalize_tags(json.loads(row[0])) if row and row[0] else []
+        except (TypeError, ValueError):
+            return []
 
     @staticmethod
     def _record_operation(conn, collection_id: Optional[int], action: str, snapshots: dict[int, list[dict]]) -> str:

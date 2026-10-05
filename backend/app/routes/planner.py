@@ -384,6 +384,11 @@ class CompleteRequest(BaseModel):
     complete: bool
 
 
+class MarksRequest(BaseModel):
+    quality: Optional[Literal['masterpiece', 'best quality', 'low quality']] = None
+    aesthetic: Optional[Literal['very aesthetic', 'aesthetic']] = None
+
+
 @router.get('/folders/{folder_id}')
 def folder_context(folder_id: int):
     context = curation.folder_context(folder_id)
@@ -415,6 +420,24 @@ def accept_candidates(folder_id: int, request: AcceptRequest):
 def complete_folder(folder_id: int, request: CompleteRequest):
     try:
         return curation.set_complete(folder_id, request.complete)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.put('/folders/{folder_id}/images/{image_id}/marks')
+def set_image_marks(folder_id: int, image_id: int, request: MarksRequest):
+    try:
+        return curation.set_marks(folder_id, image_id, request.quality, request.aesthetic)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post('/folders/{folder_id}/images/{image_id}/viewed')
+def mark_image_viewed(folder_id: int, image_id: int):
+    try:
+        return curation.mark_viewed(folder_id, image_id)
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
 

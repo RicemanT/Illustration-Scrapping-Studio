@@ -21,6 +21,8 @@ class LocalFilter(BaseModel):
     max_height: int | None = Field(default=None, ge=1)
     review_status: Literal["pending", "accepted", "rejected", "archived"] | None = None
     favorite: bool | None = None
+    # Hand-assigned marks: one tag, "normal" (no marks) or "unviewed".
+    quality: Literal["normal", "unviewed", "masterpiece", "best quality", "low quality", "very aesthetic", "aesthetic"] | None = None
     image_ids: list[int] | None = Field(default=None, max_length=500)
 
     @field_validator("required_tags", "excluded_tags")
@@ -80,6 +82,9 @@ def query_sql(folder_id: int, filters: LocalFilter):
       UNION ALL
       SELECT o.image_id,o.category,tag_normalize(o.tag) FROM image_tag_override o JOIN scope i ON i.id=o.image_id
       WHERE o.action='add' AND o.category IN (SELECT value FROM json_each(i.categories))
+      UNION ALL
+      SELECT i.id,'quality',tag_normalize(q.value) FROM scope i,
+        json_each(CASE WHEN json_valid(i.quality_tags) THEN i.quality_tags ELSE '[]' END) q
     ), effective AS (
       SELECT image_id, category, tag FROM (
         SELECT image_id,category,tag, row_number() OVER (PARTITION BY image_id,tag_key(tag)
@@ -101,8 +106,10 @@ def query_sql(folder_id: int, filters: LocalFilter):
         if filters.tag_basis == 'effective':
             candidate += """ UNION SELECT image_id FROM image_tag_override WHERE tag_key(tag)=? AND action='add'
               UNION SELECT ix.id FROM collection c JOIN image ix ON ix.folder_id=c.id
-              WHERE c.id=? AND tag_key(replace(c.artist_tag_template,'{artist}',tag_key(c.name)))=?"""
-            params.extend([key,folder_id,key])
+              WHERE c.id=? AND tag_key(replace(c.artist_tag_template,'{artist}',tag_key(c.name)))=?
+              UNION SELECT ix.id FROM image ix, json_each(CASE WHEN json_valid(ix.quality_tags) THEN ix.quality_tags ELSE '[]' END) q
+              WHERE ix.folder_id=? AND tag_key(q.value)=?"""
+            params.extend([key,folder_id,key,folder_id,key])
         candidates.append(f"SELECT image_id FROM ({candidate})")
     if candidates:
         clauses.append('i.id IN (' + ' INTERSECT '.join(candidates) + ')')
@@ -116,6 +123,13 @@ def query_sql(folder_id: int, filters: LocalFilter):
         if value is not None:
             clauses.append(f"i.{field}=?")
             params.append(value)
+    if filters.quality == "normal":
+        clauses.append("i.quality_mark IS NULL AND i.aesthetic_mark IS NULL")
+    elif filters.quality == "unviewed":
+        clauses.append("i.marks_viewed_at IS NULL")
+    elif filters.quality:
+        clauses.append(f"i.{'aesthetic_mark' if 'aesthetic' in filters.quality else 'quality_mark'}=?")
+        params.append(filters.quality)
     if filters.image_ids is not None:
         clauses.append("i.id IN (SELECT value FROM json_each(?))")
         import json
@@ -155,8 +169,10 @@ def query_sql(folder_id: int, filters: LocalFilter):
                     OR EXISTS (SELECT 1 FROM image_tag t JOIN image_source s ON s.id=t.source_id
                       WHERE t.image_id=i.id AND tag_key(t.tag)=? AND t.category<>'artist'
                       AND t.category IN (SELECT value FROM json_each(i.categories))
-                      AND s.provider IN ('danbooru','gelbooru','e621')))))"""
-                params.extend([key]*4)
+                      AND s.provider IN ('danbooru','gelbooru','e621'))))
+                  OR EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(i.quality_tags) THEN i.quality_tags ELSE '[]' END) q
+                    WHERE tag_key(q.value)=?))"""
+                params.extend([key]*5)
             clauses.append(('NOT ' if exclude else '') + match)
     return cte, " AND ".join(clauses), params
 

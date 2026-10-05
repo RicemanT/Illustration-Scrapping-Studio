@@ -464,6 +464,12 @@ def init_db():
     _ensure_column(cursor, "image", "original_media_format", "TEXT")
     _ensure_column(cursor, "image", "original_media_url", "TEXT")
     _ensure_column(cursor, "image", "derived_media_source", "TEXT")
+    # Hand-assigned quality and aesthetic marks. quality_tags (JSON list) is
+    # what was committed to the ground truth when the folder was accepted.
+    _ensure_column(cursor, "image", "quality_mark", "TEXT")
+    _ensure_column(cursor, "image", "aesthetic_mark", "TEXT")
+    _ensure_column(cursor, "image", "marks_viewed_at", "TEXT")
+    _ensure_column(cursor, "image", "quality_tags", "TEXT")
     _migrate_folder_scoped_images(conn)
     cursor = conn.cursor()
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_image_md5 ON image(md5)")

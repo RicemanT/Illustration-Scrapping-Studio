@@ -246,6 +246,59 @@ class CurationTests(unittest.IsolatedAsyncioTestCase):
         with Image.open(response.path) as image:
             self.assertEqual(image.size, (1024, 683))
 
+    async def test_quality_marks_reach_the_sidecar_only_when_the_folder_is_accepted(self):
+        from app.services import planner_curation as curation
+        from app.services.filters import LocalFilter, LocalQuery, list_images
+        from app.services.tags import TagService
+        folder_id = await self._delivered_folder()
+        main = db.get_connection()
+        first, second, third = [r[0] for r in main.execute('SELECT id FROM image WHERE folder_id=? ORDER BY id LIMIT 3', (folder_id,))]
+        path = main.execute('SELECT path FROM image WHERE id=?', (first,)).fetchone()[0]
+        main.close()
+        sidecar = self.root / 'images' / Path(path).with_suffix('.txt')
+        before = sidecar.read_text(encoding='utf-8')
+
+        def ids(**filters):
+            return {i['id'] for i in list_images(folder_id, LocalQuery(filters=LocalFilter(**filters)))['items']}
+
+        curation.set_marks(folder_id, first, 'masterpiece', 'very aesthetic')
+        curation.set_marks(folder_id, second, 'low quality', None)
+        curation.mark_viewed(folder_id, third)
+        marks = curation.folder_context(folder_id)['marks']
+        self.assertEqual((marks['viewed'], marks['masterpiece'], marks['very aesthetic'], marks['low quality']), (3, 1, 1, 1))
+        self.assertEqual(ids(quality='masterpiece'), {first})
+        self.assertEqual(ids(quality='very aesthetic'), {first})
+        self.assertIn(third, ids(quality='normal'))
+        self.assertNotIn(first, ids(quality='normal'))
+        self.assertNotIn(third, ids(quality='unviewed'))
+        with self.assertRaises(ValueError):
+            curation.set_marks(folder_id, first, 'aesthetic', None)
+        # Not written before the folder is accepted.
+        self.assertEqual(sidecar.read_text(encoding='utf-8'), before)
+        self.assertEqual(ids(required_tags=['masterpiece']), set())
+
+        curation.set_complete(folder_id, True)
+        self.assertEqual(sidecar.read_text(encoding='utf-8'), before + ', masterpiece, very aesthetic')
+        self.assertEqual(ids(required_tags=['masterpiece']), {first})
+        with self.assertRaises(ValueError):
+            curation.set_marks(folder_id, first, None, None)
+        # Editing the ground truth keeps the managed tags last and never duplicates them.
+        tags = TagService(self.root)
+        edited = tags.get_ground_truth(first)['tags']
+        tags.replace_ground_truth(first, ['extra tag', *edited])
+        self.assertTrue(sidecar.read_text(encoding='utf-8').endswith('masterpiece, very aesthetic'))
+        self.assertEqual(sidecar.read_text(encoding='utf-8').count('masterpiece'), 1)
+
+        # Reopened: marks change, the sidecar keeps the committed tags until accepted again.
+        curation.set_complete(folder_id, False)
+        curation.set_marks(folder_id, first, 'best quality', None)
+        self.assertTrue(sidecar.read_text(encoding='utf-8').endswith('masterpiece, very aesthetic'))
+        curation.set_complete(folder_id, True)
+        text = sidecar.read_text(encoding='utf-8')
+        self.assertTrue(text.startswith('extra tag') or 'extra tag' in text)
+        self.assertTrue(text.endswith(', best quality'))
+        self.assertNotIn('masterpiece', text)
+
 
 class RecencyTests(unittest.TestCase):
     setUp = test_planner.PlannerStoreTests.setUp

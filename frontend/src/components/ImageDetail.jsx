@@ -3,8 +3,10 @@ import React, { useEffect, useState, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api, { backendAssetUrl } from '../api/client';
 import ImageStorageLocations from './ImageStorageLocations';
+import { MARKS, applyMark, isActive, markFor, markTags, marksOf } from './qualityMarks';
 
-function ImageDetail({ image, onClose, onPrevious, onNext, position, total }) {
+// marking: { folderId, locked } for planner collections; enables quality marks.
+function ImageDetail({ image, onClose, onPrevious, onNext, position, total, marking = null }) {
   const dialog = useRef(null);
   const [showInfo, setShowInfo] = useState(() => { try { return localStorage.getItem('artist.viewerInfo') !== 'false'; } catch { return true; } });
   const [zoom, setZoom] = useState(false);
@@ -51,11 +53,49 @@ function ImageDetail({ image, onClose, onPrevious, onNext, position, total }) {
       queryClient.invalidateQueries({ queryKey: ['tag-explorer'] });
     },
   });
+  // Quality marks are saved as working marks right away and written into the
+  // ground truth when the folder is accepted.
+  const markable = Boolean(marking) && !marking.locked;
+  const [marks, setMarks] = useState(() => marksOf(image));
+  const marksRef = useRef(marks);
+  const marksTouched = useRef(false);
+  const saveChain = useRef(Promise.resolve());
+  const [markError, setMarkError] = useState(null);
+  useEffect(() => { if (fullImage && !marksTouched.current) { marksRef.current = marksOf(fullImage); setMarks(marksRef.current); } }, [fullImage]);
+  const updateImageCaches = (row) => {
+    queryClient.setQueryData(['image', image.id], (old) => (old ? { ...old, ...row } : old));
+    queryClient.setQueriesData({ queryKey: ['collection-images', String(marking.folderId)] }, (old) => {
+      if (!old) return old;
+      const patch = (items) => items?.map((item) => (item.id === image.id ? { ...item, ...row } : item));
+      return { ...old, items: patch(old.items), images: patch(old.images) };
+    });
+    queryClient.invalidateQueries({ queryKey: ['planner-folder', String(marking.folderId)] });
+  };
+  const chooseMark = (mark) => {
+    if (!markable) return;
+    const next = applyMark(mark, marksRef.current);
+    marksTouched.current = true;
+    marksRef.current = next;
+    setMarks(next);
+    saveChain.current = saveChain.current
+      .then(() => api.planner.setMarks(marking.folderId, image.id, next))
+      .then((response) => { setMarkError(null); updateImageCaches(response.data); })
+      .catch((error) => setMarkError(`Mark not saved: ${error.response?.data?.detail || error.message}`));
+  };
+  useEffect(() => {
+    // Opening an image counts as reviewing it; unmarked images stay normal.
+    if (!markable || image.marks_viewed_at) return;
+    api.planner.markViewed(marking.folderId, image.id)
+      .then((response) => updateImageCaches({ marks_viewed_at: response.data.marks_viewed_at }))
+      .catch(() => {});
+  }, []);
+  const committedTags = (() => { try { return JSON.parse(fullImage?.quality_tags || '[]'); } catch { return []; } })();
+  const currentTags = markTags(marks);
   const dirty = tagsEdited && tagText !== (fullImage?.ground_truth_tags || []).join(', ');
   const pending = tagMutation.isPending || reviewMutation.isPending || undoTagMutation.isPending;
   const leave = (action) => { if (!action || pending) return; if (dirty && !window.confirm('Discard unsaved ground-truth tag edits?')) return; action(); };
   const navigation = useRef({});
-  navigation.current = { leave, onClose, onPrevious, onNext };
+  navigation.current = { leave, onClose, onPrevious, onNext, chooseMark: markable ? chooseMark : null };
   useEffect(() => { try { localStorage.setItem('artist.viewerInfo', String(showInfo)); } catch {} }, [showInfo]);
   useEffect(() => {
     const previous = document.activeElement;
@@ -68,6 +108,8 @@ function ImageDetail({ image, onClose, onPrevious, onNext, position, total }) {
       if (!['INPUT','TEXTAREA','SELECT'].includes(event.target?.tagName)) {
         if (event.key === 'ArrowLeft') { event.preventDefault(); leave(onPrevious); }
         if (event.key === 'ArrowRight') { event.preventDefault(); leave(onNext); }
+        const mark = !event.ctrlKey && !event.metaKey && !event.altKey && !event.repeat && MARKS.find((item) => item.key === event.key.toLowerCase());
+        if (mark && navigation.current.chooseMark) { event.preventDefault(); navigation.current.chooseMark(mark); }
       }
       if (event.key === 'Tab') {
         const elements = [...dialog.current.querySelectorAll('button:not(:disabled),input,textarea,select,a[href],[tabindex="0"]')].filter(e => e.getClientRects().length);
@@ -141,6 +183,34 @@ function ImageDetail({ image, onClose, onPrevious, onNext, position, total }) {
             </div>
           </div>
 
+          {marking && (
+            <div className="rounded-lg border border-[#202a34] bg-[#0a0f15] p-3">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold text-slate-100">Quality</h3>
+                <span className="text-[11px] text-slate-400">{marking.locked ? 'Folder accepted · reopen it to change' : 'Q W E quality · A S aesthetic · D normal'}</span>
+              </div>
+              <div className="grid grid-flow-col grid-cols-2 grid-rows-3 gap-1.5" role="group" aria-label="Quality marks">
+                {MARKS.map((mark) => {
+                  const on = isActive(mark, marks);
+                  return (
+                    <button key={mark.key} type="button" aria-pressed={on} disabled={!markable} onClick={() => chooseMark(mark)}
+                      title={mark.axis ? `${mark.label} (${mark.key.toUpperCase()}); press again to clear` : `Normal (${mark.key.toUpperCase()}): no quality tags`}
+                      className={`flex items-center gap-2 rounded-md border px-2.5 py-2 text-left text-xs font-medium transition-all duration-150 disabled:cursor-not-allowed ${on ? mark.active : `border-[#26313d] bg-[#0d141c] text-slate-300 ${markable ? mark.hover : 'opacity-60'}`}`}>
+                      <span className={`h-2 w-2 shrink-0 rounded-full ${mark.dot} ${on ? '' : 'opacity-40'}`} />
+                      <span className="flex-1 truncate">{mark.label}</span>
+                      <kbd className={`rounded border px-1.5 font-mono text-[10px] uppercase ${on ? 'border-white/30 bg-black/30' : 'border-[#2b3744] bg-black/30 text-slate-400'}`}>{mark.key}</kbd>
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="mt-2 text-[11px] text-slate-400">
+                {marking.locked ? 'Written to the ground truth when the folder was accepted.'
+                  : `Saved as you mark; added to the ground truth when you accept the folder.${committedTags.join(', ') !== currentTags.join(', ') && committedTags.length ? ` The sidecar still has: ${committedTags.join(', ')}.` : ''}`}
+              </p>
+              {markError && <p role="alert" className="mt-1 text-xs text-red-300">{markError}</p>}
+            </div>
+          )}
+
           <ImageStorageLocations locations={displayImage.storage_locations} />
 
           {/* Folder */}
@@ -192,6 +262,17 @@ function ImageDetail({ image, onClose, onPrevious, onNext, position, total }) {
             </div>
             {tagMutation.isError && <div className="mt-2 text-xs text-red-300">{tagMutation.error.response?.data?.detail || tagMutation.error.message}</div>}
           </div>
+
+          {marking && (
+            <div>
+              <h3 className="text-sm font-semibold text-slate-100 mb-1">Quality tags</h3>
+              <p className="mb-2 text-xs text-slate-400">{marking.locked ? 'In the ground truth, after all other tags' : 'Go after all other tags when the folder is accepted'}</p>
+              <div className="flex flex-wrap gap-1">
+                {currentTags.length ? currentTags.map((tag) => <span key={tag} className={`rounded bg-[#1c2530] px-2 py-1 text-xs ${markFor(tag).badge}`}>{tag}</span>)
+                  : <span className="rounded bg-[#1c2530] px-2 py-1 text-xs text-slate-400">normal (no quality tags)</span>}
+              </div>
+            </div>
+          )}
 
           {/* Imported source tags */}
           {displayImage.tags && Object.keys(displayImage.tags).length > 0 && (

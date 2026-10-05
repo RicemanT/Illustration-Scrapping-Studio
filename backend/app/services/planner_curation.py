@@ -14,6 +14,7 @@ from collections import defaultdict
 import app.db as db
 from app.services.planner_select import PlannerConfig, rejection
 from app.services.planner_store import connect, now
+from app.services.tags import AESTHETIC_MARKS, QUALITY_MARKS, TagService
 
 POST_URLS = {'danbooru': 'https://danbooru.donmai.us/posts/{}', 'e621': 'https://e621.net/posts/{}',
              'gelbooru': 'https://gelbooru.com/index.php?page=post&s=view&id={}'}
@@ -58,9 +59,14 @@ def folder_context(folder_id: int) -> dict | None:
     main = db.get_connection()
     try:
         images = main.execute('SELECT count(*) FROM image WHERE folder_id=?', (folder_id,)).fetchone()[0]
+        marks = {'total': images, 'viewed': main.execute('SELECT count(*) FROM image WHERE folder_id=? AND marks_viewed_at IS NOT NULL',
+                                                          (folder_id,)).fetchone()[0]}
+        for column in ('quality_mark', 'aesthetic_mark'):
+            for tag, count in main.execute(f'SELECT {column}, count(*) FROM image WHERE folder_id=? AND {column} IS NOT NULL GROUP BY {column}', (folder_id,)):
+                marks[tag] = count
     finally:
         main.close()
-    return {'artist_id': artist['id'], 'site': artist['site'], 'tag': artist['tag'], 'display_name': artist['display_name'],
+    return {'marks': marks, 'artist_id': artist['id'], 'site': artist['site'], 'tag': artist['tag'], 'display_name': artist['display_name'],
             'completed_at': artist['completed_at'], 'images': images, 'locked': locked,
             'target': (json.loads(target['config']).get('max_images') if target else None),
             'planned': target['selected'] if target else None}
@@ -132,6 +138,72 @@ def accept_posts(folder_id: int, posts: list[tuple[str, str]]) -> dict:
         conn.close()
 
 
+def _folder_image(main, folder_id: int, image_id: int):
+    row = main.execute('SELECT id, quality_mark, aesthetic_mark, marks_viewed_at FROM image WHERE id=? AND folder_id=?', (image_id, folder_id)).fetchone()
+    if not row:
+        raise LookupError('Image not found in this collection')
+    return row
+
+
+def _require_open(folder_id: int) -> None:
+    conn = connect()
+    try:
+        artist = folder_artist(conn, folder_id)
+    finally:
+        conn.close()
+    if not artist:
+        raise LookupError('This collection was not created by the Dataset Planner')
+    if artist['completed_at']:
+        raise ValueError('This collection is marked complete. Reopen it to change quality marks.')
+
+
+def set_marks(folder_id: int, image_id: int, quality: str | None, aesthetic: str | None) -> dict:
+    """Save an image's working marks; they reach the ground truth when the folder is accepted."""
+    if quality not in (None, *QUALITY_MARKS) or aesthetic not in (None, *AESTHETIC_MARKS):
+        raise ValueError('Unknown quality or aesthetic mark')
+    _require_open(folder_id)
+    main = db.get_connection()
+    try:
+        _folder_image(main, folder_id, image_id)
+        stamp = now()
+        main.execute('UPDATE image SET quality_mark=?, aesthetic_mark=?, marks_viewed_at=COALESCE(marks_viewed_at, ?) WHERE id=?',
+                     (quality, aesthetic, stamp, image_id))
+        main.commit()
+        return dict(_folder_image(main, folder_id, image_id))
+    finally:
+        main.close()
+
+
+def mark_viewed(folder_id: int, image_id: int) -> dict:
+    """Opening an image in the viewer counts as reviewing it (it stays normal unless marked)."""
+    main = db.get_connection()
+    try:
+        _folder_image(main, folder_id, image_id)
+        main.execute('UPDATE image SET marks_viewed_at=COALESCE(marks_viewed_at, ?) WHERE id=?', (now(), image_id))
+        main.commit()
+        return dict(_folder_image(main, folder_id, image_id))
+    finally:
+        main.close()
+
+
+def commit_marks(folder_id: int) -> int:
+    """Write every image's marks into its ground truth (sidecar). Returns images changed."""
+    main = db.get_connection()
+    try:
+        changed = []
+        for r in main.execute('SELECT id, quality_mark, aesthetic_mark, quality_tags FROM image WHERE folder_id=?', (folder_id,)).fetchall():
+            tags = [tag for tag in (r['quality_mark'], r['aesthetic_mark']) if tag]
+            value = json.dumps(tags) if tags else None
+            if value != r['quality_tags']:
+                changed.append((value, r['id']))
+        main.executemany('UPDATE image SET quality_tags=? WHERE id=?', changed)
+        main.commit()
+    finally:
+        main.close()
+    TagService(db.LIBRARY_PATH)._rewrite_sidecars([image_id for _, image_id in changed])
+    return len(changed)
+
+
 def set_complete(folder_id: int, complete: bool) -> dict:
     """Complete: accept every image, lock exactly their posts and freeze the artist's selection."""
     conn = connect()
@@ -168,4 +240,7 @@ def set_complete(folder_id: int, complete: bool) -> dict:
         main.commit()
     finally:
         main.close()
+    if complete:
+        # Reopening keeps the committed tags until the folder is accepted again.
+        commit_marks(folder_id)
     return folder_context(folder_id)

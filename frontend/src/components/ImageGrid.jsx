@@ -2,8 +2,9 @@ import React, { useState, useEffect, useRef } from 'react';
 import { justifiedRows } from './justifiedLayout';
 import ImageDetail from './ImageDetail';
 import { backendAssetUrl } from '../api/client';
+import { markFor, markTags, marksOf } from './qualityMarks';
 
-function ImageGrid({ images, selected = new Set(), onToggle, targetHeight = 220 }) {
+function ImageGrid({ images, selected = new Set(), onToggle, targetHeight = 220, marking = null, onViewerClose }) {
   const [selectedImage, setSelectedImage] = useState(null);
 
   const container = useRef(null);
@@ -49,6 +50,7 @@ function ImageGrid({ images, selected = new Set(), onToggle, targetHeight = 220 
                 </div>
               </div>
               <div className="pointer-events-none absolute bottom-2 right-2 flex gap-1 text-[10px]">
+                {marking && markTags(marksOf(image)).map(tag => <span key={tag} className={`rounded bg-black/80 px-1 ${markFor(tag).badge}`}>{tag}</span>)}
                 {Boolean(image.favorite) && <span title="Favorite" aria-label="Favorite" className="rounded bg-black/80 px-1 text-amber-200">★</span>}
                 {image.review_status && image.review_status !== 'pending' && <span className="rounded bg-black/80 px-1 text-slate-200">{image.review_status}</span>}
               </div>
@@ -65,7 +67,8 @@ function ImageGrid({ images, selected = new Set(), onToggle, targetHeight = 220 
           position={currentIndex + 1} total={images.length}
           onPrevious={currentIndex > 0 ? () => setSelectedImage(images[currentIndex - 1]) : undefined}
           onNext={currentIndex >= 0 && currentIndex < images.length - 1 ? () => setSelectedImage(images[currentIndex + 1]) : undefined}
-          onClose={() => setSelectedImage(null)}
+          onClose={() => { setSelectedImage(null); onViewerClose?.(); }}
+          marking={marking}
         />
       )}
     </>

@@ -125,6 +125,9 @@ function CollectionView() {
     retry: false,
   });
   const folderComplete = Boolean(plannerFolder?.completed_at);
+  const marks = plannerFolder?.marks;
+  const unviewed = marks ? Math.max(0, marks.total - marks.viewed) : 0;
+  const markSummary = marks ? ['masterpiece', 'best quality', 'low quality', 'very aesthetic', 'aesthetic'].filter(tag => marks[tag]).map(tag => `${marks[tag]} ${tag}`).join(' · ') : '';
   const [candidatesHotkeys, setCandidatesHotkeys] = useState(false);
   const completeMutation = useMutation({
     meta: { successMessage: 'Folder status saved' },
@@ -138,7 +141,7 @@ function CollectionView() {
   const toggleComplete = () => {
     if (folderComplete) {
       if (confirm('Reopen this folder? Its images go back to pending and you can remove or accept images again.')) completeMutation.mutate(false);
-    } else if (confirm(`Accept this folder as complete? All ${collection.image_count} images become accepted and are locked: future plans select exactly these images.`)) {
+    } else if (confirm(`Accept this folder as complete? All ${collection.image_count} images become accepted and are locked: future plans select exactly these images, and their quality marks are written into their tags.${unviewed ? `\n\n${unviewed} images were never opened in the viewer; they will be tagged as normal.` : ''}`)) {
       completeMutation.mutate(true);
     }
   };
@@ -321,6 +324,9 @@ function CollectionView() {
             <span className={`text-xs ${folderComplete ? 'text-emerald-300' : collection.image_count < (plannerFolder.target || 0) ? 'text-amber-300' : 'text-slate-400'}`}>
               {folderComplete ? `Complete since ${new Date(plannerFolder.completed_at).toLocaleDateString()} · ` : 'Pending · '}{collection.image_count}{plannerFolder.target ? ` / ${plannerFolder.target}` : ''} images
             </span>
+            {marks && <span className={`text-xs ${!folderComplete && unviewed ? 'text-amber-300' : 'text-slate-400'}`} title={markSummary || 'No quality marks yet'}>
+              {unviewed ? `${unviewed} of ${marks.total} not viewed for quality` : `All ${marks.total} viewed for quality`}{markSummary ? ` · ${markSummary}` : ''}
+            </span>}
             {completeMutation.isError && <span className="text-xs text-red-300">{completeMutation.error.response?.data?.detail || completeMutation.error.message}</span>}
           </div>}
           <button
@@ -415,7 +421,7 @@ function CollectionView() {
           </>}
         </div>
 
-        {['gallery','tags','dataset'].includes(tab) && <LocalFilters filters={filters} onChange={changeFilters} providers={collection.sources.map(s => s.provider)} total={imagesData?.total || 0} />}
+        {['gallery','tags','dataset'].includes(tab) && <LocalFilters filters={filters} onChange={changeFilters} providers={collection.sources.map(s => s.provider)} total={imagesData?.total || 0} qualityFilter={Boolean(plannerFolder)} />}
         {imagesError && <p className="p-3 text-xs text-red-400">Could not query images: {JSON.stringify(imagesError.response?.data?.detail || imagesError.message)}</p>}
         {tab === 'gallery' && <div className="p-2 flex gap-3 text-xs text-slate-400"><button disabled={!offset || imagesLoading} onClick={() => setOffset(Math.max(0,offset-100))}>Previous page</button><span>{imagesLoading ? 'Loading...' : `${offset + (images.length ? 1 : 0)} - ${offset + images.length} of ${imagesData?.total || 0}`}</span><button disabled={!imagesData?.next_cursor || imagesLoading} onClick={() => setOffset(Number(imagesData.next_cursor))}>Next page</button></div>}
         {tab === 'duplicates' ? <DuplicateReview collectionId={Number(id)} /> : tab === 'dataset' ? <DatasetTools key={id} collectionId={Number(id)} filters={filters} onShowImages={ids => { changeFilters({ image_ids: ids }); setTab('gallery'); }} /> : tab === 'gallery' && imagesLoading && !imagesData ? (<div role="status" className="p-4 text-sm text-slate-400">Loading gallery...<div aria-hidden="true" className="mt-3 h-48 rounded bg-slate-800/50 animate-pulse" /></div>) : images.length === 0 && tab === 'gallery' ? (
@@ -424,7 +430,9 @@ function CollectionView() {
             <p className="text-sm">Clear local filters to return to the full gallery, or sync sources to add images.</p>
           </div>
         ) : (
-          tab === 'gallery' ? <ImageGrid key={id} targetHeight={tileHeight} images={visibleImages} selected={selected} onToggle={toggleSelected} /> : tab === 'tags' ? <><TagExplorer key={`${id}-${JSON.stringify(filters)}`} collectionId={Number(id)} filters={filters} onTag={(tag, exclude) => { const key = exclude ? 'excluded_tags' : 'required_tags'; changeFilters({ ...filters, [key]: [...new Set([...(filters[key] || []), tag])] }); setTab('gallery'); }} /><CollectionTagEditor collectionId={Number(id)} selected={selected} /></> : <div className="p-3 space-y-3">
+          tab === 'gallery' ? <ImageGrid key={id} targetHeight={tileHeight} images={visibleImages} selected={selected} onToggle={toggleSelected}
+            marking={plannerFolder ? { folderId: Number(id), locked: folderComplete } : null}
+            onViewerClose={plannerFolder ? () => queryClient.invalidateQueries({ queryKey: ['collection-images', id] }) : undefined} /> : tab === 'tags' ? <><TagExplorer key={`${id}-${JSON.stringify(filters)}`} collectionId={Number(id)} filters={filters} onTag={(tag, exclude) => { const key = exclude ? 'excluded_tags' : 'required_tags'; changeFilters({ ...filters, [key]: [...new Set([...(filters[key] || []), tag])] }); setTab('gallery'); }} /><CollectionTagEditor collectionId={Number(id)} selected={selected} /></> : <div className="p-3 space-y-3">
             <p className="text-xs text-slate-400">Remote metadata discovery. Dimensions are provider hints; quality is checked on decoded originals at import. Local gallery filters do not apply here. Short or empty pages may reflect provider/date limits; use Next page when available.</p>
             {previewMutation.isPending && <button onClick={() => previewAbort.current?.abort()} className="text-xs text-red-300">Cancel preview</button>}
             <div className="flex flex-wrap gap-2 items-center">
