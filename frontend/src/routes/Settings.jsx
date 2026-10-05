@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import api from '../api/client';
+import BooruAccess from '../components/BooruAccess';
 import ServerSettings from '../components/ServerSettings';
 import ProcessingSettings from '../components/ProcessingSettings';
 
@@ -252,6 +253,8 @@ function Settings() {
         {saveMutation.isError && <p className="mt-3 text-xs text-red-400">{saveMutation.error.response?.data?.detail || saveMutation.error.message}</p>}
         {status && <p className={`mt-3 text-xs ${status.available ? 'text-emerald-400' : 'text-red-400'}`}>{status.available ? 'Gelbooru connection successful.' : status.error}</p>}
       </section>
+
+      <BooruAccess />
 
       <section className="bg-[#0c1219] border border-[#202a34] rounded p-4">
         <div className="flex items-start justify-between gap-3">

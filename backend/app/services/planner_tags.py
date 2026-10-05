@@ -10,13 +10,11 @@ do not need an external list.
 from __future__ import annotations
 
 import asyncio
-import time
 
 import httpx
 
 SITE_URLS = {'danbooru': 'https://danbooru.donmai.us', 'e621': 'https://e621.net'}
 PAGE_LIMIT = {'danbooru': 1000, 'e621': 320}
-USER_AGENT = 'IllustrationScrappingStudio/1.1 (dataset planner tag lookup)'
 CATEGORY_NAMES = {
     'danbooru': {0: 'general', 1: 'artist', 3: 'copyright', 4: 'character', 5: 'meta'},
     'e621': {0: 'general', 1: 'artist', 3: 'copyright', 4: 'character', 5: 'species', 6: 'invalid', 7: 'meta', 8: 'lore'},
@@ -24,27 +22,33 @@ CATEGORY_NAMES = {
 # Character-category placeholders that do not name one identity (e621,
 # verified 2026-10-02; Danbooru has no populated equivalents).
 PLACEHOLDER_CHARACTERS = {'fan_character', 'anon', 'background_character', 'unnamed_character'}
-REQUEST_INTERVAL = 1.0
+# None: use each site's shared API pace from Settings (tests set 0).
+REQUEST_INTERVAL = None
 RETRY_ATTEMPTS = 4
 RETRY_DELAY = 5.0
 
 
 class _Paced:
-    """One site-safe request per second, matching the scraping providers."""
+    """Tag lookups on the site's shared API pace, identified like the scrapers."""
 
     def __init__(self):
-        self.last = 0.0
-        self.client = httpx.AsyncClient(timeout=60, headers={'User-Agent': USER_AGENT})
+        self.client = httpx.AsyncClient(timeout=60)
 
     async def get(self, url: str, params: dict):
+        from app.providers import pacing
+        from app.providers.booru import get_account, user_agent
+        site = 'danbooru' if 'donmai.us' in url else 'e621'
+        headers = {'User-Agent': user_agent(site, get_account(site))}
         # Danbooru intermittently answers heavy related-tag queries with 500.
         for attempt in range(RETRY_ATTEMPTS):
-            wait = REQUEST_INTERVAL - (time.monotonic() - self.last)
-            if wait > 0:
-                await asyncio.sleep(wait)
-            self.last = time.monotonic()
+            if REQUEST_INTERVAL is None:
+                await pacing.pacer(site, 'api').wait(pacing.interval(site, 'api'))
+            elif REQUEST_INTERVAL:
+                await asyncio.sleep(REQUEST_INTERVAL)
             try:
-                response = await self.client.get(url, params=params)
+                response = await self.client.get(url, params=params, headers=headers)
+                if pacing.is_throttle(site, response.status_code):
+                    pacing.pacer(site, 'api').throttled(pacing.retry_after_seconds(response), pacing.interval(site, 'api'))
                 response.raise_for_status()
                 break
             except httpx.HTTPError as exc:

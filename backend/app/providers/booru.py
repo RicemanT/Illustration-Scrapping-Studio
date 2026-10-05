@@ -9,6 +9,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
+from app.providers import pacing
 from app.providers.base import Provider
 from app.models import RemotePost
 from app.services.provider_settings import read_provider_settings, update_provider_settings
@@ -31,6 +32,35 @@ def get_gelbooru_credentials() -> tuple[str, str]:
 
 def save_gelbooru_credentials(user_id: str, api_key: str) -> None:
     update_provider_settings('gelbooru', {'user_id': user_id.strip(), 'api_key': api_key.strip()})
+
+
+APP_USER_AGENT = 'IllustrationScrappingStudio/1.1 (+https://github.com/RicemanT/Illustration-Scrapping-Studio)'
+ACCOUNT_SITES = ('danbooru', 'e621')
+DOWNLOAD_ATTEMPTS = 4
+
+
+def get_account(site: str) -> Dict[str, Any]:
+    """Optional Danbooru/e621 login: username, API key and (Danbooru) numeric user ID."""
+    stored = _stored_provider_settings().get(site, {}) if site in ACCOUNT_SITES else {}
+    prefix = site.upper()
+    return {
+        'login': os.getenv(f'{prefix}_LOGIN', '').strip() or str(stored.get('login', '')).strip(),
+        'api_key': os.getenv(f'{prefix}_API_KEY', '').strip() or str(stored.get('api_key', '')).strip(),
+        'user_id': stored.get('user_id'),
+    }
+
+
+def save_account(site: str, login: str, api_key: str, user_id: Optional[int] = None) -> None:
+    update_provider_settings(site, {'login': login.strip(), 'api_key': api_key.strip(), 'user_id': user_id})
+
+
+def user_agent(site: str, account: Dict[str, Any]) -> str:
+    """Danbooru asks bots to name their user ID, e621 their username."""
+    if site == 'danbooru' and account.get('user_id'):
+        return f"IllustrationScrappingStudio/1.1 (user #{account['user_id']})"
+    if site == 'e621' and account.get('login'):
+        return f"IllustrationScrappingStudio/1.1 (by {account['login']} on e621)"
+    return APP_USER_AGENT
 
 
 # Booru site configurations
@@ -106,20 +136,19 @@ class BooruProvider(Provider):
         # Gelbooru's `pid` is a moving page offset, unlike Danbooru/e621's
         # stable post-ID keyset. It needs the ordered-feed sync strategy.
         self.ordered_feed = site == 'gelbooru'
-        self.config = BOORU_SITES[site]
+        self.config = dict(BOORU_SITES[site])
+        self.account = get_account(site)
+        has_account = bool(self.account['login'] and self.account['api_key'])
         self.client = httpx.AsyncClient(
             timeout=30.0,
             headers={
-                'User-Agent': 'ArtistCollectionBuilder/1.0 (https://github.com/artist-collection)',
+                'User-Agent': user_agent(site, self.account),
                 'Accept': 'application/json, application/xml;q=0.9, text/xml;q=0.8',
-            }
+            },
+            # Sent on API requests; file downloads opt out (auth=None) below.
+            auth=httpx.BasicAuth(self.account['login'], self.account['api_key']) if has_account else None,
         )
         self.rate_limiter = asyncio.Semaphore(1)
-        self._last_request_at = 0.0
-
-        # Set specific User-Agent for e621
-        if self.config.get('requires_user_agent'):
-            self.client.headers['User-Agent'] = 'ArtistCollectionBuilder/1.0 (contact@example.com)'
         if self.site == 'gelbooru':
             # Gelbooru's DAPI requires both values for post search and lookup.
             # Keep secrets server-side and never return them in API responses.
@@ -144,7 +173,17 @@ class BooruProvider(Provider):
         self._require_credentials()
         return {'user_id': self.gelbooru_user_id, 'api_key': self.gelbooru_api_key} if self.site == 'gelbooru' else {}
 
-    def _raise_for_status(self, response: httpx.Response, operation: str) -> None:
+    def _raise_for_status(self, response: httpx.Response, operation: str, kind: str = 'api') -> None:
+        if pacing.is_throttle(self.site, response.status_code):
+            wait = pacing.pacer(self.site, kind).throttled(pacing.retry_after_seconds(response), pacing.interval(self.site, kind))
+            self.last_throttle_wait = wait
+        elif response.is_success:
+            pacing.pacer(self.site, kind).succeeded()
+        if kind == 'api' and self.site in ACCOUNT_SITES and response.status_code == 401 and self.account['login']:
+            raise ProviderAuthenticationError(
+                f'{self.site} rejected the configured username and API key while trying to {operation}. '
+                'Update or remove them in Settings.'
+            )
         if self.site == 'gelbooru' and response.status_code in {401, 403}:
             raise ProviderAuthenticationError(
                 f'Gelbooru rejected the configured credentials while trying to {operation}. '
@@ -217,13 +256,8 @@ class BooruProvider(Provider):
         return {tag: self._tag_category_cache.get(tag, 'general') for tag in unique}
 
     async def _rate_limit(self):
-        """Keep the configured start-to-start interval without idle over-sleep."""
-        interval = float(self.config['rate_limit'])
-        elapsed = time.monotonic() - self._last_request_at
-        remaining = interval - elapsed
-        if remaining > 0:
-            await asyncio.sleep(remaining)
-        self._last_request_at = time.monotonic()
+        """Wait for this site's API pace, shared by every job in the process."""
+        await pacing.pacer(self.site, 'api').wait(pacing.interval(self.site, 'api'))
 
     def _parse_tags(
         self,
@@ -495,13 +529,13 @@ class BooruProvider(Provider):
         progress: Optional[Callable[[dict], None]] = None,
     ) -> None:
         """Download image to destination path."""
-        # Rate-limit request starts, not the entire response body. Worker
-        # concurrency may overlap transfers that have already been admitted.
+        # Pace download starts, not whole transfers, on the site's file-download
+        # pace (separate from its API pace). Worker concurrency may overlap
+        # transfers that have already been admitted.
+        interval = float(self.config.get('download_interval', pacing.interval(self.site, 'download')))
         if progress:
             progress({"stage": "waiting_for_provider", "remote_id": post.remote_id,
-                      "format": post.format, "request_interval_seconds": float(self.config['rate_limit'])})
-        async with self.rate_limiter:
-            await self._rate_limit()
+                      "format": post.format, "request_interval_seconds": interval})
         Path(dest_path).parent.mkdir(parents=True, exist_ok=True)
         started = time.monotonic()
         downloaded = 0
@@ -525,22 +559,29 @@ class BooruProvider(Provider):
                 "elapsed_seconds": elapsed,
             })
 
-        async with self.client.stream("GET", post.image_url) as response:
-            self._raise_for_status(response, 'download an image')
-            try:
-                total = int(response.headers.get("content-length", "")) or None
-            except ValueError:
-                total = None
-            report(total)
-            with open(dest_path, 'wb') as destination:
-                async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
-                    destination.write(chunk)
-                    downloaded += len(chunk)
-                    now = time.monotonic()
-                    if now - last_reported >= 0.25:
-                        report(total)
-                        last_reported = now
-            report(total or downloaded, complete=True)
+        for attempt in range(DOWNLOAD_ATTEMPTS):
+            await pacing.pacer(self.site, 'download').wait(interval)
+            async with self.client.stream("GET", post.image_url, auth=None) as response:
+                if pacing.is_throttle(self.site, response.status_code) and attempt + 1 < DOWNLOAD_ATTEMPTS:
+                    # The pacer now waits longer for every download on this site.
+                    pacing.pacer(self.site, 'download').throttled(pacing.retry_after_seconds(response), interval)
+                    continue
+                self._raise_for_status(response, 'download an image', 'download')
+                try:
+                    total = int(response.headers.get("content-length", "")) or None
+                except ValueError:
+                    total = None
+                report(total)
+                with open(dest_path, 'wb') as destination:
+                    async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
+                        destination.write(chunk)
+                        downloaded += len(chunk)
+                        now = time.monotonic()
+                        if now - last_reported >= 0.25:
+                            report(total)
+                            last_reported = now
+                report(total or downloaded, complete=True)
+                return
 
     async def get_post(self, remote_id: str) -> RemotePost:
         """Fetch metadata for a single post."""

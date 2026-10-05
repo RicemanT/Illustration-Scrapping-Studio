@@ -27,6 +27,29 @@ Complete these steps in the Settings page of the instance you want to use. If th
 
 If the test fails, inspect the error and correlated Logs. Confirm the account credentials, network reachability and provider response before retrying. Do not publish the API key.
 
+## Danbooru and e621 accounts (optional)
+
+Both sites work without an account. In Settings → **Danbooru and e621 access, request pace**, you can add a username and API key; **Check and save** verifies them with the site first.
+
+- **Danbooru:** create an API key on your profile page. An account does not raise read limits (10 requests per second per IP at most, about 1 per second asked for long sessions), but requests then carry your user ID in the User-Agent, which is how Danbooru asks bots to identify themselves.
+- **e621:** create an API key under Account → Manage API Access. e621 hides the file link of some posts from visitors who are not logged in; an account may unlock them. Requests then name your username, as e621 asks.
+
+Keys are only sent to the sites' API, never to their file servers, and are never returned by the app's API.
+
+## Request pace
+
+The same section sets, per site, the seconds between API requests (searches and post lookups) and between image downloads. Pacing is shared by every job on the same site, and changes apply to running jobs within a second.
+
+| Site | Documented API limit | Fastest API setting allowed |
+| --- | --- | --- |
+| Danbooru | 10 requests/s per IP; about 1/s for long sessions | 0.15 s |
+| e621 | 2 requests/s; faster returns HTTP 503 | 0.55 s |
+| Gelbooru | not published; it throttles heavy use | 0.25 s |
+
+Images come from the sites' file servers, which these limits do not describe and which tools such as gallery-dl do not throttle. The default waits 0.2 s between download starts; downloads also run in parallel up to the worker count, so on a server with many cores raise the worker count too. **Fast** sets Danbooru and Gelbooru to 2 API requests per second, e621 to about 1.3, and downloads to 0.05 s.
+
+If a site answers "too many requests" (HTTP 429, or 503 from e621), the app waits as the site asks, doubles that site's interval and returns to normal over the following successful requests. Failed downloads are retried up to three times before they are reported.
+
 ## Pixiv
 
 Use a terminal, not a notebook `!` command, because the OAuth flow asks for interactive input. Open the terminal in the project directory containing `studio.py`.

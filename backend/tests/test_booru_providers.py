@@ -163,7 +163,7 @@ class BooruNormalizationTests(unittest.IsolatedAsyncioTestCase):
         provider = BooruProvider('danbooru')
         await provider.client.aclose()
         provider.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-        provider.config = dict(provider.config, rate_limit=0.05)
+        provider.config = dict(provider.config, download_interval=0.05)
         tasks = []
         try:
             with tempfile.TemporaryDirectory() as temp:

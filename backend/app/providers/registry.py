@@ -1,7 +1,8 @@
 from typing import Any
 
 from app.providers.base import Provider
-from app.providers.booru import BOORU_SITES, BooruProvider, get_gelbooru_credentials
+from app.providers import pacing
+from app.providers.booru import ACCOUNT_SITES, get_account, BOORU_SITES, BooruProvider, get_gelbooru_credentials
 from app.providers.gallery_dl import (
     GALLERY_DL_PROVIDERS, GalleryDLProvider, gallery_dl_runtime, provider_max_limit,
     provider_ready,
@@ -32,7 +33,9 @@ def provider_descriptors() -> list[dict[str, Any]]:
         "name": name, "collection_types": ["artist", "character", "tag"], "type": "booru", "available": name != "gelbooru" or gelbooru_configured,
         "requires_auth": bool(config.get("requires_auth", False)),
         "capabilities": ["search", "lookup", "download", "pagination", "normalized_metadata"],
-        "rate_limit_seconds": config.get("rate_limit", 0),
+        "rate_limit_seconds": pacing.interval(name, "api"),
+        "download_interval_seconds": pacing.interval(name, "download"),
+        "account_configured": bool(get_account(name)["login"] and get_account(name)["api_key"]) if name in ACCOUNT_SITES else None,
         "unavailable_reason": "Gelbooru User ID and API key are not configured" if name == "gelbooru" and not gelbooru_configured else None,
     } for name, config in BOORU_SITES.items()]
     runtime = gallery_dl_runtime()
