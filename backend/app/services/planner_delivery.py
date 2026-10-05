@@ -340,6 +340,25 @@ async def shutdown() -> None:
         await asyncio.gather(_task, return_exceptions=True)
 
 
+POST_URLS = {'danbooru': 'https://danbooru.donmai.us/posts/{}', 'e621': 'https://e621.net/posts/{}',
+             'gelbooru': 'https://gelbooru.com/index.php?page=post&s=view&id={}'}
+
+
+def problems(delivery_id: int, limit: int = 500) -> dict:
+    """Posts that did not end as a new image, with the recorded reason."""
+    conn = connect()
+    try:
+        rows = conn.execute("""SELECT d.site, d.remote_id, d.status, d.error, a.display_name FROM delivery_item d
+                               JOIN artist a ON a.id=d.artist_id WHERE d.delivery_id=? AND d.status IN ('error','missing','filtered','skipped')
+                               ORDER BY CASE d.status WHEN 'error' THEN 0 WHEN 'missing' THEN 1 WHEN 'filtered' THEN 2 ELSE 3 END,
+                                        a.display_name LIMIT ?""", (delivery_id, limit)).fetchall()
+        return {'items': [{**dict(r), 'url': POST_URLS[r['site']].format(r['remote_id']),
+                           'reason': r['error'] or ('Already in the collection (often the same file posted twice)' if r['status'] == 'skipped' else '')}
+                          for r in rows]}
+    finally:
+        conn.close()
+
+
 def stale_images(delivery_id: int) -> dict[int, list[int]]:
     """Images in this delivery's collections that the run no longer selects.
 

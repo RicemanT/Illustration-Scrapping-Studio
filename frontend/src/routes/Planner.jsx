@@ -280,6 +280,10 @@ function DeliveryPanel({ status, runId, onChange }) {
   const after = () => { onChange(); job.refetch(); };
   const start = useMutation({ mutationFn: () => api.planner.deliver(runId, prefix), onSuccess: after });
   const resume = useMutation({ mutationFn: () => api.planner.resumeDelivery(deliveryId), onSuccess: after });
+  const errorCount = Object.entries(data?.counts || {}).filter(([key]) => key.endsWith(':error')).reduce((sum, [, n]) => sum + n, 0);
+  const problemCount = Object.entries(data?.counts || {}).filter(([key]) => /:(error|missing|filtered|skipped)$/.test(key)).reduce((sum, [, n]) => sum + n, 0);
+  const [showProblems, setShowProblems] = useState(false);
+  const problems = useQuery({ queryKey: ['planner-problems', deliveryId, data?.status, problemCount], enabled: Boolean(deliveryId) && showProblems, queryFn: async () => (await api.planner.deliveryProblems(deliveryId)).data });
   const cancel = useMutation({ mutationFn: api.planner.cancelDelivery, onSuccess: after });
   const layout = useMutation({ mutationFn: () => api.planner.trainingLayout(deliveryId) });
   const prunePreview = useMutation({ mutationFn: () => api.planner.prunePreview(deliveryId) });
@@ -292,7 +296,7 @@ function DeliveryPanel({ status, runId, onChange }) {
       <label className="text-xs text-slate-400">Group name prefix<input className={`${field} block w-40`} value={prefix} maxLength={80} onChange={(event) => setPrefix(event.target.value)} /></label>
       <button className={button} disabled={!run || run.status !== 'completed' || active || harvesting || start.isPending || !prefix.trim()} onClick={() => start.mutate()}>Download run #{runId || '—'}</button>
       {active && <button className={quiet} disabled={cancel.isPending || data.status === 'cancelling'} onClick={() => cancel.mutate()}>Stop</button>}
-      {data && !active && data.status !== 'completed' && <button className={quiet} disabled={resume.isPending || harvesting} onClick={() => resume.mutate()}>Resume download #{data.id}</button>}
+      {data && !active && (data.status !== 'completed' || errorCount > 0) && <button className={quiet} disabled={resume.isPending || harvesting} onClick={() => resume.mutate()}>{data.status === 'completed' ? `Retry ${number(errorCount)} failed` : `Resume download #${data.id}`}</button>}
       {data && !active && <button className={quiet} disabled={layout.isPending} onClick={() => layout.mutate()}>Export training layout</button>}
       {data && !active && <button className={quiet} disabled={prunePreview.isPending || pruneApply.isPending} onClick={() => { pruneApply.reset(); prunePreview.mutate(); }}>Remove images no longer selected…</button>}
       {harvesting && <span className="text-xs text-slate-400">Wait for the harvest to finish first.</span>}
@@ -321,6 +325,11 @@ function DeliveryPanel({ status, runId, onChange }) {
           {state.blocked && <p className="text-red-400 text-xs">{state.blocked}</p>}
           <div className="h-1 rounded bg-[#0c1219] overflow-hidden"><div className="h-full bg-blue-500" style={{ width: `${total ? Math.round((total - left) * 100 / total) : 0}%` }} /></div>
         </div>; })}
+      {problemCount > 0 && <details open={showProblems} onToggle={(event) => setShowProblems(event.currentTarget.open)}><summary className="text-xs text-slate-300 cursor-pointer">Posts that did not add an image ({number(problemCount)})</summary>
+        {problems.error && <p role="alert" className="text-xs text-red-400">{errorText(problems.error)}</p>}
+        <div className="max-h-48 overflow-auto text-xs divide-y divide-slate-800">{problems.data?.items.map((item) => <div key={`${item.site}-${item.remote_id}`} className="py-1 flex flex-wrap gap-x-3">
+          <span className={item.status === 'error' ? 'text-red-300' : 'text-slate-400'}>{item.status}</span><a className="text-blue-300" href={item.url} target="_blank" rel="noreferrer">{item.site} #{item.remote_id}</a><span>{item.display_name}</span><span className="text-slate-400 min-w-0 break-words">{item.reason}</span></div>)}</div>
+        <p className="text-xs text-slate-400 mt-1">Errors can be retried. Missing posts were deleted from the site; filtered ones are below the collection's quality floor. Neither can be fixed by retrying.</p></details>}
       <p className="text-xs text-slate-400">done = new images added · skipped = already in the collection · filtered = below the collection's quality floor · missing = deleted from the site since the harvest.</p>
       <details><summary className="text-xs text-slate-400 cursor-pointer">Log</summary><pre className="max-h-40 overflow-auto text-xs text-slate-400 whitespace-pre-wrap">{(data.progress?.log || []).join('\n')}</pre></details>
     </div>}

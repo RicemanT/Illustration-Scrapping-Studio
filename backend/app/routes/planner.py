@@ -288,6 +288,13 @@ def get_delivery(delivery_id: int):
     return job
 
 
+@router.get('/deliveries/{delivery_id}/problems')
+def delivery_problems(delivery_id: int):
+    if not delivery.get_delivery(delivery_id):
+        raise HTTPException(404, 'Delivery not found')
+    return delivery.problems(delivery_id)
+
+
 @router.post('/deliveries/{delivery_id}/resume')
 async def resume_delivery(delivery_id: int):
     try:

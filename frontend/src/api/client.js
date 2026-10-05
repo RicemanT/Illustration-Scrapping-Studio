@@ -181,6 +181,7 @@ export const api = {
     deliver: (runId, groupPrefix) => client.post(`/planner/runs/${runId}/deliver`, { group_prefix: groupPrefix }),
     delivery: (id) => client.get(`/planner/deliveries/${id}`),
     resumeDelivery: (id) => client.post(`/planner/deliveries/${id}/resume`),
+    deliveryProblems: (id) => client.get(`/planner/deliveries/${id}/problems`),
     cancelDelivery: () => client.post('/planner/deliveries/cancel'),
     trainingLayout: (id) => client.post(`/planner/deliveries/${id}/layout`),
     prunePreview: (id) => client.get(`/planner/deliveries/${id}/prune`),

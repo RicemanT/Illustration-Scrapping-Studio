@@ -129,6 +129,23 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(main.execute('SELECT count(*) FROM collection').fetchone()[0], 2)
         main.close()
 
+    async def test_problems_list_reasons_and_completed_downloads_can_retry_errors(self):
+        job = delivery.create_delivery(self.run_id, 'Planner', self.root)
+        await delivery.run_delivery(job['id'], asyncio.Event(), self.factory, self.root)
+        conn = store.connect()
+        conn.execute("UPDATE delivery_item SET status='error', error='HTTP 502' WHERE delivery_id=? AND site='e621' AND remote_id='1'", (job['id'],))
+        conn.commit()
+        conn.close()
+        items = delivery.problems(job['id'])['items']
+        self.assertEqual([(i['status'], i['site'], i['remote_id']) for i in items][:2], [('error', 'e621', '1'), ('missing', 'danbooru', '3')])
+        self.assertEqual(items[0]['reason'], 'HTTP 502')
+        self.assertTrue(items[0]['url'].endswith('/posts/1'))
+        delivery.resume_delivery(job['id'])
+        await delivery.run_delivery(job['id'], asyncio.Event(), self.factory, self.root)
+        counts = delivery.get_delivery(job['id'])['counts']
+        self.assertNotIn('e621:error', counts)
+        self.assertEqual(counts['e621:skipped'], 1)  # the image was already in the collection
+
     async def test_stop_leaves_pending_items_for_resume(self):
         job = delivery.create_delivery(self.run_id, 'Planner', self.root)
         stop = asyncio.Event()
