@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import api, { backendAssetUrl } from '../api/client';
+import QualityTagsPanel from '../components/QualityTagsPanel';
 
 const field = 'rounded border border-slate-700 bg-[#090d12] px-3 py-2 text-sm';
 const button = 'rounded bg-blue-700 px-3 py-2 text-sm text-white disabled:opacity-40';
@@ -142,6 +143,7 @@ export default function Planner() {
     <RunPanel status={status.data} runId={runId} setRunId={setRunId} onChange={refresh} />
     {runId && <ReviewPanel runId={runId} />}
     <DeliveryPanel status={status.data} runId={runId} onChange={refresh} />
+    <QualityTagsPanel />
   </div>;
 }
 

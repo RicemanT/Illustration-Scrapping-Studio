@@ -330,6 +330,8 @@ class DatasetQAService:
             (collection_id,),
         ).fetchall()
         warnings = [issue for issue in validation["issues"] if issue["severity"] == "warning"]
+        from app.services.captions import caption_file, get_suffix
+        caption_suffix = get_suffix(conn)
         items: list[dict] = []
         for row in rows:
             source_path = (self.images_path / row["path"]).resolve()
@@ -354,6 +356,10 @@ class DatasetQAService:
                 effective_mode = "copy"
                 warnings.append(self._issue(row["id"], "hardlink_fallback", "warning", f"Hardlink unavailable; copied this pair instead: {exc}", row["path"]))
 
+            caption_source = caption_file(source_path, caption_suffix)
+            caption_filename = f"{row['sha256']}{caption_suffix}" if caption_source.is_file() else None
+            if caption_filename:
+                shutil.copy2(caption_source, output_path / caption_filename)
             sources = []
             for source in conn.execute("SELECT * FROM image_source WHERE image_id = ? ORDER BY id", (row["id"],)).fetchall():
                 item = dict(source)
@@ -364,6 +370,7 @@ class DatasetQAService:
                 "image_id": row["id"],
                 "filename": filename,
                 "sidecar_filename": sidecar_filename,
+                "caption_filename": caption_filename,
                 "transfer_mode": effective_mode,
                 "sha256": row["sha256"],
                 "md5": row["md5"],

@@ -80,6 +80,9 @@ export const api = {
     review: (id, data) => client.patch(`/images/${id}/review`, data),
     delete: (id) => client.delete(`/images/${id}`),
     decoderStatus: () => client.get('/images/media/decoder-status'),
+    caption: (id) => client.get(`/images/${id}/caption`),
+    saveCaption: (id, data) => client.put(`/images/${id}/caption`, data),
+    deleteCaption: (id, baseVersion) => client.delete(`/images/${id}/caption`, { params: { base_version: baseVersion ?? undefined } }),
   },
 
   duplicates: {
@@ -161,6 +164,8 @@ export const api = {
   settings: {
     getServer: () => client.get('/settings/server'),
     shutdown: () => client.post('/settings/shutdown', { confirm: true }),
+    captions: () => client.get('/settings/captions'),
+    updateCaptions: (data) => client.put('/settings/captions', data),
     updateStorage: data => client.put('/settings/storage', data),
     getProcessing: () => client.get('/settings/processing'),
     updateProcessing: data => client.put('/settings/processing', data),
@@ -209,6 +214,11 @@ export const api = {
     completeFolder: (folderId, complete) => client.post(`/planner/folders/${folderId}/complete`, { complete }),
     setMarks: (folderId, imageId, marks) => client.put(`/planner/folders/${folderId}/images/${imageId}/marks`, marks),
     markViewed: (folderId, imageId) => client.post(`/planner/folders/${folderId}/images/${imageId}/viewed`),
+    quality: () => client.get('/planner/quality'),
+    saveQualityConfig: (config) => client.put('/planner/quality/config', config),
+    qualityThresholds: () => client.get('/planner/quality/thresholds'),
+    applyQuality: (body) => client.post('/planner/quality/apply', body || {}),
+    qualityJob: () => client.get('/planner/quality/job'),
   },
   exports: {
     validate: (folderId) => client.get(`/exports/validate/${folderId}`),

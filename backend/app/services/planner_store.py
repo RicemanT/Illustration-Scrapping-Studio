@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import app.db as db
+from app.services.post_dates import sortable_time
 from app.services.planner_select import (
     MOTION_EXTS, PlannerConfig, RarityIndex, candidate_from_row, plan_family, real_artists, rejection, score_artist,
 )
@@ -122,6 +123,19 @@ CREATE TABLE IF NOT EXISTS delivery_item (
 );
 CREATE INDEX IF NOT EXISTS delivery_item_pending ON delivery_item(delivery_id, site, status);
 CREATE INDEX IF NOT EXISTS delivery_item_folder ON delivery_item(folder_id);
+CREATE TABLE IF NOT EXISTS planner_setting (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS score_hist (
+    metric TEXT NOT NULL,
+    site TEXT NOT NULL,
+    year INTEGER NOT NULL,
+    rating TEXT NOT NULL,
+    value INTEGER NOT NULL,
+    n INTEGER NOT NULL,
+    PRIMARY KEY (metric, site, year, rating, value)
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS accepted_post (
     folder_id INTEGER NOT NULL,
     artist_id INTEGER NOT NULL,
@@ -533,7 +547,7 @@ def _plan_family(conn, family: str, config: PlannerConfig, log):
         window = rows
         if config.newest_posts_per_artist:
             # Styles drift over the years; recent work is the most consistent.
-            window = sorted(rows, key=lambda r: (r['created_at'] or '', int(r['remote_id']) if str(r['remote_id']).isdigit() else 0),
+            window = sorted(rows, key=lambda r: (sortable_time(r['created_at']), int(r['remote_id']) if str(r['remote_id']).isdigit() else 0),
                             reverse=True)[:config.newest_posts_per_artist]
         if current in completed:
             window = [r for r in rows if overrides.get((r['artist_id'], r['site'], r['remote_id'])) == 'lock']

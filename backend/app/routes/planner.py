@@ -13,6 +13,7 @@ from app.services import planner_delivery as delivery
 from app.services import planner_harvest as harvest
 from app.services import planner_store as store
 from app.services import planner_curation as curation
+from app.services import planner_quality as quality
 from app.services import planner_tags
 from app.services.planner_select import PlannerConfig
 
@@ -387,6 +388,13 @@ class CompleteRequest(BaseModel):
 class MarksRequest(BaseModel):
     quality: Optional[Literal['masterpiece', 'best quality', 'low quality']] = None
     aesthetic: Optional[Literal['very aesthetic', 'aesthetic']] = None
+    touched: Optional[list[Literal['quality', 'aesthetic']]] = None
+    use_auto: bool = False
+
+
+class QualityApplyRequest(BaseModel):
+    folder_ids: Optional[list[int]] = Field(None, max_length=1_000_000)
+    rebuild: bool = False
 
 
 @router.get('/folders/{folder_id}')
@@ -427,7 +435,7 @@ def complete_folder(folder_id: int, request: CompleteRequest):
 @router.put('/folders/{folder_id}/images/{image_id}/marks')
 def set_image_marks(folder_id: int, image_id: int, request: MarksRequest):
     try:
-        return curation.set_marks(folder_id, image_id, request.quality, request.aesthetic)
+        return curation.set_marks(folder_id, image_id, request.quality, request.aesthetic, request.touched, request.use_auto)
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
     except ValueError as exc:
@@ -440,6 +448,62 @@ def mark_image_viewed(folder_id: int, image_id: int):
         return curation.mark_viewed(folder_id, image_id)
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
+
+
+_quality_job: dict = {'status': 'idle'}
+_quality_task: asyncio.Task | None = None
+
+
+async def _run_quality(request: QualityApplyRequest) -> None:
+    job = _quality_job
+
+    def progress(**values):
+        job.update(values)
+
+    try:
+        config = quality.get_config()
+        if request.rebuild or quality.stats_info(config.metric) is None:
+            job.update(phase='statistics', read=0, total=0)
+            job['stats'] = await asyncio.to_thread(quality.build_stats, config.metric, progress)
+        job.update(phase='assigning', done=0, total=0)
+        job['result'] = await asyncio.to_thread(quality.apply, request.folder_ids, config, progress)
+        job.update(status='completed', finished_at=store.now())
+    except Exception as exc:
+        job.update(status='failed', error=str(exc), finished_at=store.now())
+
+
+@router.get('/quality')
+def quality_status():
+    config = quality.get_config()
+    return {'config': config.model_dump(), 'stats': quality.stats_info(config.metric), 'job': _quality_job}
+
+
+@router.put('/quality/config')
+def save_quality_config(config: quality.QualityConfig):
+    return quality.save_config(config).model_dump()
+
+
+@router.get('/quality/thresholds')
+def quality_thresholds():
+    return quality.thresholds(quality.get_config())
+
+
+@router.post('/quality/apply')
+async def apply_quality(request: QualityApplyRequest):
+    """Build score statistics if needed, then assign auto quality marks (all planner collections, or `folder_ids`)."""
+    global _quality_task
+    if _quality_task and not _quality_task.done():
+        raise HTTPException(409, 'Automatic quality tagging is already running')
+    _quality_job.clear()
+    _quality_job.update(status='running', phase='starting', folder_ids=request.folder_ids, started_at=store.now(),
+                        result=None, error=None)
+    _quality_task = asyncio.get_running_loop().create_task(_run_quality(request))
+    return _quality_job
+
+
+@router.get('/quality/job')
+def quality_job():
+    return _quality_job
 
 
 _preview_slots = asyncio.Semaphore(6)

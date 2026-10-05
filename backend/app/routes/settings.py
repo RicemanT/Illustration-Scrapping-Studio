@@ -96,3 +96,23 @@ async def shutdown_server(request: ShutdownRequest):
     # Let this response reach the browser first.
     asyncio.get_running_loop().call_later(0.5, _stop_server)
     return {"status": "stopping"}
+
+
+class CaptionSettings(BaseModel):
+    suffix: str
+
+
+@router.get('/captions')
+def read_caption_settings():
+    from app.services.captions import DEFAULT_SUFFIX, get_suffix
+    return {'suffix': get_suffix(), 'default': DEFAULT_SUFFIX}
+
+
+@router.put('/captions')
+def update_caption_settings(request: CaptionSettings):
+    from fastapi import HTTPException
+    from app.services.captions import DEFAULT_SUFFIX, set_suffix
+    try:
+        return {'suffix': set_suffix(request.suffix), 'default': DEFAULT_SUFFIX}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc

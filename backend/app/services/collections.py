@@ -320,12 +320,16 @@ class CollectionService:
             conn.close()
             raise ValueError("Unsafe recovery path")
 
+        from app.services.captions import caption_relative, get_suffix
+        caption_suffix = get_suffix(conn)
         move_plan: list[tuple[Path, Path]] = []
         for record in records:
             image_path = self._safe_library_path(images_root, record["path"])
             move_plan.append((image_path, self._safe_library_path(recovery_root / "images", record["path"])))
             sidecar_path = image_path.with_suffix(".txt")
             move_plan.append((sidecar_path, self._safe_library_path(recovery_root / "images", str(Path(record["path"]).with_suffix(".txt")))))
+            caption = caption_relative(record["path"], caption_suffix)
+            move_plan.append((self._safe_library_path(images_root, caption), self._safe_library_path(recovery_root / "images", caption)))
             if record.get("thumb_path"):
                 thumb_path = self._safe_library_path(thumbs_root, record["thumb_path"])
                 move_plan.append((thumb_path, self._safe_library_path(recovery_root / "thumbnails", record["thumb_path"])))
@@ -428,6 +432,8 @@ class CollectionService:
                 if conflict:
                     raise ValueError("Cannot recover because the same image was imported again")
 
+            from app.services.captions import caption_relative, get_suffix
+            caption_suffix = get_suffix(conn)
             restore_plan: list[tuple[Path, Path]] = []
             for record in records:
                 # Trash retains its original namespace; recovery follows a moved folder.
@@ -440,6 +446,10 @@ class CollectionService:
                 restore_plan.append((
                     self._safe_library_path(recovery_root / "images", str(Path(record["path"]).with_suffix(".txt"))),
                     self._safe_library_path(images_root, str(Path(record["restore_path"]).with_suffix(".txt"))),
+                ))
+                restore_plan.append((
+                    self._safe_library_path(recovery_root / "images", caption_relative(record["path"], caption_suffix)),
+                    self._safe_library_path(images_root, caption_relative(record["restore_path"], caption_suffix)),
                 ))
                 if record.get("thumb_path"):
                     restore_plan.append((

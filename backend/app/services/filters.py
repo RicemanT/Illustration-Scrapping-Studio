@@ -22,7 +22,9 @@ class LocalFilter(BaseModel):
     review_status: Literal["pending", "accepted", "rejected", "archived"] | None = None
     favorite: bool | None = None
     # Hand-assigned marks: one tag, "normal" (no marks) or "unviewed".
-    quality: Literal["normal", "unviewed", "masterpiece", "best quality", "low quality", "very aesthetic", "aesthetic"] | None = None
+    quality: Literal["normal", "unviewed", "auto", "manual", "masterpiece", "best quality", "low quality", "very aesthetic", "aesthetic"] | None = None
+    # Natural-language caption file beside the image.
+    caption: Literal["has", "missing"] | None = None
     image_ids: list[int] | None = Field(default=None, max_length=500)
 
     @field_validator("required_tags", "excluded_tags")
@@ -127,9 +129,18 @@ def query_sql(folder_id: int, filters: LocalFilter):
         clauses.append("i.quality_mark IS NULL AND i.aesthetic_mark IS NULL")
     elif filters.quality == "unviewed":
         clauses.append("i.marks_viewed_at IS NULL")
+    elif filters.quality == "auto":
+        clauses.append("i.quality_source='auto' AND i.quality_mark IS NOT NULL")
+    elif filters.quality == "manual":
+        clauses.append("i.quality_source='manual'")
     elif filters.quality:
         clauses.append(f"i.{'aesthetic_mark' if 'aesthetic' in filters.quality else 'quality_mark'}=?")
         params.append(filters.quality)
+    if filters.caption:
+        import json
+        from app.services.captions import caption_ids
+        clauses.append("i.id IN (SELECT value FROM json_each(?))")
+        params.append(json.dumps(caption_ids(folder_id, filters.caption == "has")))
     if filters.image_ids is not None:
         clauses.append("i.id IN (SELECT value FROM json_each(?))")
         import json
@@ -187,12 +198,17 @@ def list_images(folder_id: int, query: LocalQuery) -> dict:
         total = conn.execute(cte + "SELECT count(*) FROM scope i WHERE " + where, params).fetchone()[0]
         order = {"newest": "i.added_at DESC,i.id DESC", "oldest": "i.added_at,i.id", "width": "i.width DESC,i.id DESC", "height": "i.height DESC,i.id DESC"}[query.sort]
         rows = conn.execute(cte + f"SELECT i.* FROM scope i WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?", [*params, query.limit, query.offset]).fetchall()
+        from app import db
+        from app.services.captions import caption_relative, get_suffix
+        suffix = get_suffix(conn)
+        images_root = db.LIBRARY_PATH / "images"
         items = []
         for row in rows:
             item = dict(row)
             for key in ("categories", "folder_name", "artist_tag_template"):
                 item.pop(key, None)
             item["sidecar_path"] = Path(item["path"]).with_suffix(".txt").as_posix()
+            item["has_caption"] = (images_root / caption_relative(item["path"], suffix)).is_file()
             items.append(item)
         return {"items": items, "images": items, "total": total, "next_cursor": str(query.offset + len(items)) if query.offset + len(items) < total else None,
                 "limit": query.limit, "offset": query.offset, "filters": query.filters.model_dump()}

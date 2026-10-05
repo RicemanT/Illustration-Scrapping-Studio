@@ -4,6 +4,7 @@ from __future__ import annotations
 from app.services.diagnostics import emit
 
 import json
+import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -611,6 +612,7 @@ class DedupService:
             raise
         conn.close()
 
+        self._keep_caption(dict(loser), dict(winner))
         self._delete_image_files(dict(loser))
         self._rewrite_sidecar(int(winner["id"]), Path(winner["path"]))
         return {
@@ -675,6 +677,23 @@ class DedupService:
             int(image["file_size"]),
             -int(image["id"]),
         )
+
+    def _keep_caption(self, loser: dict, winner: dict) -> None:
+        """Move the removed image's caption to the kept image, or back it up when both have one."""
+        from app.services import captions
+        if not loser.get("path") or not winner.get("path"):
+            return
+        suffix = captions.get_suffix()
+        root = self.images_path.resolve()
+        source = (root / captions.caption_relative(loser["path"], suffix)).resolve()
+        target = (root / captions.caption_relative(winner["path"], suffix)).resolve()
+        if root not in source.parents or root not in target.parents or not source.is_file():
+            return
+        if target.exists():
+            captions._backup(source)
+            source.unlink()
+        else:
+            shutil.move(str(source), str(target))
 
     def _delete_image_files(self, image: dict) -> None:
         targets = [

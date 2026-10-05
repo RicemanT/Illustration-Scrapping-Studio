@@ -50,7 +50,11 @@ function ImageGrid({ images, selected = new Set(), onToggle, targetHeight = 220,
                 </div>
               </div>
               <div className="pointer-events-none absolute bottom-2 right-2 flex gap-1 text-[10px]">
-                {marking && markTags(marksOf(image)).map(tag => <span key={tag} className={`rounded bg-black/80 px-1 ${markFor(tag).badge}`}>{tag}</span>)}
+                {marking && markTags(marksOf(image)).map(tag => {
+                  const automatic = image.quality_source === 'auto' && tag === image.quality_mark;
+                  return <span key={tag} title={automatic ? 'Set automatically from the post score' : undefined} className={`rounded bg-black/80 px-1 ${markFor(tag).badge} ${automatic ? 'italic opacity-80' : ''}`}>{tag}{automatic ? ' · auto' : ''}</span>;
+                })}
+                {Boolean(image.has_caption) && <span title="Has a caption file" className="rounded bg-black/80 px-1 text-emerald-200">NL</span>}
                 {Boolean(image.favorite) && <span title="Favorite" aria-label="Favorite" className="rounded bg-black/80 px-1 text-amber-200">★</span>}
                 {image.review_status && image.review_status !== 'pending' && <span className="rounded bg-black/80 px-1 text-slate-200">{image.review_status}</span>}
               </div>

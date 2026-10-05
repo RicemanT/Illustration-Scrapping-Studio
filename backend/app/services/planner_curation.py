@@ -61,6 +61,9 @@ def folder_context(folder_id: int) -> dict | None:
         images = main.execute('SELECT count(*) FROM image WHERE folder_id=?', (folder_id,)).fetchone()[0]
         marks = {'total': images, 'viewed': main.execute('SELECT count(*) FROM image WHERE folder_id=? AND marks_viewed_at IS NOT NULL',
                                                           (folder_id,)).fetchone()[0]}
+        for source in ('auto', 'manual'):
+            marks[source] = main.execute('SELECT count(*) FROM image WHERE folder_id=? AND quality_source=? AND quality_mark IS NOT NULL',
+                                         (folder_id, source)).fetchone()[0]
         for column in ('quality_mark', 'aesthetic_mark'):
             for tag, count in main.execute(f'SELECT {column}, count(*) FROM image WHERE folder_id=? AND {column} IS NOT NULL GROUP BY {column}', (folder_id,)):
                 marks[tag] = count
@@ -139,7 +142,8 @@ def accept_posts(folder_id: int, posts: list[tuple[str, str]]) -> dict:
 
 
 def _folder_image(main, folder_id: int, image_id: int):
-    row = main.execute('SELECT id, quality_mark, aesthetic_mark, marks_viewed_at FROM image WHERE id=? AND folder_id=?', (image_id, folder_id)).fetchone()
+    row = main.execute('''SELECT id, quality_mark, aesthetic_mark, marks_viewed_at, quality_source, quality_auto, quality_auto_info
+                          FROM image WHERE id=? AND folder_id=?''', (image_id, folder_id)).fetchone()
     if not row:
         raise LookupError('Image not found in this collection')
     return row
@@ -157,17 +161,31 @@ def _require_open(folder_id: int) -> None:
         raise ValueError('This collection is marked complete. Reopen it to change quality marks.')
 
 
-def set_marks(folder_id: int, image_id: int, quality: str | None, aesthetic: str | None) -> dict:
-    """Save an image's working marks; they reach the ground truth when the folder is accepted."""
+def set_marks(folder_id: int, image_id: int, quality: str | None, aesthetic: str | None,
+              touched: list[str] | None = None, use_auto: bool = False) -> dict:
+    """Save an image's working marks; they reach the ground truth when the folder is accepted.
+
+    `touched` lists the scales the user set by hand; a hand-set quality mark
+    (including Normal) is never replaced by automatic marks. `use_auto` puts
+    the automatic quality mark back.
+    """
     if quality not in (None, *QUALITY_MARKS) or aesthetic not in (None, *AESTHETIC_MARKS):
         raise ValueError('Unknown quality or aesthetic mark')
     _require_open(folder_id)
     main = db.get_connection()
     try:
-        _folder_image(main, folder_id, image_id)
+        row = _folder_image(main, folder_id, image_id)
+        source = row['quality_source']
+        if use_auto:
+            quality, source = row['quality_auto'], 'auto'
+        elif touched is not None:
+            source = 'manual' if 'quality' in touched else source
+        elif quality != row['quality_mark']:
+            source = 'manual'
         stamp = now()
-        main.execute('UPDATE image SET quality_mark=?, aesthetic_mark=?, marks_viewed_at=COALESCE(marks_viewed_at, ?) WHERE id=?',
-                     (quality, aesthetic, stamp, image_id))
+        main.execute("""UPDATE image SET quality_mark=?, aesthetic_mark=?, quality_source=?,
+                        marks_viewed_at=COALESCE(marks_viewed_at, ?) WHERE id=?""",
+                     (quality, aesthetic, source, stamp, image_id))
         main.commit()
         return dict(_folder_image(main, folder_id, image_id))
     finally:

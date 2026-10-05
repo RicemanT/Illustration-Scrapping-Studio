@@ -4,6 +4,11 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api, { backendAssetUrl } from '../api/client';
 import ImageStorageLocations from './ImageStorageLocations';
 import { MARKS, applyMark, isActive, markFor, markTags, marksOf } from './qualityMarks';
+import { describeAuto } from './qualityJob';
+import CaptionEditor from './CaptionEditor';
+
+const parseInfo = (value) => { try { return value ? JSON.parse(value) : null; } catch { return null; } };
+const autoOf = (row) => ({ source: row?.quality_source || null, tag: row?.quality_auto || null, info: parseInfo(row?.quality_auto_info) });
 
 // marking: { folderId, locked } for planner collections; enables quality marks.
 function ImageDetail({ image, onClose, onPrevious, onNext, position, total, marking = null }) {
@@ -61,7 +66,11 @@ function ImageDetail({ image, onClose, onPrevious, onNext, position, total, mark
   const marksTouched = useRef(false);
   const saveChain = useRef(Promise.resolve());
   const [markError, setMarkError] = useState(null);
-  useEffect(() => { if (fullImage && !marksTouched.current) { marksRef.current = marksOf(fullImage); setMarks(marksRef.current); } }, [fullImage]);
+  // Where the quality mark came from (hand or score percentile) and the automatic suggestion.
+  const [auto, setAuto] = useState(() => autoOf(image));
+  useEffect(() => {
+    if (fullImage && !marksTouched.current) { marksRef.current = marksOf(fullImage); setMarks(marksRef.current); setAuto(autoOf(fullImage)); }
+  }, [fullImage]);
   const updateImageCaches = (row) => {
     queryClient.setQueryData(['image', image.id], (old) => (old ? { ...old, ...row } : old));
     queryClient.setQueriesData({ queryKey: ['collection-images', String(marking.folderId)] }, (old) => {
@@ -71,16 +80,26 @@ function ImageDetail({ image, onClose, onPrevious, onNext, position, total, mark
     });
     queryClient.invalidateQueries({ queryKey: ['planner-folder', String(marking.folderId)] });
   };
-  const chooseMark = (mark) => {
-    if (!markable) return;
-    const next = applyMark(mark, marksRef.current);
+  const saveMarks = (next, options) => {
     marksTouched.current = true;
     marksRef.current = next;
     setMarks(next);
     saveChain.current = saveChain.current
-      .then(() => api.planner.setMarks(marking.folderId, image.id, next))
-      .then((response) => { setMarkError(null); updateImageCaches(response.data); })
+      .then(() => api.planner.setMarks(marking.folderId, image.id, { ...next, ...options }))
+      .then((response) => { setMarkError(null); setAuto(autoOf(response.data)); updateImageCaches(response.data); })
       .catch((error) => setMarkError(`Mark not saved: ${error.response?.data?.detail || error.message}`));
+  };
+  const chooseMark = (mark) => {
+    if (!markable) return;
+    // Normal (no scale) sets both scales by hand; a hand-set quality mark is never replaced automatically.
+    const touched = mark.axis ? [mark.axis] : ['quality', 'aesthetic'];
+    if (touched.includes('quality')) setAuto((current) => ({ ...current, source: 'manual' }));
+    saveMarks(applyMark(mark, marksRef.current), { touched });
+  };
+  const applyAutoQuality = () => {
+    if (!markable) return;
+    setAuto((current) => ({ ...current, source: 'auto' }));
+    saveMarks({ ...marksRef.current, quality: auto.tag }, { use_auto: true });
   };
   useEffect(() => {
     // Opening an image counts as reviewing it; unmarked images stay normal.
@@ -93,7 +112,13 @@ function ImageDetail({ image, onClose, onPrevious, onNext, position, total, mark
   const currentTags = markTags(marks);
   const dirty = tagsEdited && tagText !== (fullImage?.ground_truth_tags || []).join(', ');
   const pending = tagMutation.isPending || reviewMutation.isPending || undoTagMutation.isPending;
-  const leave = (action) => { if (!action || pending) return; if (dirty && !window.confirm('Discard unsaved ground-truth tag edits?')) return; action(); };
+  const captionDirty = useRef(false);
+  const leave = (action) => {
+    if (!action || pending) return;
+    const unsaved = [dirty && 'ground-truth tag edits', captionDirty.current && 'caption edits'].filter(Boolean);
+    if (unsaved.length && !window.confirm(`Discard unsaved ${unsaved.join(' and ')}?`)) return;
+    action();
+  };
   const navigation = useRef({});
   navigation.current = { leave, onClose, onPrevious, onNext, chooseMark: markable ? chooseMark : null };
   useEffect(() => { try { localStorage.setItem('artist.viewerInfo', String(showInfo)); } catch {} }, [showInfo]);
@@ -198,6 +223,7 @@ function ImageDetail({ image, onClose, onPrevious, onNext, position, total, mark
                       className={`flex items-center gap-2 rounded-md border px-2.5 py-2 text-left text-xs font-medium transition-all duration-150 disabled:cursor-not-allowed ${on ? mark.active : `border-[#26313d] bg-[#0d141c] text-slate-300 ${markable ? mark.hover : 'opacity-60'}`}`}>
                       <span className={`h-2 w-2 shrink-0 rounded-full ${mark.dot} ${on ? '' : 'opacity-40'}`} />
                       <span className="flex-1 truncate">{mark.label}</span>
+                      {on && mark.axis === 'quality' && auto.source === 'auto' && <span className="rounded bg-black/30 px-1 text-[9px] uppercase tracking-wide opacity-80" title="Set automatically from the post's score">auto</span>}
                       <kbd className={`rounded border px-1.5 font-mono text-[10px] uppercase ${on ? 'border-white/30 bg-black/30' : 'border-[#2b3744] bg-black/30 text-slate-400'}`}>{mark.key}</kbd>
                     </button>
                   );
@@ -207,6 +233,14 @@ function ImageDetail({ image, onClose, onPrevious, onNext, position, total, mark
                 {marking.locked ? 'Written to the ground truth when the folder was accepted.'
                   : `Saved as you mark; added to the ground truth when you accept the folder.${committedTags.join(', ') !== currentTags.join(', ') && committedTags.length ? ` The sidecar still has: ${committedTags.join(', ')}.` : ''}`}
               </p>
+              {auto.info && (
+                <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
+                  <span>{describeAuto(auto.tag, auto.info)}</span>
+                  {markable && auto.source === 'manual' && !auto.info.reason && (auto.tag || null) !== (marks.quality || null) && (
+                    <button type="button" onClick={applyAutoQuality} className="rounded border border-slate-600 px-1.5 py-0.5 text-slate-200 hover:border-slate-400">Use auto</button>
+                  )}
+                </div>
+              )}
               {markError && <p role="alert" className="mt-1 text-xs text-red-300">{markError}</p>}
             </div>
           )}
@@ -262,6 +296,10 @@ function ImageDetail({ image, onClose, onPrevious, onNext, position, total, mark
             </div>
             {tagMutation.isError && <div className="mt-2 text-xs text-red-300">{tagMutation.error.response?.data?.detail || tagMutation.error.message}</div>}
           </div>
+
+          {/* Natural-language caption file beside the image */}
+          <CaptionEditor imageId={image.id} dirtyRef={captionDirty}
+            onSavedNext={onNext ? () => navigation.current.leave(navigation.current.onNext) : undefined} />
 
           {marking && (
             <div>

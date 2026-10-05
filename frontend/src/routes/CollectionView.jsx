@@ -12,6 +12,7 @@ import LocalFilters from '../components/LocalFilters';
 import TagExplorer from '../components/TagExplorer';
 import FilterReview from '../components/FilterReview';
 import PlannerCandidates from '../components/PlannerCandidates';
+import { describeQualityJob, useQualityJob } from '../components/qualityJob';
 import { ActiveTransferProgress, formatTransferSummary, SyncProgressDetails } from '../components/SyncProgress';
 
 function CollectionView() {
@@ -128,6 +129,8 @@ function CollectionView() {
   const marks = plannerFolder?.marks;
   const unviewed = marks ? Math.max(0, marks.total - marks.viewed) : 0;
   const markSummary = marks ? ['masterpiece', 'best quality', 'low quality', 'very aesthetic', 'aesthetic'].filter(tag => marks[tag]).map(tag => `${marks[tag]} ${tag}`).join(' · ') : '';
+  const quality = useQualityJob();
+  const qualityHere = quality.job?.status && quality.job.status !== 'idle' && (quality.job.folder_ids == null || quality.job.folder_ids.includes(Number(id)));
   const [candidatesHotkeys, setCandidatesHotkeys] = useState(false);
   const completeMutation = useMutation({
     meta: { successMessage: 'Folder status saved' },
@@ -325,8 +328,16 @@ function CollectionView() {
               {folderComplete ? `Complete since ${new Date(plannerFolder.completed_at).toLocaleDateString()} · ` : 'Pending · '}{collection.image_count}{plannerFolder.target ? ` / ${plannerFolder.target}` : ''} images
             </span>
             {marks && <span className={`text-xs ${!folderComplete && unviewed ? 'text-amber-300' : 'text-slate-400'}`} title={markSummary || 'No quality marks yet'}>
-              {unviewed ? `${unviewed} of ${marks.total} not viewed for quality` : `All ${marks.total} viewed for quality`}{markSummary ? ` · ${markSummary}` : ''}
+              {unviewed ? `${unviewed} of ${marks.total} not viewed for quality` : `All ${marks.total} viewed for quality`}{markSummary ? ` · ${markSummary}` : ''}{marks.auto ? ` · ${marks.auto} auto` : ''}
             </span>}
+            {marks && !folderComplete && <button type="button" onClick={() => quality.start.mutate({ folder_ids: [Number(id)] })}
+              disabled={quality.running || quality.start.isPending}
+              title="Mark masterpiece / best quality from each post's score percentile (same site, year and rating). Hand-set marks are kept."
+              className="rounded border border-amber-700/60 bg-amber-950/30 px-2.5 py-1 text-xs text-amber-100 hover:bg-amber-900/40 disabled:opacity-50">
+              {quality.running ? 'Auto quality running…' : 'Auto quality from scores'}
+            </button>}
+            {qualityHere && <span role="status" className={`max-w-sm text-right text-[11px] ${quality.job.status === 'failed' ? 'text-red-300' : 'text-slate-400'}`}>{describeQualityJob(quality.job)}</span>}
+            {quality.start.isError && <span className="text-xs text-red-300">{quality.start.error.response?.data?.detail || quality.start.error.message}</span>}
             {completeMutation.isError && <span className="text-xs text-red-300">{completeMutation.error.response?.data?.detail || completeMutation.error.message}</span>}
           </div>}
           <button

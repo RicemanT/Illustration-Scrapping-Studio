@@ -59,7 +59,7 @@ The **duplicates** tab shows folder-local candidates. Inspect before resolving n
 
 Each image has a `.txt` sidecar derived from curated tags and configured category policy. Global category switches can be overridden per collection. Source metadata remains recorded separately. Artist-format triggers apply only to artist collections; character/tag collection names are not inserted as artist credits.
 
-Use the tags view and image editor for supported edits. Some tag/category changes immediately rewrite affected sidecars, so review their scope. Local include/exclude tag filters only change the view. No natural-language caption model is included.
+Use the tags view and image editor for supported edits. Some tag/category changes immediately rewrite affected sidecars, so review their scope. Local include/exclude tag filters only change the view. No natural-language caption model is included, but caption files written next to each image by your own captioning script (default `<image name>_nl.txt`) are shown and editable in the image viewer, filterable in the gallery, and kept with their image; see [Captions](DATASET_PLANNER.md#captions).
 
 ## Image processing
 

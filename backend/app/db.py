@@ -470,6 +470,11 @@ def init_db():
     _ensure_column(cursor, "image", "aesthetic_mark", "TEXT")
     _ensure_column(cursor, "image", "marks_viewed_at", "TEXT")
     _ensure_column(cursor, "image", "quality_tags", "TEXT")
+    # quality_source: "manual" (set by hand, never overwritten) or "auto" (from score percentiles).
+    _ensure_column(cursor, "image", "quality_source", "TEXT")
+    _ensure_column(cursor, "image", "quality_auto", "TEXT")
+    _ensure_column(cursor, "image", "quality_auto_info", "TEXT")
+    cursor.execute("UPDATE image SET quality_source = 'manual' WHERE quality_mark IS NOT NULL AND quality_source IS NULL")
     _migrate_folder_scoped_images(conn)
     cursor = conn.cursor()
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_image_md5 ON image(md5)")

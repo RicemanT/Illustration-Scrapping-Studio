@@ -488,7 +488,9 @@ class ImageService:
         conn.execute("DELETE FROM image WHERE id = ?", (image_id,))
         conn.commit()
         conn.close()
-        for relative in (row[0], row[1], str(Path(row[0]).with_suffix('.txt')) if row[0] else None):
+        from app.services.captions import caption_relative, get_suffix
+        caption = caption_relative(row[0], get_suffix()) if row[0] else None
+        for relative in (row[0], row[1], str(Path(row[0]).with_suffix('.txt')) if row[0] else None, caption):
             if relative:
                 root = self.thumbnails_path if relative == row[1] else self.images_path
                 (root / relative).unlink(missing_ok=True)
@@ -517,6 +519,10 @@ class ImageService:
             new_path.parent.mkdir(parents=True, exist_ok=True)
             if not new_path.exists():
                 shutil.move(str(old_path), str(new_path))
+            from app.services.captions import caption_file, get_suffix
+            old_caption, new_caption = caption_file(old_path, get_suffix()), caption_file(new_path, get_suffix())
+            if old_caption.exists() and not new_caption.exists():
+                shutil.move(str(old_caption), str(new_caption))
             old_sidecar = old_path.with_suffix('.txt')
             new_sidecar = new_path.with_suffix('.txt')
             if old_sidecar.exists() and not new_sidecar.exists():
