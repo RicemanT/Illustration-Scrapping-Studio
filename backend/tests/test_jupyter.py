@@ -127,6 +127,94 @@ class JupyterLifecycleTests(unittest.TestCase):
                 support.refresh_ui(self.root, archive)
         self.assertEqual((dist / 'index.html').read_text(), 'old')
 
+    def fake_github(self, files):
+        """An opener serving release assets; missing names answer 404."""
+        import io
+        import urllib.error
+        requested = []
+        def opener(request, timeout=None):
+            url = request.full_url
+            requested.append(url)
+            name = url.rsplit('/', 1)[1]
+            if name not in files:
+                raise urllib.error.HTTPError(url, 404, 'Not Found', {}, None)
+            return io.BytesIO(files[name])
+        return opener, requested
+
+    def test_fetch_ui_waits_for_the_build_installs_it_and_skips_when_current(self):
+        import hashlib
+        version = 'ab' * 20
+        data = self.archive({'dist/index.html': '<script src="/assets/a.js"></script>', 'dist/assets/a.js': 'a'}).read_bytes()
+        files = {}
+        opener, requested = self.fake_github(files)
+        def git(app, *args):
+            return version if args[0] == 'rev-parse' else 'https://github.com/owner/repo.git'
+        def sleep(seconds):
+            # The build lands while the notebook waits.
+            files[f'frontend-ui-{version}.zip'] = data
+            files[f'frontend-ui-{version}.zip.sha256'] = (hashlib.sha256(data).hexdigest() + '\n').encode()
+        logs = []
+        with patch.object(support, '_git', side_effect=git):
+            dist = support.fetch_ui(self.root, opener=opener, sleep=sleep, log=logs.append)
+            self.assertEqual((dist / 'assets/a.js').read_text(), 'a')
+            self.assertEqual((dist / support.UI_MARKER).read_text().strip(), version)
+            self.assertEqual(requested[0], f'https://github.com/owner/repo/releases/download/ui-latest/frontend-ui-{version}.zip')
+            self.assertTrue(any('still building' in line for line in logs))
+            count = len(requested)
+            support.fetch_ui(self.root, opener=opener, log=logs.append)
+            self.assertEqual(len(requested), count)  # already current: nothing downloaded
+
+    def test_fetch_ui_rejects_corrupt_downloads_and_gives_up_after_waiting(self):
+        version = 'cd' * 20
+        (self.root / 'frontend/dist').mkdir(parents=True)
+        (self.root / 'frontend/dist/index.html').write_text('old')
+        git = lambda app, *args: version if args[0] == 'rev-parse' else 'git@github.com:owner/repo.git'
+        corrupt, _ = self.fake_github({f'frontend-ui-{version}.zip': b'zip', f'frontend-ui-{version}.zip.sha256': b'0' * 64})
+        missing, _ = self.fake_github({})
+        ticks = iter(range(0, 10000, 100))
+        with patch.object(support, '_git', side_effect=git):
+            with self.assertRaisesRegex(RuntimeError, 'checksum'):
+                support.fetch_ui(self.root, opener=corrupt, log=lambda line: None)
+            with self.assertRaisesRegex(RuntimeError, 'no UI build'):
+                support.fetch_ui(self.root, wait=300, opener=missing, sleep=lambda s: None, clock=lambda: next(ticks), log=lambda line: None)
+        self.assertEqual((self.root / 'frontend/dist/index.html').read_text(), 'old')
+
+    def setup_cell_scope(self):
+        import shutil
+        (self.root / '.git').mkdir()
+        return dict(studio_support=support, APP=self.root, PORT=12345, UI_ZIP=self.root / 'missing.zip', UPDATE_SOURCE=True,
+                    sys=sys, subprocess=subprocess, shutil=shutil, spec=Mock())
+
+    def test_git_setup_pulls_then_downloads_the_matching_ui_before_setup(self):
+        calls = []
+        def run(command, **kwargs):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, 'Already up to date.', '')
+        def fetch(app):
+            self.assertEqual(len(calls), 1)  # after the pull, before setup
+            (self.root / 'frontend/dist/assets').mkdir(parents=True)
+            return self.root / 'frontend/dist'
+        scope = self.setup_cell_scope()
+        import shutil
+        with patch.object(support, 'assert_stopped'), patch.object(shutil, 'which', return_value=None), \
+                patch.object(subprocess, 'run', side_effect=run), patch.object(support, 'fetch_ui', side_effect=fetch) as fetch_ui:
+            exec(self.cell('studio-3'), scope)
+        fetch_ui.assert_called_once()
+        scope['spec'].loader.exec_module.assert_called_once_with(support)
+        self.assertEqual(calls[0][-4:], ['pull', '--ff-only', 'origin', 'main'])
+        self.assertIn('--skip-ui-build', calls[1])
+
+    def test_pull_blocked_by_an_edited_notebook_explains_what_to_do(self):
+        def run(command, **kwargs):
+            return subprocess.CompletedProcess(command, 1, '', 'error: Your local changes to the following files would be overwritten by merge:\n\tJupyter Studio.ipynb\n')
+        scope = self.setup_cell_scope()
+        import shutil
+        with patch.object(support, 'assert_stopped'), patch.object(shutil, 'which', return_value=None), \
+                patch.object(subprocess, 'run', side_effect=run), patch.object(support, 'fetch_ui') as fetch_ui:
+            with self.assertRaisesRegex(RuntimeError, 'Save Notebook As'):
+                exec(self.cell('studio-3'), scope)
+        fetch_ui.assert_not_called()
+
     def test_notebook_code_cells_parse_and_have_no_outputs(self):
         for cell in self.notebook['cells']:
             if cell['cell_type'] == 'code':

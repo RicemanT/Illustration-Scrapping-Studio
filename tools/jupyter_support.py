@@ -1,5 +1,6 @@
 """Standard-library helpers for the public Jupyter launcher."""
 from pathlib import Path, PurePosixPath
+import hashlib
 import os
 import re
 import shutil
@@ -7,7 +8,15 @@ import signal
 import socket
 import subprocess
 import tempfile
+import time
+import urllib.error
+import urllib.request
 import zipfile
+
+# GitHub Actions publishes the built UI for every frontend version on main as
+# assets of this release, named by the Git tree hash of `frontend/`.
+UI_RELEASE = 'ui-latest'
+UI_MARKER = '.ui-version'
 
 
 def stop_app(process, grace=60):
@@ -111,4 +120,70 @@ def refresh_ui(app, zip_path):
             if previous.exists():
                 previous.rename(dist)
             raise
+    return dist
+
+
+def _git(app, *args):
+    return subprocess.run(['git', '-C', str(app), *args], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def github_repository(app):
+    """(owner, name) of the checkout's GitHub origin."""
+    url = _git(app, 'remote', 'get-url', 'origin')
+    match = re.search(r'github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?/?$', url)
+    if not match:
+        raise RuntimeError(f'The origin remote is not a GitHub repository ({url}); install a UI zip with refresh_ui instead.')
+    return match.group(1), match.group(2)
+
+
+def _download(url, opener, timeout=120):
+    request = urllib.request.Request(url, headers={'User-Agent': 'IllustrationScrappingStudio-notebook'})
+    with opener(request, timeout=timeout) as response:
+        return response.read()
+
+
+def fetch_ui(app, wait=600, poll=20, opener=urllib.request.urlopen, sleep=time.sleep, clock=time.monotonic, log=print):
+    """Install the UI that GitHub built for this checkout's exact frontend source.
+
+    Does nothing when the served UI already matches. Right after a push the
+    build may still be running; this waits up to `wait` seconds for it.
+    """
+    app = Path(app).resolve()
+    dist = app / 'frontend' / 'dist'
+    version = _git(app, 'rev-parse', 'HEAD:frontend')
+    marker = dist / UI_MARKER
+    if (dist / 'index.html').is_file() and marker.is_file() and marker.read_text(encoding='utf-8').strip() == version:
+        log(f'UI is already the build for this version ({version[:12]}).')
+        return dist
+    owner, name = github_repository(app)
+    url = f'https://github.com/{owner}/{name}/releases/download/{UI_RELEASE}/frontend-ui-{version}.zip'
+    deadline = clock() + wait
+    waiting = False
+    while True:
+        try:
+            data = _download(url, opener)
+            expected = _download(url + '.sha256', opener).decode('ascii').split()[0]
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                raise RuntimeError(f'Downloading the UI failed: HTTP {exc.code} for {url}') from exc
+            if clock() >= deadline:
+                raise RuntimeError(f'GitHub has no UI build for this version yet ({version[:12]}). Check the "UI build" workflow '
+                                   f'on GitHub, then rerun this cell. Nothing was changed.') from exc
+            if not waiting:
+                log('GitHub is still building the UI for this version; waiting for it (checks every '
+                    f'{poll} s, up to {wait // 60} min)...')
+                waiting = True
+            sleep(poll)
+        except (urllib.error.URLError, OSError) as exc:
+            raise RuntimeError(f'Could not reach GitHub to download the UI ({exc}). Check internet access, or set '
+                               'DOWNLOAD_UI = False and install an uploaded UI_ZIP. Nothing was changed.') from exc
+    if hashlib.sha256(data).hexdigest() != expected:
+        raise RuntimeError('The downloaded UI does not match its checksum; rerun this cell. Nothing was changed.')
+    with tempfile.TemporaryDirectory() as temporary:
+        archive = Path(temporary) / 'frontend-ui.zip'
+        archive.write_bytes(data)
+        refresh_ui(app, archive)
+    marker.write_text(f'{version}\n', encoding='utf-8')
+    log(f'Installed the UI build for this version ({version[:12]}).')
     return dist

@@ -1,0 +1,48 @@
+name: UI build
+# Builds the UI for every frontend version on main and publishes it as an
+# asset of the "ui-latest" release, named by the Git tree hash of frontend/.
+# The Jupyter setup cell downloads the build matching its checkout, so servers
+# without Node.js never need a manual upload.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/ui-build.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: ui-build
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+      - name: Package
+        run: |
+          version=$(git rev-parse HEAD:frontend)
+          (cd frontend && zip -qr "../frontend-ui-$version.zip" dist)
+          sha256sum "frontend-ui-$version.zip" | cut -d' ' -f1 > "frontend-ui-$version.zip.sha256"
+          echo "UI_VERSION=$version" >> "$GITHUB_ENV"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view ui-latest >/dev/null 2>&1 || gh release create ui-latest --prerelease --target "$GITHUB_SHA" \
+            --title 'UI builds' --notes 'Built UI for each frontend version on main, downloaded by the Jupyter setup cell. Not a release of the app.'
+          gh release upload ui-latest "frontend-ui-$UI_VERSION.zip" "frontend-ui-$UI_VERSION.zip.sha256" --clobber
+          # Keep the 30 newest builds (two files each).
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/ui-latest" --jq '.assets | sort_by(.created_at) | reverse | .[60:] | .[].id' |
+            while read -r id; do gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$id"; done
