@@ -84,6 +84,51 @@ class PruneTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(delivery.prune_delivery(second['id'], apply=False)['images'], 0)
 
 
+    async def test_removed_images_become_bans_and_layout_repeats_follow_what_is_left(self):
+        import json
+        job = delivery.create_delivery(self.run_id, 'Planner', self.root)
+        await delivery.run_delivery(job['id'], asyncio.Event(), self.factory, self.root)
+        main = db.get_connection()
+        folder_id = main.execute("SELECT id FROM collection WHERE name='Artist X'").fetchone()[0]
+        rows = main.execute("""SELECT i.id, s.remote_id FROM image i JOIN image_source s ON s.image_id=i.id
+                               WHERE i.folder_id=? ORDER BY s.remote_id""", (folder_id,)).fetchall()
+        main.close()
+        removed_image, removed_post = rows[0]['id'], rows[0]['remote_id']
+        from app.services.collections import CollectionService
+        CollectionService().remove_images(folder_id, [removed_image], self.root, 'ab' * 16)
+
+        layout = delivery.export_training_layout(job['id'])
+        artist_x = next(f for f in json.loads((layout / 'folders.json').read_text(encoding='utf-8')) if f['artist'] == 'Artist X')
+        self.assertEqual(artist_x['images'], len(rows) - 1)
+        self.assertEqual(artist_x['repeats'], min(10, round(200 / (len(rows) - 1))))
+
+        self.assertEqual(delivery.ban_removed_images(), 1)
+        self.assertEqual(delivery.ban_removed_images(), 0)  # already banned
+        second_run = store.run_plan(PlannerConfig(min_images=3, max_images=5, character_floor=0))
+        conn = store.connect()
+        picked = {r[0] for r in conn.execute("SELECT remote_id FROM selection WHERE run_id=? AND site='danbooru'", (second_run,))}
+        conn.close()
+        self.assertNotIn(removed_post, picked)
+
+
+class RecencyTests(unittest.TestCase):
+    setUp = test_planner.PlannerStoreTests.setUp
+    tearDown = test_planner.PlannerStoreTests.tearDown
+
+    def test_newest_posts_window_limits_candidates_to_recent_work(self):
+        store.import_artists('site,display_name,query_tag\ndanbooru,a,artist_a\n')
+        conn = store.connect()
+        rows = [test_planner.post(i, created_at=f'20{10 + i:02d}-01-01T00:00:00') for i in range(1, 11)]
+        conn.executemany(f"INSERT INTO post ({','.join(store.POST_COLUMNS)}) VALUES ({','.join('?' * len(store.POST_COLUMNS))})",
+                         [tuple({**r, 'artist_id': 1}[c] for c in store.POST_COLUMNS) for r in rows])
+        conn.commit()
+        conn.close()
+        run_id = store.run_plan(PlannerConfig(min_images=2, max_images=10, character_floor=0, newest_posts_per_artist=4))
+        conn = store.connect()
+        picked = sorted(int(r[0]) for r in conn.execute('SELECT remote_id FROM selection WHERE run_id=?', (run_id,)))
+        conn.close()
+        self.assertEqual(picked, [7, 8, 9, 10])
+
 class StyleCheckTests(unittest.TestCase):
     def test_style_outliers_flags_the_odd_image_and_spares_small_artists(self):
         rng = np.random.default_rng(0)

@@ -184,7 +184,7 @@ const NUMBER_FIELDS = [
   ['min_short_side', 'Shortest side at least (px)'], ['max_aspect_ratio', 'Aspect ratio at most'],
   ['character_floor', 'Images per target character'], ['character_share_cap', 'One character’s share of an artist at most (0–1)'],
   ['topup_max_per_artist', 'Character top-ups per artist at most'], ['candidate_pool', 'Candidates kept per artist'],
-  ['min_year', 'Posts from year (blank = any)'],
+  ['min_year', 'Posts from year (blank = any)'], ['newest_posts_per_artist', 'Only each artist’s newest posts (0 = all)'],
 ];
 const WEIGHT_FIELDS = ['weight_quality', 'weight_novelty', 'weight_character', 'weight_rarity', 'weight_boost', 'priority_character_boost'];
 
@@ -197,7 +197,8 @@ function RunPanel({ status, runId, setRunId, onChange }) {
   const selected = runs.find((run) => run.id === runId);
   const running = runs.some((run) => run.status === 'running');
   const harvesting = ACTIVE.includes(status?.harvest_job?.status);
-  const start = useMutation({ mutationFn: () => api.planner.run(config), onSuccess: ({ data }) => { setRunId(data.id); onChange(); } });
+  const [bannedRemoved, setBannedRemoved] = useState(0);
+  const start = useMutation({ mutationFn: () => api.planner.run(config), onSuccess: ({ data }) => { setRunId(data.id); setBannedRemoved(data.banned_removed || 0); onChange(); } });
   const exportRun = useMutation({ mutationFn: () => api.planner.exportRun(runId) });
   const set = (key, value) => setConfig((old) => ({ ...old, [key]: value }));
   return <section className="rounded border border-slate-800 p-4 space-y-3">
@@ -234,6 +235,7 @@ function RunPanel({ status, runId, setRunId, onChange }) {
       {selected?.status === 'completed' && <button className={quiet} disabled={exportRun.isPending} onClick={() => exportRun.mutate()}>Export manifest</button>}
       {selected?.status === 'completed' && <button className={quiet} onClick={() => setConfig({ ...defaults.data, ...selected.config })}>Load this run’s settings</button>}
     </div>
+    {bannedRemoved > 0 && <p className="text-sm text-amber-300">{number(bannedRemoved)} images you removed from planner collections are now banned, so this run will not pick them again.</p>}
     {[start.error, exportRun.error].filter(Boolean).map((error, index) => <p role="alert" className="text-red-400" key={index}>{errorText(error)}</p>)}
     {exportRun.data && <p className="text-sm text-green-300">Exported to {exportRun.data.data.path}: {exportRun.data.data.files.join(', ')}</p>}
     {selected?.error && <p className="text-red-400 text-sm">{selected.error}</p>}
@@ -316,7 +318,7 @@ function DeliveryPanel({ status, runId, onChange }) {
         <pre className="whitespace-pre-wrap text-slate-300">python tools/planner_style_check.py --library "{status?.library || '<library folder>'}"{status?.custom_path ? ` --planner "${status.path}"` : ''} --pause 0.1</pre>
         <p>Add <code>--device cuda:1</code> to pick a GPU, <code>--ban</code> to ban everything flagged, or <code>--threshold 4</code> to flag fewer images. After banning, run the plan again, download it and remove images no longer selected.</p></div>
     </details>
-    {layout.data && <p className="text-sm text-green-300">Training layout written to {layout.data.data.path}: {layout.data.data.files.join(', ')}. dataset.toml has diffusion-pipe [[directory]] blocks with each folder's repeats.</p>}
+    {layout.data && <p className="text-sm text-green-300">Training layout written to {layout.data.data.path}: {layout.data.data.files.join(', ')}. dataset.toml has diffusion-pipe [[directory]] blocks; repeats follow the images left in each folder, so artists you trimmed by hand keep their share of training.</p>}
     {data && <div className="text-sm space-y-1">
       <p>Download #{data.id} of run #{data.run_id}: {data.status}{data.error ? ` — ${data.error}` : ''}</p>
       {sites.map((site) => { const total = data.progress.sites[site].total || 0; const left = data.counts?.[`${site}:pending`] || 0; const state = data.progress.sites[site];

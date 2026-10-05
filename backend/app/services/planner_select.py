@@ -102,6 +102,7 @@ class PlannerConfig(BaseModel):
     boost_tags_danbooru: list[str] = Field(default_factory=lambda: list(DEFAULT_BOOST_TAGS['danbooru']))
     boost_tags_e621: list[str] = Field(default_factory=lambda: list(DEFAULT_BOOST_TAGS['e621']))
     min_year: Optional[int] = Field(None, ge=1990, le=2100)
+    newest_posts_per_artist: int = Field(0, ge=0, le=100000, description='Only consider each artist\'s newest N posts (0 = all)')
     character_floor: int = Field(30, ge=0, le=100000)
     character_share_cap: float = Field(0.3, gt=0, le=1.0, description='Largest share of one artist taken by one character')
     character_topup: bool = True

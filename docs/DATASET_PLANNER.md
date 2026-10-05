@@ -129,6 +129,16 @@ Locks and bans take effect on the next plan run. Thumbnails are fetched by the b
 
 Progress per site counts posts as **done** (new images added), **skipped** (already in the collection), **filtered** (below the collection's quality floor), **missing** (deleted from the site since the harvest) and **error**. **Stop** keeps finished downloads; **Resume** continues the rest and retries errors, also after a backend restart. Downloading the same run again reuses its collections and skips posts already present. Do not move or delete planner collections while a download runs.
 
+### Curating by hand
+
+The planner balances content, not style: it only sees tags, favorites and sizes, and its novelty score favors variety, which can pull in sketches, traditional-media pages or an artist's older style. Judge style yourself:
+
+1. **Narrow the candidates first.** **Only each artist's newest posts** (for example 100) keeps the plan within each artist's recent work, where style is most consistent. Planning still balances characters and content inside that window.
+2. **Plan a little more than you need**, for example 90 images per artist if you want about 60, and download the run.
+3. **Remove off-style images in each collection's gallery.** Removal is recoverable through **Recover last deletion**.
+4. **Run the plan again when you want replacements.** Images you removed from planner collections become bans first, so neither the plan nor a later download brings them back. Download the new run to fill gaps, then use **Remove images no longer selected** if needed.
+5. **Export the training layout last.** Repeats are recalculated from the images actually left in each folder, so an artist trimmed from 60 to 40 images gets more repeats and keeps about the same number of training samples.
+
 ### Removing images a run no longer selects
 
 Downloading another run adds its new images but keeps everything already downloaded, including posts you have since banned. **Remove images no longer selected…** first shows how many planner images in the run's collections the run does not select, then removes them on confirmation, so the training folders match the plan. Only images an earlier planner download added are considered; images you imported yourself and other providers' images are never removed. Removed images go to the collection's recovery, which keeps only the latest removal per collection, so this replaces any earlier **Recover last deletion** batch there.
@@ -153,7 +163,7 @@ Treat flags as suggestions. These statistics are dominated by colour, so an arti
 
 | File | Contents |
 | --- | --- |
-| `dataset.toml` | One `[[directory]]` block per collection with its path and `num_repeats`, for a diffusion-pipe dataset config; add your resolution and bucket settings there |
+| `dataset.toml` | One `[[directory]]` block per collection with its path and `num_repeats`, for a diffusion-pipe dataset config; add your resolution and bucket settings there. Repeats are `Training samples per artist ÷ images in the folder now` (at most **Repeats at most**), so they follow hand curation |
 | `folders.json`, `folders.csv` | Site, artist, tag, collection, path, image count and repeats, for other trainers |
 
 Paths are on the machine running the backend. A video post can contribute up to three images, so image counts can exceed the planned post counts.

@@ -514,7 +514,12 @@ def _plan_family(conn, family: str, config: PlannerConfig, log):
         if current is None:
             return
         candidates, families = [], set()
-        for r in rows:
+        window = rows
+        if config.newest_posts_per_artist:
+            # Styles drift over the years; recent work is the most consistent.
+            window = sorted(rows, key=lambda r: (r['created_at'] or '', int(r['remote_id']) if str(r['remote_id']).isdigit() else 0),
+                            reverse=True)[:config.newest_posts_per_artist]
+        for r in window:
             action = overrides.get((r['artist_id'], r['site'], r['remote_id']))
             reason = rejection(r, config, blocked, banned=action == 'ban')
             if reason and not (action == 'lock' and reason not in {'no_file', 'banned_by_user'}):

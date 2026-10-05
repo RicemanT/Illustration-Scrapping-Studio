@@ -237,8 +237,10 @@ def config_defaults():
 
 @router.post('/runs')
 def start_run(config: PlannerConfig):
+    # Images removed from planner collections by hand become bans first.
+    banned = delivery.ban_removed_images()
     try:
-        return store.get_run(store.start_plan(config))
+        return {**store.get_run(store.start_plan(config)), 'banned_removed': banned}
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc
 
