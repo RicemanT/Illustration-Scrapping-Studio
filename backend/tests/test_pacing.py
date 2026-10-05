@@ -15,16 +15,18 @@ from app.providers.booru import BooruProvider
 
 class PacerTests(unittest.IsolatedAsyncioTestCase):
     async def test_concurrent_waits_get_distinct_spaced_slots(self):
+        # Record requested sleeps instead of measuring wall-clock gaps: Windows'
+        # monotonic clock ticks every ~15.6 ms, which makes measured gaps flaky.
         pacer = pacing.Pacer()
-        starts = []
+        sleeps = []
 
-        async def one():
-            await pacer.wait(0.05)
-            starts.append(time.monotonic())
+        async def fake_sleep(seconds):
+            sleeps.append(seconds)
 
-        await asyncio.gather(*(one() for _ in range(4)))
-        gaps = [b - a for a, b in zip(sorted(starts), sorted(starts)[1:])]
-        self.assertTrue(all(gap >= 0.04 for gap in gaps), gaps)
+        with patch.object(pacing.time, 'monotonic', return_value=100.0), patch.object(pacing.asyncio, 'sleep', fake_sleep):
+            await asyncio.gather(*(pacer.wait(0.05) for _ in range(4)))
+        self.assertEqual([round(s, 6) for s in sleeps], [0.05, 0.1, 0.15])
+        self.assertAlmostEqual(pacer.next_at, 100.2)
 
     async def test_throttle_backs_off_and_success_recovers(self):
         pacer = pacing.Pacer()
