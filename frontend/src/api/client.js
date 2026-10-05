@@ -160,6 +160,7 @@ export const api = {
   },
   settings: {
     getServer: () => client.get('/settings/server'),
+    shutdown: () => client.post('/settings/shutdown', { confirm: true }),
     updateStorage: data => client.put('/settings/storage', data),
     getProcessing: () => client.get('/settings/processing'),
     updateProcessing: data => client.put('/settings/processing', data),

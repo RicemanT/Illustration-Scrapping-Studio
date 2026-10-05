@@ -1,4 +1,9 @@
+import asyncio
+import signal
+from typing import Literal
+
 from fastapi import APIRouter
+from pydantic import BaseModel
 
 from app.models import ParallelismSettings
 from app.services.settings import MAX_PARALLEL_WORKERS, get_parallel_workers, set_parallel_workers
@@ -70,3 +75,24 @@ def update_storage(settings: StorageSettings):
     from app.services.diagnostics import emit
     emit('settings.storage', 'Free-space reserve updated', reserve_gib=settings.reserve_gib)
     return settings.model_dump()
+
+
+class ShutdownRequest(BaseModel):
+    confirm: Literal[True]
+
+
+def _stop_server() -> None:
+    # The same signal as the notebook's Stop cell and `kill -TERM`: uvicorn
+    # finishes in-flight requests, the lifespan drains workers and leaves
+    # interrupted jobs resumable, then the process exits.
+    signal.raise_signal(signal.SIGTERM)
+
+
+@router.post('/shutdown', status_code=202)
+async def shutdown_server(request: ShutdownRequest):
+    """Stop the whole app (backend and served UI) gracefully."""
+    from app.services.diagnostics import emit
+    emit("app.shutdown_requested", "Shutdown requested from Settings")
+    # Let this response reach the browser first.
+    asyncio.get_running_loop().call_later(0.5, _stop_server)
+    return {"status": "stopping"}
