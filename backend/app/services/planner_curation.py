@@ -14,6 +14,7 @@ from collections import defaultdict
 import app.db as db
 from app.services.planner_select import PlannerConfig, rejection
 from app.services.planner_store import connect, now
+from app.services.post_dates import post_year, sortable_time
 from app.services.tags import AESTHETIC_MARKS, QUALITY_MARKS, TagService
 
 POST_URLS = {'danbooru': 'https://danbooru.donmai.us/posts/{}', 'e621': 'https://e621.net/posts/{}',
@@ -67,16 +68,24 @@ def folder_context(folder_id: int) -> dict | None:
         for column in ('quality_mark', 'aesthetic_mark'):
             for tag, count in main.execute(f'SELECT {column}, count(*) FROM image WHERE folder_id=? AND {column} IS NOT NULL GROUP BY {column}', (folder_id,)):
                 marks[tag] = count
+        era_from = main.execute('SELECT era_from FROM collection WHERE id=?', (folder_id,)).fetchone()[0]
+        dated = [(r['id'], int(r['posted_at'][:4])) for r in main.execute('SELECT id, posted_at FROM image WHERE folder_id=?', (folder_id,))
+                 if r['posted_at'] and r['posted_at'][:4].isdigit()]
     finally:
         main.close()
-    return {'marks': marks, 'artist_id': artist['id'], 'site': artist['site'], 'tag': artist['tag'], 'display_name': artist['display_name'],
+    years = defaultdict(int)
+    for _, year in dated:
+        years[year] += 1
+    return {'era_from': era_from, 'years': {str(year): years[year] for year in sorted(years)},
+            'older_ids': [image_id for image_id, year in dated if era_from and year < era_from],
+            'undated': images - len(dated), 'marks': marks, 'artist_id': artist['id'], 'site': artist['site'], 'tag': artist['tag'], 'display_name': artist['display_name'],
             'completed_at': artist['completed_at'], 'images': images, 'locked': locked,
             'target': (json.loads(target['config']).get('max_images') if target else None),
             'planned': target['selected'] if target else None}
 
 
 def candidates(folder_id: int, include_filtered: bool = False, include_banned: bool = False,
-               sort: str = 'popular', offset: int = 0, limit: int = 100) -> dict:
+               sort: str = 'popular', offset: int = 0, limit: int = 100, min_year: int | None = None) -> dict:
     """The artist's harvested posts that are not in the collection."""
     conn = connect()
     try:
@@ -99,16 +108,20 @@ def candidates(folder_id: int, include_filtered: bool = False, include_banned: b
         action = overrides.get(key)
         if action == 'ban' and not include_banned:
             continue
+        year = post_year(r['created_at'])
+        if min_year and year and year < min_year:
+            continue
         reason = rejection(r, config, blocked)
         if reason and reason != 'banned_by_user' and not include_filtered:
             continue
         items.append({'site': r['site'], 'remote_id': r['remote_id'], 'width': r['width'], 'height': r['height'],
                       'rating': r['rating'], 'fav_count': r['fav_count'], 'score': r['score'], 'created_at': r['created_at'],
                       'ext': r['ext'], 'characters': (r['characters'] or '').split(), 'copyrights': (r['copyrights'] or '').split(),
-                      'tags': (r['general'] or '').split(), 'override': action, 'filtered': reason,
+                      'tags': (r['general'] or '').split(), 'override': action, 'filtered': reason, 'year': year or None,
+                      'posted_at': sortable_time(r['created_at']) or None,
                       'url': POST_URLS[r['site']].format(r['remote_id'])})
     if sort == 'newest':
-        items.sort(key=lambda i: (i['created_at'] or '', i['remote_id']), reverse=True)
+        items.sort(key=lambda i: (i['posted_at'] or '', int(i['remote_id']) if str(i['remote_id']).isdigit() else 0), reverse=True)
     else:
         items.sort(key=lambda i: (-(i['fav_count'] if i['fav_count'] is not None else (i['score'] or 0)), i['remote_id']))
     page = items[offset:offset + limit]
@@ -139,6 +152,23 @@ def accept_posts(folder_id: int, posts: list[tuple[str, str]]) -> dict:
         return {'accepted': len(accepted), 'by_site': dict(by_site)}
     finally:
         conn.close()
+
+
+def set_era(folder_id: int, era_from: int | None) -> dict:
+    """Keep images posted from this year on; older ones are dimmed and wildcards default to the era."""
+    if era_from is not None and not 1990 <= int(era_from) <= 2100:
+        raise ValueError('Choose a year between 1990 and 2100')
+    main = db.get_connection()
+    try:
+        if not main.execute('UPDATE collection SET era_from=? WHERE id=?', (era_from, folder_id)).rowcount:
+            raise LookupError('Folder not found')
+        main.commit()
+    finally:
+        main.close()
+    context = folder_context(folder_id)
+    if context is None:
+        raise LookupError('This collection was not created by the Dataset Planner')
+    return context
 
 
 def _folder_image(main, folder_id: int, image_id: int):

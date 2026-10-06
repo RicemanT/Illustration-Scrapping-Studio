@@ -28,9 +28,12 @@ function PlannerCandidates({ folderId, context, tileHeight, hotkeysActive, onHov
   useEffect(() => () => onHover(false), []);
 
   const completed = Boolean(context.completed_at);
+  const [eraOnly, setEraOnly] = useState(true);
+  const minYear = eraOnly ? context.era_from : null;
+  useEffect(() => { setOffset(0); }, [minYear]);
   const { data, isFetching, error } = useQuery({
-    queryKey: ['planner-candidates', folderId, sort, includeFiltered, includeBanned, offset],
-    queryFn: async () => (await api.planner.candidates(folderId, { sort, include_filtered: includeFiltered, include_banned: includeBanned, offset, limit: PAGE })).data,
+    queryKey: ['planner-candidates', folderId, sort, includeFiltered, includeBanned, offset, minYear],
+    queryFn: async () => (await api.planner.candidates(folderId, { sort, include_filtered: includeFiltered, include_banned: includeBanned, offset, limit: PAGE, min_year: minYear || undefined })).data,
     enabled: open,
     placeholderData: (previous) => previous,
   });
@@ -107,6 +110,7 @@ function PlannerCandidates({ folderId, context, tileHeight, hotkeysActive, onHov
           <select value={sort} onChange={(e) => setSort(e.target.value)} className="rounded border border-[#202a34] bg-[#090d12] px-2 py-1"><option value="popular">Most favorited</option><option value="newest">Newest</option></select>
           <label className="flex items-center gap-1 text-slate-400" title="Posts the plan's blocked tags or quality rules rejected"><input type="checkbox" checked={includeFiltered} onChange={(e) => setIncludeFiltered(e.target.checked)} /> Show filtered</label>
           <label className="flex items-center gap-1 text-slate-400" title="Posts you removed or banned earlier"><input type="checkbox" checked={includeBanned} onChange={(e) => setIncludeBanned(e.target.checked)} /> Show banned</label>
+          {context.era_from && <label className="flex items-center gap-1 text-slate-400" title="Hide posts from before the folder's era"><input type="checkbox" checked={eraOnly} onChange={(e) => setEraOnly(e.target.checked)} /> Only {context.era_from}+</label>}
           {selected.size > 0 && <span className="text-amber-200">{selected.size} selected <button type="button" onClick={() => setSelected(new Set())} className="text-slate-400">Clear</button></span>}
           <button type="button" onClick={togglePage} disabled={!items.length || completed} className="rounded bg-[#3a3220] px-2 py-1 text-amber-200 hover:bg-[#4a4029] disabled:opacity-50">{items.length > 0 && items.every(item => selected.has(keyOf(item))) ? 'Deselect page (Q)' : 'Select page (Q)'}</button>
           {selected.size > 0 && <button type="button" onClick={() => accept([...selected])} disabled={acceptMutation.isPending || completed} className="rounded bg-emerald-800 px-2 py-1 font-semibold text-emerald-50 hover:bg-emerald-700 disabled:opacity-50">{acceptMutation.isPending ? 'Accepting...' : `Accept ${selected.size} into the folder (W)`}</button>}
@@ -145,7 +149,7 @@ function PlannerCandidates({ folderId, context, tileHeight, hotkeysActive, onHov
                       {VIDEO.has((item.ext || '').toLowerCase()) && <span className="rounded bg-black/80 px-1 text-slate-200">{item.ext}</span>}
                     </div>
                     <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent p-2 text-xs text-white">
-                      {item.width}x{item.height} · ♥ {item.fav_count ?? item.score ?? 0}
+                      {item.width}x{item.height} · ♥ {item.fav_count ?? item.score ?? 0}{item.year ? ` · ${item.year}` : ''}
                     </div>
                   </div>
                 );

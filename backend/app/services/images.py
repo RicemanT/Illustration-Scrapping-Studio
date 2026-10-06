@@ -399,6 +399,10 @@ class ImageService:
         source_id = cursor.lastrowid
 
         self._insert_source_tags(cursor, image_id, source_id, post)
+        from app.services.post_dates import posted_at
+        published = posted_at(post.raw_metadata)
+        if published:
+            cursor.execute('UPDATE image SET posted_at = COALESCE(posted_at, ?) WHERE id = ?', (published, image_id))
 
         conn.commit()
         conn.close()
@@ -410,6 +414,35 @@ class ImageService:
             VALUES (?, ?, ?, ?, ?)
         """, ((image_id, source_id, category, tag, None)
               for category, tags in post.tags.items() for tag in tags))
+
+    def backfill_posted_at(self) -> int:
+        """Once: fill image.posted_at from the stored source metadata of images imported before it existed."""
+        from app.services.post_dates import POSTED_KEYS, posted_at
+        conn = get_connection()
+        try:
+            if conn.execute("SELECT 1 FROM app_setting WHERE key = 'posted_at_backfill_v1'").fetchone():
+                return 0
+            fields = ', '.join(f"json_extract(s.metadata, '$.{key}')" for key in POSTED_KEYS)
+            cursor = conn.execute(f"""SELECT s.image_id, {fields} FROM image_source s JOIN image i ON i.id = s.image_id
+                                      WHERE i.posted_at IS NULL AND json_valid(s.metadata)
+                                      ORDER BY s.image_id, s.is_primary DESC, s.version DESC""")
+            updates, done = [], set()
+            while rows := cursor.fetchmany(10_000):
+                for row in rows:
+                    if row[0] in done:
+                        continue
+                    value = posted_at(dict(zip(POSTED_KEYS, row[1:])))
+                    if value:
+                        done.add(row[0])
+                        updates.append((value, row[0]))
+            conn.executemany('UPDATE image SET posted_at = ? WHERE id = ? AND posted_at IS NULL', updates)
+            conn.execute("""INSERT INTO app_setting (key, value, updated_at) VALUES ('posted_at_backfill_v1', ?, ?)
+                            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at""",
+                         (str(len(updates)), datetime.now(timezone.utc).isoformat()))
+            conn.commit()
+            return len(updates)
+        finally:
+            conn.close()
 
     def get_image_by_id(self, image_id: int) -> Optional[dict]:
         """Get image by ID with all metadata."""

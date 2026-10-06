@@ -385,6 +385,10 @@ class CompleteRequest(BaseModel):
     complete: bool
 
 
+class EraRequest(BaseModel):
+    era_from: Optional[int] = Field(None, ge=1990, le=2100)
+
+
 class MarksRequest(BaseModel):
     quality: Optional[Literal['masterpiece', 'best quality', 'low quality']] = None
     aesthetic: Optional[Literal['very aesthetic', 'aesthetic']] = None
@@ -407,9 +411,10 @@ def folder_context(folder_id: int):
 
 @router.get('/folders/{folder_id}/candidates')
 def folder_candidates(folder_id: int, include_filtered: bool = False, include_banned: bool = False,
-                      sort: Literal['popular', 'newest'] = 'popular', offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=200)):
+                      sort: Literal['popular', 'newest'] = 'popular', offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=200),
+                      min_year: Optional[int] = Query(None, ge=1990, le=2100)):
     try:
-        return curation.candidates(folder_id, include_filtered, include_banned, sort, offset, limit)
+        return curation.candidates(folder_id, include_filtered, include_banned, sort, offset, limit, min_year)
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
 
@@ -430,6 +435,16 @@ def complete_folder(folder_id: int, request: CompleteRequest):
         return curation.set_complete(folder_id, request.complete)
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
+
+
+@router.put('/folders/{folder_id}/era')
+def set_folder_era(folder_id: int, request: EraRequest):
+    try:
+        return curation.set_era(folder_id, request.era_from)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @router.put('/folders/{folder_id}/images/{image_id}/marks')

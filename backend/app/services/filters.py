@@ -22,6 +22,9 @@ class LocalFilter(BaseModel):
     review_status: Literal["pending", "accepted", "rejected", "archived"] | None = None
     favorite: bool | None = None
     # Hand-assigned marks: one tag, "normal" (no marks) or "unviewed".
+    # Year the post was originally published on its site.
+    posted_from_year: int | None = Field(default=None, ge=1990, le=2100)
+    posted_to_year: int | None = Field(default=None, ge=1990, le=2100)
     quality: Literal["normal", "unviewed", "auto", "manual", "masterpiece", "best quality", "low quality", "very aesthetic", "aesthetic"] | None = None
     # Natural-language caption file beside the image.
     caption: Literal["has", "missing"] | None = None
@@ -49,7 +52,7 @@ class LocalQuery(BaseModel):
     filters: LocalFilter = Field(default_factory=LocalFilter)
     limit: int = Field(default=100, ge=1, le=200)
     offset: int = Field(default=0, ge=0)
-    sort: Literal["newest", "oldest", "width", "height"] = "newest"
+    sort: Literal["newest", "oldest", "width", "height", "posted_newest", "posted_oldest"] = "newest"
 
 
 # Effective membership mirrors TagService: trusted source tags, canonical
@@ -125,6 +128,12 @@ def query_sql(folder_id: int, filters: LocalFilter):
         if value is not None:
             clauses.append(f"i.{field}=?")
             params.append(value)
+    if filters.posted_from_year is not None:
+        clauses.append("CAST(substr(i.posted_at, 1, 4) AS INTEGER) >= ?")
+        params.append(filters.posted_from_year)
+    if filters.posted_to_year is not None:
+        clauses.append("CAST(substr(i.posted_at, 1, 4) AS INTEGER) <= ?")
+        params.append(filters.posted_to_year)
     if filters.quality == "normal":
         clauses.append("i.quality_mark IS NULL AND i.aesthetic_mark IS NULL")
     elif filters.quality == "unviewed":
@@ -196,7 +205,8 @@ def list_images(folder_id: int, query: LocalQuery) -> dict:
             raise LookupError("Folder not found")
         conn.execute("BEGIN")
         total = conn.execute(cte + "SELECT count(*) FROM scope i WHERE " + where, params).fetchone()[0]
-        order = {"newest": "i.added_at DESC,i.id DESC", "oldest": "i.added_at,i.id", "width": "i.width DESC,i.id DESC", "height": "i.height DESC,i.id DESC"}[query.sort]
+        order = {"newest": "i.added_at DESC,i.id DESC", "oldest": "i.added_at,i.id", "width": "i.width DESC,i.id DESC", "height": "i.height DESC,i.id DESC",
+                 "posted_newest": "i.posted_at IS NULL,i.posted_at DESC,i.id DESC", "posted_oldest": "i.posted_at IS NULL,i.posted_at,i.id"}[query.sort]
         rows = conn.execute(cte + f"SELECT i.* FROM scope i WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?", [*params, query.limit, query.offset]).fetchall()
         from app import db
         from app.services.captions import caption_relative, get_suffix

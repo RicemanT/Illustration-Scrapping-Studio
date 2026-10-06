@@ -12,6 +12,7 @@ import LocalFilters from '../components/LocalFilters';
 import TagExplorer from '../components/TagExplorer';
 import FilterReview from '../components/FilterReview';
 import PlannerCandidates from '../components/PlannerCandidates';
+import EraBar from '../components/EraBar';
 import { describeQualityJob, useQualityJob } from '../components/qualityJob';
 import { ActiveTransferProgress, formatTransferSummary, SyncProgressDetails } from '../components/SyncProgress';
 
@@ -166,6 +167,7 @@ function CollectionView() {
   const visibleImages = images;
   const togglePage = () => setSelected(current => { const next = new Set(current); const all = images.every(i => next.has(i.id)); for (const image of images) all ? next.delete(image.id) : next.add(image.id); return next; });
   const confirmDeleteSelected = () => { if (confirm(`Delete ${selected.size} explicitly selected images, including selections on other pages? This replaces the previous recovery batch.`)) bulkRemoveMutation.mutate(); };
+  const selectMany = (imageIds) => setSelected((current) => new Set([...current, ...imageIds]));
   const toggleSelected = (imageId) => setSelected((current) => { const next = new Set(current); next.has(imageId) ? next.delete(imageId) : next.add(imageId); return next; });
 
   const syncMutation = useMutation({
@@ -203,6 +205,7 @@ function CollectionView() {
       setSelected(new Set());
       refreshFolderViews(queryClient, id);
       queryClient.invalidateQueries({ queryKey: ['folder-image-recovery', id] });
+      queryClient.invalidateQueries({ queryKey: ['planner-folder', id] });
     },
   });
 
@@ -213,6 +216,7 @@ function CollectionView() {
       setUndoToken(null);
       refreshFolderViews(queryClient, id);
       queryClient.invalidateQueries({ queryKey: ['folder-image-recovery', id] });
+      queryClient.invalidateQueries({ queryKey: ['planner-folder', id] });
     },
   });
 
@@ -424,7 +428,7 @@ function CollectionView() {
           {tab === 'gallery' && <>
             <label className="flex items-center gap-2 text-xs text-slate-400">Thumbnail size <input aria-label="Thumbnail size" type="range" min="120" max="360" step="20" value={tileHeight} onChange={event => setTileHeight(Number(event.target.value))} className="w-24 accent-blue-400" /><span className="w-10 tabular-nums">{tileHeight}px</span></label>
 
-            <select value={sort} onChange={(e) => { setSort(e.target.value); setOffset(0); }} className="px-2 py-1 bg-[#090d12] border border-[#202a34] rounded text-xs"><option value="newest">Newest</option><option value="oldest">Oldest</option><option value="width">Width</option><option value="height">Height</option></select>
+            <select value={sort} onChange={(e) => { setSort(e.target.value); setOffset(0); }} className="px-2 py-1 bg-[#090d12] border border-[#202a34] rounded text-xs"><option value="newest">Newest</option><option value="oldest">Oldest</option><option value="posted_newest">Posted (newest)</option><option value="posted_oldest">Posted (oldest)</option><option value="width">Width</option><option value="height">Height</option></select>
             {selected.size > 0 && <span className="text-xs text-blue-300">{selected.size} selected across pages <button onClick={() => setSelected(new Set())}>Clear selection</button></span>}
             <button type="button" onClick={togglePage} disabled={images.length === 0} className="px-2 py-1 text-xs rounded bg-[#273451] text-blue-200 hover:bg-[#354666] disabled:opacity-50">{images.length > 0 && images.every((image) => selected.has(image.id)) ? 'Deselect page (Q)' : 'Select page (Q)'}</button>
             {selected.size > 0 && <button type="button" onClick={confirmDeleteSelected} disabled={bulkRemoveMutation.isPending || folderComplete} title={folderComplete ? 'Reopen the folder to remove images' : undefined} className="px-2 py-1 text-xs rounded bg-red-900/60 text-red-200 hover:bg-red-800 disabled:opacity-50">Delete selected (W)</button>}
@@ -432,6 +436,8 @@ function CollectionView() {
           </>}
         </div>
 
+        {tab === 'gallery' && plannerFolder && <EraBar folderId={Number(id)} context={plannerFolder} disabled={folderComplete}
+          onSelectOlder={(ids) => { selectMany(ids); }} />}
         {['gallery','tags','dataset'].includes(tab) && <LocalFilters filters={filters} onChange={changeFilters} providers={collection.sources.map(s => s.provider)} total={imagesData?.total || 0} qualityFilter={Boolean(plannerFolder)} />}
         {imagesError && <p className="p-3 text-xs text-red-400">Could not query images: {JSON.stringify(imagesError.response?.data?.detail || imagesError.message)}</p>}
         {tab === 'gallery' && <div className="p-2 flex gap-3 text-xs text-slate-400"><button disabled={!offset || imagesLoading} onClick={() => setOffset(Math.max(0,offset-100))}>Previous page</button><span>{imagesLoading ? 'Loading...' : `${offset + (images.length ? 1 : 0)} - ${offset + images.length} of ${imagesData?.total || 0}`}</span><button disabled={!imagesData?.next_cursor || imagesLoading} onClick={() => setOffset(Number(imagesData.next_cursor))}>Next page</button></div>}
@@ -442,6 +448,7 @@ function CollectionView() {
           </div>
         ) : (
           tab === 'gallery' ? <ImageGrid key={id} targetHeight={tileHeight} images={visibleImages} selected={selected} onToggle={toggleSelected}
+            onSelectRange={selectMany} eraFrom={plannerFolder?.era_from || null}
             marking={plannerFolder ? { folderId: Number(id), locked: folderComplete } : null}
             onViewerClose={plannerFolder ? () => queryClient.invalidateQueries({ queryKey: ['collection-images', id] }) : undefined} /> : tab === 'tags' ? <><TagExplorer key={`${id}-${JSON.stringify(filters)}`} collectionId={Number(id)} filters={filters} onTag={(tag, exclude) => { const key = exclude ? 'excluded_tags' : 'required_tags'; changeFilters({ ...filters, [key]: [...new Set([...(filters[key] || []), tag])] }); setTab('gallery'); }} /><CollectionTagEditor collectionId={Number(id)} selected={selected} /></> : <div className="p-3 space-y-3">
             <p className="text-xs text-slate-400">Remote metadata discovery. Dimensions are provider hints; quality is checked on decoded originals at import. Local gallery filters do not apply here. Short or empty pages may reflect provider/date limits; use Next page when available.</p>

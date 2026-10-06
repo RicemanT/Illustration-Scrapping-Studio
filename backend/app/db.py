@@ -474,6 +474,8 @@ def init_db():
     _ensure_column(cursor, "image", "quality_source", "TEXT")
     _ensure_column(cursor, "image", "quality_auto", "TEXT")
     _ensure_column(cursor, "image", "quality_auto_info", "TEXT")
+    # When the post was originally published on its site (UTC ISO), for era sorting.
+    _ensure_column(cursor, "image", "posted_at", "TEXT")
     cursor.execute("UPDATE image SET quality_source = 'manual' WHERE quality_mark IS NOT NULL AND quality_source IS NULL")
     _migrate_folder_scoped_images(conn)
     cursor = conn.cursor()
@@ -673,6 +675,8 @@ def init_db():
     # Existing folders inherit their old, unformatted behavior. New folders
     # explicitly store the user's artist tag format at creation time.
     _ensure_column(cursor, "collection", "artist_tag_template", "TEXT")
+    # Curation era: images posted before this year are outside the style kept for training.
+    _ensure_column(cursor, "collection", "era_from", "INTEGER")
 
     # Phase 4 exports are immutable, versioned snapshots. Validation itself is
     # deliberately read-only and is computed on demand; only completed/failed

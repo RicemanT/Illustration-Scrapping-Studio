@@ -92,6 +92,7 @@ async def startup_event():
         image_service = ImageService(LIBRARY_PATH)
         migrated = image_service.migrate_to_collection_folders()
         recovered = image_service.reconcile_filesystem()
+        image_service.backfill_posted_at()
         # Existing sidecars are inspected by Dataset QA. Rewriting every pair on
         # startup would silently repair stale/missing files without the explicit
         # selection and confirmation required by the repair workflow. Imports and

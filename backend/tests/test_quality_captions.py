@@ -273,6 +273,51 @@ class PostedDateTests(DeliveredFolderTests):
         self.assertNotEqual(details['posted_at'][:10], details['added_at'][:10])
 
 
+class EraTests(DeliveredFolderTests):
+    async def test_posted_dates_drive_sorting_year_filters_and_the_folder_era(self):
+        from app.services.images import ImageService
+        folders = await self.delivered()
+        folder_id = folders['Artist X']
+        images = self.images_by_post(folder_id)  # posts 2, 4, 5, 6
+        years = {'2': 2014, '4': 2024, '5': 2019, '6': 2012}
+        main = db.get_connection()
+        for remote_id, year in years.items():
+            main.execute('UPDATE image_source SET metadata=? WHERE image_id=?',
+                         (json.dumps({'id': remote_id, 'created_at': f'{year}-06-01T00:00:00Z'}), images[remote_id]['id']))
+        main.execute('UPDATE image SET posted_at=NULL')
+        main.execute("DELETE FROM app_setting WHERE key='posted_at_backfill_v1'")
+        main.commit()
+        main.close()
+        self.assertEqual(ImageService(self.root).backfill_posted_at(), 4)  # only sources with a date
+        self.assertEqual(ImageService(self.root).backfill_posted_at(), 0)  # runs once
+
+        query = lambda **kw: [i['id'] for i in list_images(folder_id, LocalQuery(**kw))['items']]
+        by_year = {year: images[rid]['id'] for rid, year in years.items()}
+        self.assertEqual(query(sort='posted_oldest'), [by_year[y] for y in sorted(by_year)])
+        self.assertEqual(query(sort='posted_newest'), [by_year[y] for y in sorted(by_year, reverse=True)])
+        self.assertEqual(set(query(filters=LocalFilter(posted_from_year=2015))), {by_year[2019], by_year[2024]})
+        self.assertEqual(set(query(filters=LocalFilter(posted_to_year=2014))), {by_year[2012], by_year[2014]})
+
+        context = curation.folder_context(folder_id)
+        self.assertEqual((context['years'], context['era_from'], context['older_ids']), ({'2012': 1, '2014': 1, '2019': 1, '2024': 1}, None, []))
+        context = curation.set_era(folder_id, 2019)
+        self.assertEqual((context['era_from'], set(context['older_ids'])), (2019, {by_year[2012], by_year[2014]}))
+        with self.assertRaises(ValueError):
+            curation.set_era(folder_id, 1800)
+
+        # Wildcards: posts 1 and 3 are not in the folder.
+        conn = store.connect()
+        conn.execute("UPDATE post SET created_at='Wed Jan 10 00:00:00 -0600 2013' WHERE site='danbooru' AND remote_id='1'")
+        conn.execute("UPDATE post SET created_at='2023-01-01T00:00:00Z' WHERE site='danbooru' AND remote_id='3'")
+        conn.commit()
+        conn.close()
+        everything = {i['remote_id']: i['year'] for i in curation.candidates(folder_id)['items']}
+        self.assertEqual(everything, {'1': 2013, '3': 2023})
+        self.assertEqual([i['remote_id'] for i in curation.candidates(folder_id, sort='newest')['items']], ['3', '1'])
+        self.assertEqual([i['remote_id'] for i in curation.candidates(folder_id, min_year=2019)['items']], ['3'])
+        self.assertEqual(curation.set_era(folder_id, None)['older_ids'], [])
+
+
 class QualityRouteTests(DeliveredFolderTests):
     async def test_apply_job_builds_statistics_then_assigns_marks(self):
         from fastapi import HTTPException
