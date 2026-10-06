@@ -3,8 +3,9 @@ import { justifiedRows } from './justifiedLayout';
 import ImageDetail from './ImageDetail';
 import { backendAssetUrl } from '../api/client';
 import { markFor, markTags, marksOf } from './qualityMarks';
+import useDragSelect from './useDragSelect';
 
-function ImageGrid({ images, selected = new Set(), onToggle, onSelectRange, targetHeight = 220, marking = null, onViewerClose, eraFrom = null }) {
+function ImageGrid({ images, selected = new Set(), onToggle, onSelectRange, onDragSelect, targetHeight = 220, marking = null, onViewerClose, eraFrom = null }) {
   const [selectedImage, setSelectedImage] = useState(null);
   // Shift+click selects every image between the last clicked checkbox and this one.
   const anchor = useRef(null);
@@ -27,6 +28,8 @@ function ImageGrid({ images, selected = new Set(), onToggle, onSelectRange, targ
     if (container.current) observer.observe(container.current);
     return () => observer.disconnect();
   }, []);
+  // Drag a box across tiles (left or right button) to select them; Alt/Ctrl deselects.
+  const { box, hits } = useDragSelect(container, (keys, add) => onDragSelect?.(keys.map(Number), add), Boolean(onDragSelect));
   const currentIndex = images.findIndex(image => image.id === selectedImage?.id);
   const rows = justifiedRows(images, width, targetHeight);
 
@@ -34,7 +37,7 @@ function ImageGrid({ images, selected = new Set(), onToggle, onSelectRange, targ
   return (
     <>
       <div className="p-2">
-        <div ref={container} className="space-y-1.5" data-testid="justified-gallery">
+        <div ref={container} className="relative select-none space-y-1.5" data-testid="justified-gallery">
           {rows.map((row, rowIndex) => <div key={rowIndex} className="flex gap-1.5" style={{ height: row.height }}>
           {row.items.map(({ image, width: tileWidth }) => {
             const index = images.indexOf(image);
@@ -45,6 +48,7 @@ function ImageGrid({ images, selected = new Set(), onToggle, onSelectRange, targ
             return (
             <div
               key={image.id}
+              data-select-key={image.id}
               onClick={(event) => event.shiftKey && onToggle ? toggle(event, index) : setSelectedImage(image)}
               role="button" tabIndex={0} aria-label={`Open image ${image.id}`}
               onKeyDown={(event) => { if (event.target !== event.currentTarget) return; if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); setSelectedImage(image); } }}
@@ -54,11 +58,13 @@ function ImageGrid({ images, selected = new Set(), onToggle, onSelectRange, targ
               <img
                 src={image.thumb_path ? backendAssetUrl(`/static/thumbnails/${image.thumb_path}`) : undefined}
                 alt={`Image ${image.id}`}
+                draggable={false}
                 className={`w-full h-full object-contain transition-opacity ${outsideEra ? 'opacity-35 hover:opacity-100' : ''}`}
                 loading="lazy"
               />
               {onToggle && <button type="button" aria-label={`${selected.has(image.id) ? 'Deselect' : 'Select'} image`} onClick={(event) => { event.preventDefault(); event.stopPropagation(); toggle(event, index); }} className={`absolute top-2 left-2 z-10 h-4 w-4 rounded border ${selected.has(image.id) ? 'bg-blue-500 border-blue-300' : 'bg-black/40 border-white/60'}`} />}
               {selected.has(image.id) && <div className="pointer-events-none absolute inset-0 ring-2 ring-inset ring-blue-400 " />}
+              {hits.has(String(image.id)) && <div className={`pointer-events-none absolute inset-0 ring-2 ring-inset ${box?.remove ? 'bg-rose-500/15 ring-rose-400' : 'bg-sky-400/15 ring-sky-300'}`} />}
               {Boolean(image.derived_media_source || image.derived_from_preview) && <div title={isArchiveFrame ? `Frame extracted from original ${image.original_media_format || 'archive'}, then normalized for training` : isOriginalFrame ? `Frame extracted from original ${image.original_media_format || 'media'}, then normalized for training` : `Provider preview derived from ${image.original_media_format || 'unsupported media'}, then normalized for training`} className={`absolute right-2 top-2 rounded px-1.5 py-0.5 text-[10px] font-medium uppercase ring-1 ${isOriginalFrame ? 'bg-emerald-950/90 text-emerald-200 ring-emerald-700/70' : 'bg-amber-950/90 text-amber-200 ring-amber-700/70'}`}>{isArchiveFrame ? 'archive frame' : isOriginalFrame ? 'original frame' : 'preview still'}</div>}
               <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent p-2">
                 <div className="text-white text-xs" title={image.posted_at ? `Posted ${new Date(image.posted_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}` : 'Posting date unknown'}>
@@ -78,6 +84,8 @@ function ImageGrid({ images, selected = new Set(), onToggle, onSelectRange, targ
             </div>
             );
           })}</div>)}
+          {box && <div aria-hidden="true" className={`pointer-events-none absolute z-20 rounded-sm border ${box.remove ? 'border-rose-400 bg-rose-400/10' : 'border-sky-300 bg-sky-300/10'}`}
+            style={{ left: box.x, top: box.y, width: box.w, height: box.h, margin: 0 }} />}
         </div>
       </div>
 

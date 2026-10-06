@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import api, { backendAssetUrl } from '../api/client';
 import { refreshFolderViews } from '../api/folderCache';
 import { justifiedRows } from './justifiedLayout';
+import useDragSelect from './useDragSelect';
 
 const PAGE = 100;
 const keyOf = (item) => `${item.site}:${item.remote_id}`;
@@ -97,6 +98,11 @@ function PlannerCandidates({ folderId, context, tileHeight, hotkeysActive, onHov
     return () => observer.disconnect();
   }, [open]);
   const rows = justifiedRows(items, width, tileHeight);
+  const { box, hits } = useDragSelect(container, (keys, add) => setSelected((current) => {
+    const next = new Set(current);
+    keys.forEach((key) => (add ? next.add(key) : next.delete(key)));
+    return next;
+  }), open && !completed);
   const viewIndex = viewing ? items.findIndex(item => keyOf(item) === viewing) : -1;
   const missing = context.target ? Math.max(0, context.target - context.images) : 0;
 
@@ -129,20 +135,21 @@ function PlannerCandidates({ folderId, context, tileHeight, hotkeysActive, onHov
           <button type="button" disabled={data?.next_offset == null || isFetching} onClick={() => setOffset(data.next_offset)}>Next page</button>
         </div>
         <div className="p-2">
-          <div ref={container} className="space-y-1.5">
+          <div ref={container} className="relative select-none space-y-1.5">
             {rows.map((row, rowIndex) => <div key={rowIndex} className="flex gap-1.5" style={{ height: row.height }}>
               {row.items.map(({ image: item, width: tileWidth }) => {
                 const key = keyOf(item);
                 return (
-                  <div key={key} role="button" tabIndex={0} aria-label={`Open ${item.site} post ${item.remote_id}`}
+                  <div key={key} data-select-key={key} role="button" tabIndex={0} aria-label={`Open ${item.site} post ${item.remote_id}`}
                     onClick={(event) => event.shiftKey ? toggle(key) : setViewing(key)}
                     onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); setViewing(key); } }}
                     style={{ width: tileWidth, height: row.height, flexShrink: 0 }}
                     className="relative cursor-pointer overflow-hidden rounded bg-[#0c1219] hover:ring-2 hover:ring-amber-400">
-                    <img src={previewUrl(context.artist_id, item, 'grid')} alt={`${item.site} post ${item.remote_id}`} loading="lazy" className="h-full w-full object-contain" />
+                    <img src={previewUrl(context.artist_id, item, 'grid')} alt={`${item.site} post ${item.remote_id}`} draggable={false} loading="lazy" className="h-full w-full object-contain" />
                     <button type="button" aria-label={`${selected.has(key) ? 'Deselect' : 'Select'} post`} onClick={(event) => { event.stopPropagation(); toggle(key); }}
                       className={`absolute left-2 top-2 z-10 h-4 w-4 rounded border ${selected.has(key) ? 'border-amber-200 bg-amber-500' : 'border-white/60 bg-black/40'}`} />
                     {selected.has(key) && <div className="pointer-events-none absolute inset-0 ring-2 ring-inset ring-amber-400" />}
+                    {hits.has(key) && <div className={`pointer-events-none absolute inset-0 ring-2 ring-inset ${box?.remove ? 'bg-rose-500/15 ring-rose-400' : 'bg-amber-300/15 ring-amber-200'}`} />}
                     {item.fills?.length > 0 && <div className="pointer-events-none absolute left-8 right-2 top-2 flex flex-wrap gap-1 text-[10px]">
                       {item.fills.slice(0, 3).map((fill) => <span key={fill.tag} title={`${fill.now} of ${fill.goal} in the dataset`}
                         className={`rounded px-1 ${fill.priority ? 'bg-rose-950/90 text-rose-100 ring-1 ring-rose-600/60' : 'bg-emerald-950/90 text-emerald-100'}`}>+ {fill.priority ? '★ ' : ''}{fill.tag.replaceAll('_', ' ')}</span>)}
@@ -159,6 +166,8 @@ function PlannerCandidates({ folderId, context, tileHeight, hotkeysActive, onHov
                 );
               })}
             </div>)}
+          {box && <div aria-hidden="true" className={`pointer-events-none absolute z-20 rounded-sm border ${box.remove ? 'border-rose-400 bg-rose-400/10' : 'border-amber-200 bg-amber-200/10'}`}
+            style={{ left: box.x, top: box.y, width: box.w, height: box.h, margin: 0 }} />}
           </div>
           {data && !items.length && <p className="p-6 text-center text-sm text-slate-400">No other harvested posts{includeFiltered && includeBanned ? '' : ' (try showing filtered or banned posts)'}.</p>}
         </div>
