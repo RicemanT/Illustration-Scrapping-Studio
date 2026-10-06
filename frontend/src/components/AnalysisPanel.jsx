@@ -104,11 +104,12 @@ export default function AnalysisPanel() {
             {env && <span className="text-xs text-slate-400">torch {env.torch || '—'}{env.torch_cuda ? ` (CUDA ${env.torch_cuda})` : ''}{env.driver ? ` · driver ${env.driver} (CUDA ≤ ${env.driver_cuda || '?'})` : ''} · transformers {env.transformers || '—'} · onnxruntime {env.onnxruntime || '—'}
               {env.cuda ? ` · CUDA, ${env.devices?.length || 0} GPU${env.devices?.length === 1 ? '' : 's'}` : ' · no CUDA'}</span>}
             <button className={quiet} disabled={data.install?.status === 'running' || install.isPending} onClick={() => install.mutate()}>
-              {data.install?.status === 'running' ? 'Installing…' : env?.cuda_problem ? 'Install PyTorch for this GPU driver' : env?.ready ? 'Reinstall / update packages' : 'Install analysis packages'}</button>
+              {data.install?.status === 'running' ? 'Installing…' : env?.cuda_problem || env?.onnx_problem ? 'Install packages for this GPU driver' : env?.ready ? 'Reinstall / update packages' : 'Install analysis packages'}</button>
             <button className={quiet} onClick={() => queryClient.fetchQuery({ queryKey: ['analysis-status'], queryFn: async () => (await api.analysis.status(true)).data })}>Check again</button>
           </div>
           {env?.cuda_problem && <p className="text-sm text-amber-300">{env.cuda_problem} Analysis would run on the CPU, so jobs refuse to start.
             {env.torch_index ? ` The button above installs the PyTorch build from ${env.torch_index} (no app restart needed); then Check again and run the model test.` : ''}</p>}
+          {env?.onnx_problem && <p className="text-sm text-amber-300">{env.onnx_problem} The button above installs the matching build (no app restart needed); then Check again and run the model test.</p>}
           {(data.install?.status === 'running' || data.install?.status === 'failed') && <pre className="max-h-40 overflow-auto rounded bg-black/40 p-2 text-[11px] text-slate-400">{data.install.log}</pre>}
           {install.isError && <p className="text-sm text-red-400">{errorText(install.error)}</p>}
           <GpuTable gpus={gpus.data?.gpus || data.gpus} allowed={allowed} />
@@ -127,8 +128,10 @@ export default function AnalysisPanel() {
               <input type="number" min="0" className={`${field} block w-28`} value={config.newest_posts} onChange={(e) => set('newest_posts', Number(e.target.value))} /></label>
             <label className="text-xs text-slate-400" title="Spread evenly over the rest of the career, for the main career style">Older posts sampled
               <input type="number" min="0" className={`${field} block w-28`} value={config.older_posts} onChange={(e) => set('older_posts', Number(e.target.value))} /></label>
-            <label className="text-xs text-slate-400" title="Seconds between sample downloads per site">Download pace (s)
+            <label className="text-xs text-slate-400" title="Seconds between sample downloads per site; Danbooru, e621 and Gelbooru download side by side">Download pace (s)
               <input type="number" min="0.05" step="0.05" className={`${field} block w-24`} value={config.download_interval} onChange={(e) => set('download_interval', Number(e.target.value))} /></label>
+            <label className="text-xs text-slate-400" title="The worker pauses while a GPU it uses is this hot, until it is 5 °C cooler. 0 = never.">Pause at °C
+              <input type="number" min="0" max="100" className={`${field} block w-20`} value={config.max_temp ?? 80} onChange={(e) => set('max_temp', Number(e.target.value))} /></label>
           </div>
           <div className="flex flex-wrap gap-x-5 gap-y-2 text-sm">
             {MODELS.map(([key, label]) => <label key={key} className="flex items-center gap-2"><input type="checkbox" checked={Boolean(config[key])} onChange={(e) => set(key, e.target.checked)} />{label}</label>)}
@@ -165,7 +168,7 @@ export default function AnalysisPanel() {
               <tr key={index} className="align-top">
                 <td className="pr-4 text-slate-300">{r.model || (r.load ? 'loading' : 'result')}</td>
                 <td className={`pr-4 ${r.ok === false ? 'text-red-300' : 'text-green-300'}`}>{r.ok === false ? r.error : r.load ? Object.entries(r.load).map(([k, v]) => `${k}: ${v}`).join(' · ') : r.result || 'ok'}</td>
-                <td className="text-slate-500">{r.detail || ''}{r.seconds_for_2 != null ? `${r.seconds_for_2} s · ` : ''}{r.scores ? Object.entries(r.scores).map(([k, v]) => `${k} ${Number(v).toFixed(2)}`).join(' · ') : ''}{r.vectors ? ` · vectors ${Object.keys(r.vectors).join(', ')}` : ''}</td>
+                <td className="text-slate-500">{r.detail || ''}{r.seconds != null ? `${r.seconds} s for ${r.images} · ` : ''}{r.scores ? Object.entries(r.scores).map(([k, v]) => `${k} ${Number(v).toFixed(2)}${r.spread?.[k] ? ` (${r.spread[k].map((x) => Number(x).toFixed(1)).join('–')})` : ''}`).join(' · ') : ''}{r.vectors ? ` · vectors ${Object.keys(r.vectors).join(', ')}` : ''}</td>
               </tr>))}</tbody></table>}
           {data.selftest?.status === 'failed' && <pre className="max-h-40 overflow-auto rounded bg-black/40 p-2 text-[11px] text-slate-400">{data.selftest.log}</pre>}
         </div>
@@ -196,6 +199,9 @@ export default function AnalysisPanel() {
           </div>}
           {data.stats && <p className="text-xs text-slate-500">Analysed so far: {number(data.stats.posts?.done)} posts{data.stats.posts?.failed ? `, ${number(data.stats.posts.failed)} failed` : ''}
             {Object.keys(data.stats.vectors || {}).length > 0 && ` · style vectors: ${Object.entries(data.stats.vectors).map(([k, v]) => `${k} ${number(v)}`).join(', ')}`}</p>}
+          {Object.keys(data.stats?.score_summary || {}).length > 0 && <p className="text-xs text-slate-500">Scores so far (mean, range): {Object.entries(data.stats.score_summary).map(([name, s]) => (
+            <span key={name} className={`mr-3 ${s.count >= 20 && s.max - s.min < 0.01 ? 'text-red-300' : ''}`} title={s.count >= 20 && s.max - s.min < 0.01 ? 'The same value on every image: this scorer is not working' : `${number(s.count)} images`}>
+              {name} {s.mean.toFixed(2)} ({s.min.toFixed(1)}–{s.max.toFixed(1)})</span>))}</p>}
         </div>
 
         <div className="space-y-2 rounded border border-slate-800 p-3">

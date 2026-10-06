@@ -90,7 +90,8 @@ class AnalysisConfig(BaseModel):
     newest_posts: int = Field(200, ge=0, le=100000, description="Each artist's newest posts analysed")
     older_posts: int = Field(100, ge=0, le=100000, description='Older posts sampled evenly across the rest of the career')
     download_interval: float = Field(0.25, ge=0.05, le=30, description='Seconds between sample downloads per site')
-    download_workers: int = Field(4, ge=1, le=32)
+    download_workers: int = Field(4, ge=1, le=32, description='Parallel downloads per site')
+    max_temp: int = Field(80, ge=0, le=100, description='Pause while a used GPU is at or above this temperature in °C (0 = never)')
     dinov2: bool = True
     dinov3: bool = True
     dinov2_repo: str = 'facebook/dinov2-large'
@@ -219,6 +220,12 @@ def stats() -> dict:
         counts = {r['status']: r['n'] for r in conn.execute('SELECT status, count(*) AS n FROM analysis_post GROUP BY status')}
         models = {r['model']: r['n'] for r in conn.execute('SELECT model, count(*) AS n FROM analysis_vector GROUP BY model')}
         scorers = {name: conn.execute(f'SELECT count(*) FROM analysis_post WHERE {name} IS NOT NULL').fetchone()[0] for name in SCORERS}
-        return {'posts': counts, 'vectors': models, 'scorers': scorers}
+        # Mean and range per scorer, so a scorer stuck at one value shows up while a job runs.
+        summary = {}
+        for name in SCORERS:
+            row = conn.execute(f'SELECT count({name}), avg({name}), min({name}), max({name}) FROM analysis_post').fetchone()
+            if row[0]:
+                summary[name] = {'count': row[0], 'mean': round(row[1], 3), 'min': round(row[2], 3), 'max': round(row[3], 3)}
+        return {'posts': counts, 'vectors': models, 'scorers': scorers, 'score_summary': summary}
     finally:
         conn.close()

@@ -16,13 +16,16 @@ import queue
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from collections import defaultdict, deque
+from pathlib import PurePath
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 from app.analysis.store import AnalysisConfig, connect, get_config, save_results
 from app.services.planner_store import now
 
 log = logging.getLogger('analysis.worker')
 MAX_SAMPLE_BYTES = 40 * 1024 * 1024
+COOLING_POLL = 10.0  # seconds between temperature checks
 USER_AGENT = 'IllustrationScrappingStudio/1.1 analysis (+https://github.com/RicemanT/Illustration-Scrapping-Studio)'
 
 
@@ -143,6 +146,39 @@ def gpu_problem(config: AnalysisConfig) -> str | None:
             f"(CUDA {report.get('torch_cuda') or 'none'}) cannot use them: {report['reason']}"[:600])
 
 
+def hot_gpus(config: AnalysisConfig, limit: float) -> list[dict]:
+    """The GPUs this job uses whose temperature is at or above `limit` (nvidia-smi numbers are physical, like `gpus`)."""
+    from app.analysis.service import gpu_status
+    used = set(config.gpu_list())
+    return [gpu for gpu in gpu_status() if gpu['index'] in used and (gpu.get('temperature') or 0) >= limit]
+
+
+def library_images(count: int = 4) -> list:
+    """A few random images from the library (real art makes the self-test scores meaningful)."""
+    import sqlite3
+    import app.db as db
+    from PIL import Image
+    images = []
+    try:
+        conn = sqlite3.connect(f'file:{db.DB_PATH.as_posix()}?mode=ro', uri=True)
+        paths = [r[0] for r in conn.execute('SELECT path FROM image ORDER BY random() LIMIT ?', (count * 5,))]
+        conn.close()
+    except Exception as exc:
+        log.warning('library images unavailable: %s', exc)
+        return []
+    for path in paths:
+        try:
+            with Image.open(db.LIBRARY_PATH / 'images' / path) as raw:
+                image = raw.convert('RGB')
+            image.thumbnail((1024, 1024))
+            images.append((path, image))
+        except Exception:
+            continue
+        if len(images) >= count:
+            break
+    return images
+
+
 def devices(config: AnalysisConfig) -> list[str]:
     try:
         import torch
@@ -195,31 +231,63 @@ def run_job(job_id: int) -> int:
     pacer = SitePacer(config.download_interval)
     ready: queue.Queue = queue.Queue(maxsize=config.batch_size * 4)
     stop = threading.Event()
+    per_site = config.download_workers * 2  # downloads in flight per site (each site has its own threads and pacing)
 
     def producer():
+        """Download continuously, each site with its own threads, so Danbooru, e621 and Gelbooru run side by side
+        and a slow site never holds up the others. Posts are taken artist by artist within each site."""
         reader = connect()
-        client = httpx.Client(timeout=30, follow_redirects=True, headers={'User-Agent': USER_AGENT})
+        client = httpx.Client(timeout=30, follow_redirects=True, headers={'User-Agent': USER_AGENT},
+                              limits=httpx.Limits(max_connections=64, max_keepalive_connections=32))
+        pools: dict[str, ThreadPoolExecutor] = {}
+        backlog: dict[str, deque] = defaultdict(deque)
+        pending: dict = {}
+        open_sites = {r[0] for r in reader.execute("SELECT DISTINCT site FROM analysis_queue WHERE job_id=? AND state='queued'", (job_id,))}
+
+        def claim(site: str) -> list[dict]:
+            rows = reader.execute("SELECT site, remote_id, artist_id, urls FROM analysis_queue WHERE job_id=? AND site=? AND state='queued' "
+                                  'ORDER BY artist_id, remote_id LIMIT ?', (job_id, site, per_site * 4)).fetchall()
+            reader.executemany("UPDATE analysis_queue SET state='working' WHERE job_id=? AND site=? AND remote_id=?",
+                               [(job_id, r['site'], r['remote_id']) for r in rows])
+            reader.commit()
+            return [dict(r) for r in rows]
+
         try:
-            with ThreadPoolExecutor(max_workers=config.download_workers * 3) as pool:
-                while not stop.is_set():
-                    rows = reader.execute("SELECT site, remote_id, artist_id, urls FROM analysis_queue WHERE job_id=? AND state='queued' LIMIT ?",
-                                          (job_id, config.batch_size * 4)).fetchall()
-                    if not rows:
-                        break
-                    reader.executemany("UPDATE analysis_queue SET state='working' WHERE job_id=? AND site=? AND remote_id=?",
-                                       [(job_id, r['site'], r['remote_id']) for r in rows])
-                    reader.commit()
-                    futures = [(r, pool.submit(fetch_image, client, pacer, r['site'], json.loads(r['urls']))) for r in rows]
-                    for row, future in futures:
-                        image, detail = future.result()
-                        while not stop.is_set():
-                            try:
-                                ready.put((dict(row), image, detail), timeout=1)
-                                break
-                            except queue.Full:
-                                continue
+            while not stop.is_set():
+                for site in list(open_sites):
+                    if len(backlog[site]) < per_site:
+                        rows = claim(site)
+                        if not rows:
+                            open_sites.discard(site)
+                        backlog[site].extend(rows)
+                in_flight = defaultdict(int)
+                for row in pending.values():
+                    in_flight[row['site']] += 1
+                for site, rows in backlog.items():
+                    while rows and in_flight[site] < per_site:
+                        row = rows.popleft()
+                        pool = pools.get(site) or pools.setdefault(site, ThreadPoolExecutor(config.download_workers, thread_name_prefix=f'download-{site}'))
+                        pending[pool.submit(fetch_image, client, pacer, site, json.loads(row['urls']))] = row
+                        in_flight[site] += 1
+                if not pending:
+                    break
+                done, _ = wait(list(pending), timeout=1, return_when=FIRST_COMPLETED)
+                for future in done:
+                    row = pending.pop(future)
+                    image, detail = future.result()
+                    while not stop.is_set():
+                        try:
+                            ready.put((row, image, detail), timeout=1)
+                            break
+                        except queue.Full:
+                            continue
         finally:
-            ready.put(None)
+            for pool in pools.values():
+                pool.shutdown(wait=True, cancel_futures=True)
+            try:
+                ready.put(None, timeout=30)
+            except queue.Full:
+                pass
             client.close()
             reader.close()
 
@@ -228,6 +296,29 @@ def run_job(job_id: int) -> int:
     finished = False
     batch: list = []
     last_save = 0.0
+    next_temperature_check = 0.0
+
+    def stop_requested() -> bool:
+        return bool(conn.execute('SELECT stop_requested FROM analysis_job WHERE id=?', (job_id,)).fetchone()[0])
+
+    def cool_down() -> None:
+        """Pause while a used GPU is at or above `max_temp`, until it is 5 °C below (checked every 10 s)."""
+        nonlocal next_temperature_check
+        if not config.max_temp or not config.gpu_list() or time.monotonic() < next_temperature_check:
+            return
+        next_temperature_check = time.monotonic() + COOLING_POLL
+        try:
+            hot = hot_gpus(config, config.max_temp)
+            while hot and not stop_requested():
+                progress.phase = 'cooling: ' + ', '.join(f"GPU {gpu['index']} at {gpu['temperature']:.0f} °C" for gpu in hot)
+                progress.save(conn)
+                time.sleep(COOLING_POLL)
+                hot = hot_gpus(config, config.max_temp - 5)
+        except Exception as exc:
+            log.warning('temperature check failed: %s', exc)
+        if progress.phase.startswith('cooling'):
+            progress.phase = 'analysing'
+            progress.save(conn)
 
     def flush(items):
         good = [(row, image, url) for row, image, url in items if image is not None]
@@ -236,6 +327,7 @@ def run_job(job_id: int) -> int:
             if image is None:
                 results.append({'site': row['site'], 'remote_id': row['remote_id'], 'artist_id': row['artist_id'], 'status': 'failed', 'error': error})
         if good:
+            cool_down()
             started = time.monotonic()
             try:
                 outputs = run_models(models, [image for _, image, _ in good])
@@ -260,7 +352,7 @@ def run_job(job_id: int) -> int:
 
     try:
         while True:
-            if conn.execute('SELECT stop_requested FROM analysis_job WHERE id=?', (job_id,)).fetchone()[0]:
+            if stop_requested():
                 stop.set()
                 break
             try:
@@ -300,33 +392,57 @@ def run_job(job_id: int) -> int:
 
 
 def self_test() -> int:
-    """Load every enabled model and run it on one test image; prints one JSON line per model."""
+    """Load every enabled model and score a few real images from the library; prints one JSON line per model."""
     from PIL import Image, ImageDraw
     from app.analysis.models import load_models, run_models
     config = get_config()
-    image = Image.new('RGB', (768, 1024), (240, 236, 230))
-    draw = ImageDraw.Draw(image)
-    draw.ellipse((200, 150, 560, 520), fill=(250, 210, 190), outline=(40, 30, 30), width=6)
-    draw.rectangle((230, 520, 540, 950), fill=(70, 90, 160), outline=(30, 30, 50), width=6)
     statuses = {}
     gpu = cuda_report(config)
     problem = gpu_problem(config)
     print(json.dumps({'model': 'gpu', 'ok': problem is None, 'error': problem,
                       'detail': f"PyTorch {gpu.get('torch')} · CUDA {gpu.get('torch_cuda') or 'none'} · " +
                                 (', '.join(gpu.get('devices', [])) or 'CPU only')}), flush=True)
+    samples = library_images(4)
+    if samples:
+        images = [image for _, image in samples]
+        folders = sorted({PurePath(path.replace('\\', '/')).parent.name or path for path, _ in samples})
+        print(json.dumps({'model': 'images', 'ok': True, 'detail': f"{len(images)} random library images (from {', '.join(folders)})"}), flush=True)
+    else:
+        image = Image.new('RGB', (768, 1024), (240, 236, 230))
+        draw = ImageDraw.Draw(image)
+        draw.ellipse((200, 150, 560, 520), fill=(250, 210, 190), outline=(40, 30, 30), width=6)
+        draw.rectangle((230, 520, 540, 950), fill=(70, 90, 160), outline=(30, 30, 50), width=6)
+        images = [image, image]
+        print(json.dumps({'model': 'images', 'ok': True, 'detail': 'no library images found; a drawn test image (scores mean little)'}), flush=True)
     loaded = load_models(config, devices(config), lambda name, status: statuses.__setitem__(name, status))
     print(json.dumps({'devices': devices(config), 'load': statuses}), flush=True)
     failures = sum(not str(s).startswith('ok') for s in statuses.values()) + (problem is not None)
     for name, model in loaded:
-        started = time.monotonic()
         try:
-            output = run_models([(name, model)], [image, image])[0]
-            print(json.dumps({'model': name, 'ok': True, 'seconds_for_2': round(time.monotonic() - started, 3),
-                              'scores': output['scores'], 'era': output.get('era'),
-                              'vectors': {k: len(v) for k, v in output['vectors'].items()}}), flush=True)
+            run_models([(name, model)], images[:1])  # warm-up, so the timing below is the steady speed
+            started = time.monotonic()
+            outputs = run_models([(name, model)], images)
+            seconds = round(time.monotonic() - started, 3)
+            keys = sorted({key for output in outputs for key in output['scores']})
+            values = {key: [output['scores'][key] for output in outputs if key in output['scores']] for key in keys}
+            print(json.dumps({'model': name, 'ok': True, 'seconds': seconds, 'images': len(images),
+                              'scores': {key: sum(v) / len(v) for key, v in values.items()},
+                              'spread': {key: [min(v), max(v)] for key, v in values.items() if len(v) > 1},
+                              'era': outputs[0].get('era'), 'vectors': {k: len(v) for k, v in outputs[0]['vectors'].items()}}), flush=True)
         except Exception as exc:
             failures += 1
             print(json.dumps({'model': name, 'ok': False, 'error': f'{type(exc).__name__}: {exc}'[:500]}), flush=True)
+    if len(loaded) > 1:
+        try:
+            started = time.monotonic()
+            run_models(loaded, images)
+            seconds = time.monotonic() - started
+            print(json.dumps({'model': 'all models', 'ok': True, 'seconds': round(seconds, 3), 'images': len(images),
+                              'detail': f'GPUs in parallel · about {len(images) / seconds:.1f} images/s while busy, '
+                                        f'{len(images) / seconds * config.duty:.1f} images/s at {round(config.duty * 100)}% busy'}), flush=True)
+        except Exception as exc:
+            failures += 1
+            print(json.dumps({'model': 'all models', 'ok': False, 'error': f'{type(exc).__name__}: {exc}'[:500]}), flush=True)
     try:
         import torch
         if torch.cuda.is_available():

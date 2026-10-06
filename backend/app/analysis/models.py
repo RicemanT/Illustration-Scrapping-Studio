@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 
 import numpy as np
@@ -204,6 +205,7 @@ class DeepGHSClassifiers:
     def __init__(self, device: str):
         import onnxruntime
         from huggingface_hub import hf_hub_download
+        self.device = device
         if device.startswith('cuda') and hasattr(onnxruntime, 'preload_dlls'):
             try:  # CUDA/cuDNN libraries from the nvidia-* pip packages that came with PyTorch
                 onnxruntime.preload_dlls()
@@ -309,18 +311,43 @@ def load_models(config: AnalysisConfig, devices: list[str], report: Callable[[st
     return loaded
 
 
-def run_models(models: list[tuple[str, object]], images) -> list[dict]:
-    """Run every loaded model on a batch; waifu-scorers share one CLIP pass."""
-    results = [{'scores': {}, 'vectors': {}, 'models': []} for _ in images]
-    clip_features = None
-    for name, model in models:
+def _device_of(model) -> str:
+    return str(getattr(model, 'device', None) or getattr(getattr(model, 'features', None), 'device', None) or 'cpu')
+
+
+_pool: ThreadPoolExecutor | None = None
+
+
+def _run_group(group: list[tuple[str, object]], images) -> list[tuple[str, list[dict]]]:
+    """Run the models of one device in turn; waifu-scorers share one CLIP pass."""
+    outputs, clip_features = [], None
+    for name, model in group:
         if isinstance(model, WaifuScorer):
             if clip_features is None:
                 clip_features = model.features(images)
-            outputs = model(images, clip_features)
+            outputs.append((name, model(images, clip_features)))
         else:
-            outputs = model(images)
-        for result, output in zip(results, outputs):
+            outputs.append((name, model(images)))
+    return outputs
+
+
+def run_models(models: list[tuple[str, object]], images) -> list[dict]:
+    """Run every loaded model on a batch. Models on different devices run at the same time (style models on
+    one GPU, scorers on the other), so a batch takes as long as the slower GPU rather than the sum of both."""
+    global _pool
+    groups: dict[str, list] = {}
+    for name, model in models:
+        groups.setdefault(_device_of(model), []).append((name, model))
+    if len(groups) > 1:
+        if _pool is None:
+            _pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix='models')
+        produced = dict(output for future in [_pool.submit(_run_group, group, images) for group in groups.values()]
+                        for output in future.result())
+    else:
+        produced = dict(output for group in groups.values() for output in _run_group(group, images))
+    results = [{'scores': {}, 'vectors': {}, 'models': []} for _ in images]
+    for name, _ in models:
+        for result, output in zip(results, produced[name]):
             for key, value in output.items():
                 if isinstance(value, np.ndarray):
                     result['vectors'][key] = value

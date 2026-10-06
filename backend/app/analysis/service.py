@@ -54,9 +54,12 @@ print(json.dumps(info))
 # The PyPI default build follows the newest CUDA and silently falls back to the CPU on older drivers.
 TORCH_INDEX = 'https://download.pytorch.org/whl/{}'
 
+# onnxruntime-gpu 1.27 and later are built for CUDA 13; older drivers need the last CUDA 12 build.
+ONNXRUNTIME_CUDA12 = 'onnxruntime-gpu>=1.20,<1.27'
+
 INSTALL_SCRIPT = r"""
-import subprocess, sys
-index, requirements = sys.argv[1], sys.argv[2]
+import os, subprocess, sys, tempfile
+index, requirements, constraint = sys.argv[1], sys.argv[2], sys.argv[3]
 def pip(*args):
     print('$ pip ' + ' '.join(args), flush=True)
     return subprocess.call([sys.executable, '-m', 'pip', *args])
@@ -69,7 +72,17 @@ if index:
         pip('uninstall', '-y', 'torch', 'torchvision', 'torchaudio')
         if pip('install', 'torch', 'torchvision', '--index-url', index) != 0:
             print('That failed; falling back to the PyPI build', flush=True)
-sys.exit(pip('install', '-r', requirements))
+args = ['install', '-r', requirements]
+if constraint:
+    print('Constraint for this GPU driver: ' + constraint, flush=True)
+    handle = tempfile.NamedTemporaryFile('w', suffix='.txt', delete=False)
+    handle.write(constraint + '\n')
+    handle.close()
+    args += ['-c', handle.name]
+code = pip(*args)
+if constraint:
+    os.unlink(handle.name)
+sys.exit(code)
 """
 
 
@@ -103,6 +116,19 @@ def torch_index(driver_cuda: Optional[str]) -> Optional[str]:
     return TORCH_INDEX.format(tag)
 
 
+def onnxruntime_constraint(driver_cuda: Optional[str]) -> Optional[str]:
+    """Pin onnxruntime-gpu to a build whose CUDA the driver runs (None: the newest is fine)."""
+    try:
+        major = int((driver_cuda or '').split('.')[0])
+    except ValueError:
+        return None
+    return ONNXRUNTIME_CUDA12 if major < 13 else None
+
+
+def _version(text: Optional[str]) -> tuple:
+    return tuple(int(part) for part in re.findall(r'\d+', text or '')[:3])
+
+
 def _log_path(name: str) -> Path:
     path = planner_dir() / 'analysis-logs' / f'{name}.log'
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -128,6 +154,12 @@ def environment() -> dict:
     info['python'] = sys.executable
     info.update(driver())
     info['torch_index'] = torch_index(info.get('driver_cuda'))
+    constraint = onnxruntime_constraint(info.get('driver_cuda'))
+    if constraint and info.get('onnxruntime') and _version(info['onnxruntime']) >= (1, 27):
+        info['onnx_problem'] = (f"onnxruntime-gpu {info['onnxruntime']} is built for CUDA 13 but the driver runs CUDA up to "
+                                f"{info.get('driver_cuda')}, so the DeepGHS classifiers fall back to the CPU (several times slower).")
+    elif info.get('driver') and info.get('onnx_providers') and 'CUDAExecutionProvider' not in info['onnx_providers']:
+        info['onnx_problem'] = 'onnxruntime has no CUDA support here (the CPU package is installed), so DeepGHS runs on the CPU.'
     if info.get('torch') and info.get('driver') and not info.get('cuda'):
         info['cuda_problem'] = (f"The GPUs work (driver {info['driver']}, CUDA up to {info.get('driver_cuda') or '?'}) but PyTorch "
                                 f"{info['torch']} (built for CUDA {info.get('torch_cuda') or 'none'}) cannot use them"
@@ -167,10 +199,11 @@ def install() -> dict:
         raise RuntimeError('Installation is already running')
     log = _log_path('install')
     handle = log.open('w', encoding='utf-8')
-    index = torch_index(driver().get('driver_cuda')) or ''
+    driver_cuda = driver().get('driver_cuda')
+    index, constraint = torch_index(driver_cuda) or '', onnxruntime_constraint(driver_cuda) or ''
     handle.write(f'{now()} installing {REQUIREMENTS.name}' + (f' with PyTorch from {index}' if index else '') + '\n')
     handle.flush()
-    _processes['install'] = subprocess.Popen([sys.executable, '-c', INSTALL_SCRIPT, index, str(REQUIREMENTS)],
+    _processes['install'] = subprocess.Popen([sys.executable, '-c', INSTALL_SCRIPT, index, str(REQUIREMENTS), constraint],
                                              stdout=handle, stderr=subprocess.STDOUT, cwd=BACKEND)
     return install_status()
 

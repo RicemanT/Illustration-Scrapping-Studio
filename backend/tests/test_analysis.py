@@ -1,5 +1,6 @@
 import asyncio
 import json
+import threading
 import unittest
 from unittest import mock
 
@@ -185,14 +186,19 @@ class AnalysisLibraryTests(unittest.IsolatedAsyncioTestCase):
         job_id = conn.execute("INSERT INTO analysis_job (status, params, created_at) VALUES ('queued', ?, 'x')",
                               (json.dumps({'config': {'batch_size': 2, 'duty': 1.0, 'download_interval': 0.05}}),)).lastrowid
         conn.executemany('INSERT INTO analysis_queue (job_id, site, remote_id, artist_id, urls) VALUES (?, ?, ?, 1, ?)',
-                         [(job_id, 'danbooru', str(i), json.dumps([f'https://example.test/{i}.jpg'])) for i in range(1, 6)])
+                         [(job_id, 'danbooru' if i <= 5 else 'e621', str(i), json.dumps([f'https://example.test/{i}.jpg'])) for i in range(1, 9)])
         conn.commit()
         conn.close()
+        threads = {}
 
         def fake_fetch(client, pacer, site, urls):
+            threads.setdefault(site, set()).add(threading.current_thread().name)
             if urls[0].endswith('/3.jpg'):
                 return None, 'HTTP 404'
             return Image.new('RGB', (64, 64), (10, 20, 30)), urls[0]
+
+        # The first temperature check finds a hot GPU: the worker pauses until it has cooled, then carries on.
+        temperatures = mock.Mock(side_effect=[[{'index': 0, 'temperature': 86.0}], []] + [[]] * 50)
 
         def fake_load(config, devices, report):
             report('fake', 'ok')
@@ -202,7 +208,8 @@ class AnalysisLibraryTests(unittest.IsolatedAsyncioTestCase):
             return [{'scores': {'ws3': 7.5, 'rough': 0.1}, 'vectors': {'dinov2:4-6': np.ones(8)}, 'models': ['fake'], 'era': '2020s'} for _ in images]
 
         with mock.patch.object(worker, 'fetch_image', fake_fetch), mock.patch('app.analysis.models.load_models', fake_load), \
-                mock.patch('app.analysis.models.run_models', fake_run), mock.patch.object(worker, 'gpu_problem', lambda config: None):
+                mock.patch('app.analysis.models.run_models', fake_run), mock.patch.object(worker, 'gpu_problem', lambda config: None), \
+                mock.patch.object(worker, 'hot_gpus', temperatures), mock.patch.object(worker, 'COOLING_POLL', 0.0):
             self.assertEqual(worker.run_job(job_id), 0)
         conn = analysis_store.connect()
         job = conn.execute('SELECT * FROM analysis_job WHERE id=?', (job_id,)).fetchone()
@@ -210,10 +217,34 @@ class AnalysisLibraryTests(unittest.IsolatedAsyncioTestCase):
         vectors = conn.execute('SELECT count(*) FROM analysis_vector').fetchone()[0]
         conn.close()
         self.assertEqual(job['status'], 'completed')
-        self.assertEqual(json.loads(job['progress'])['done'], 4)
+        self.assertEqual(json.loads(job['progress'])['done'], 7)
+        self.assertEqual(json.loads(job['progress'])['phase'], 'completed')
         self.assertEqual((posts['3']['status'], posts['3']['error']), ('failed', 'HTTP 404'))
         self.assertEqual((posts['1']['ws3'], posts['1']['era']), (7.5, '2020s'))
-        self.assertEqual(vectors, 4)
+        self.assertEqual(posts['7']['status'], 'done')
+        self.assertEqual(vectors, 7)
+        self.assertGreaterEqual(temperatures.call_count, 2)
+        # Each site downloads on its own threads.
+        self.assertTrue(all(name.startswith('download-danbooru') for name in threads['danbooru']))
+        self.assertTrue(all(name.startswith('download-e621') for name in threads['e621']))
+        self.assertEqual(analysis_store.stats()['score_summary']['ws3'], {'count': 7, 'mean': 7.5, 'min': 7.5, 'max': 7.5})
+
+    def test_models_on_different_gpus_run_at_the_same_time(self):
+        from app.analysis.models import run_models
+        barrier = threading.Barrier(2)
+
+        class Fake:
+            def __init__(self, device, key):
+                self.device, self.key = device, key
+
+            def __call__(self, images):
+                barrier.wait(timeout=5)  # both devices must be inside a model at once, or this times out
+                return [{self.key: 1.0, 'vec': np.ones(2)} if self.key == 'ws3' else {self.key: 2.0} for _ in images]
+
+        results = run_models([('style', Fake('cuda:0', 'polished')), ('scorer', Fake('cuda:1', 'ws3'))], ['a', 'b'])
+        self.assertEqual(results[0]['scores'], {'polished': 2.0, 'ws3': 1.0})
+        self.assertEqual(results[1]['models'], ['style', 'scorer'])
+        self.assertEqual(list(results[0]['vectors']), ['vec'])
 
     async def test_worker_refuses_to_run_on_the_cpu_when_gpus_are_set(self):
         from app.analysis import worker
@@ -239,6 +270,10 @@ class AnalysisLibraryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(torch_index('11.8').endswith('/cu118'))
         self.assertIsNone(torch_index('11.4'))
         self.assertIsNone(torch_index(None))
+        from app.analysis.service import onnxruntime_constraint
+        self.assertEqual(onnxruntime_constraint('12.8'), 'onnxruntime-gpu>=1.20,<1.27')  # 1.27+ needs CUDA 13
+        self.assertIsNone(onnxruntime_constraint('13.0'))
+        self.assertIsNone(onnxruntime_constraint(None))
 
     async def test_plan_with_analysis_drops_off_style_posts(self):
         await self.delivered()
