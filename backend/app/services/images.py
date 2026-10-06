@@ -429,6 +429,17 @@ class ImageService:
         # Get sources
         cursor.execute("SELECT * FROM image_source WHERE image_id = ?", (image_id,))
         sources = [dict(r) for r in cursor.fetchall()]
+        # The original publication date on the site, from each stored metadata snapshot.
+        from app.services.post_dates import posted_at
+        for source in sources:
+            try:
+                source['posted_at'] = posted_at(json.loads(source.get('metadata') or '{}'))
+            except (TypeError, ValueError):
+                source['posted_at'] = None
+        dated = [source for source in sources if source['posted_at']]
+        primary = next((source for source in dated if source.get('is_primary')), None)
+        image['posted_at'] = primary['posted_at'] if primary else min((source['posted_at'] for source in dated), default=None)
+        image['posted_on'] = (primary or (min(dated, key=lambda source: source['posted_at']) if dated else {})).get('provider')
         image['sources'] = sources
         from app import db
         from app.services.storage_locations import image_storage_locations

@@ -24,6 +24,30 @@ def post_year(created_at) -> int:
     return 0
 
 
+POSTED_KEYS = ('created_at', 'date', 'create_date', 'published_at', 'published', 'published_time', 'upload_date')
+
+
+def posted_at(metadata) -> str | None:
+    """When the post was originally published on its site, from the stored raw metadata (UTC ISO)."""
+    if not isinstance(metadata, dict):
+        return None
+    for key in POSTED_KEYS:
+        value = metadata.get(key)
+        if value in (None, ''):
+            continue
+        if isinstance(value, (int, float)) or (isinstance(value, str) and value.strip().isdigit()):
+            seconds = float(value)
+            if seconds > 1e11:  # milliseconds
+                seconds /= 1000
+            if 0 < seconds < 4e9:
+                return datetime.fromtimestamp(seconds, timezone.utc).isoformat()
+            continue
+        parsed = sortable_time(value)
+        if parsed and parsed[:4].isdigit():
+            return parsed
+    return None
+
+
 def sortable_time(created_at) -> str:
     """A UTC ISO string that sorts chronologically for every site's format ('' when unknown)."""
     text = str(created_at or '').strip()

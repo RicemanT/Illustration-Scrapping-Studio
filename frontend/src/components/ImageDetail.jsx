@@ -7,6 +7,12 @@ import { MARKS, applyMark, isActive, markFor, markTags, marksOf } from './qualit
 import { describeAuto } from './qualityJob';
 import CaptionEditor from './CaptionEditor';
 
+// Unambiguous dates ("Mar 2, 2024"), whatever the browser's day/month order.
+const formatDate = (value) => {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+};
+const PROVIDER_LABEL = { danbooru: 'Danbooru', gelbooru: 'Gelbooru', e621: 'e621', pixiv: 'Pixiv', deviantart: 'DeviantArt', twitter: 'Twitter / X', artstation: 'ArtStation' };
 const parseInfo = (value) => { try { return value ? JSON.parse(value) : null; } catch { return null; } };
 const autoOf = (row) => ({ source: row?.quality_source || null, tag: row?.quality_auto || null, info: parseInfo(row?.quality_auto_info) });
 
@@ -201,9 +207,15 @@ function ImageDetail({ image, onClose, onPrevious, onNext, position, total, mark
                 <span className="text-slate-400">Size:</span>
                 <span className="font-medium">{(displayImage.file_size / 1024 / 1024).toFixed(2)} MB</span>
               </div>
+              <div className="flex justify-between gap-3">
+                <span className="text-slate-400">Posted:</span>
+                <span className="text-right font-medium" title={displayImage.posted_at ? `Originally published ${new Date(displayImage.posted_at).toLocaleString()}` : 'The source metadata has no publication date'}>
+                  {displayImage.posted_at ? `${formatDate(displayImage.posted_at)}${displayImage.posted_on ? ` on ${PROVIDER_LABEL[displayImage.posted_on] || displayImage.posted_on}` : ''}` : (detailsLoading ? '…' : 'unknown')}
+                </span>
+              </div>
               <div className="flex justify-between">
-                <span className="text-slate-400">Added:</span>
-                <span className="font-medium">{new Date(displayImage.added_at).toLocaleDateString()}</span>
+                <span className="text-slate-400">Added to library:</span>
+                <span className="font-medium" title={new Date(displayImage.added_at).toLocaleString()}>{formatDate(displayImage.added_at)}</span>
               </div>
             </div>
           </div>
@@ -348,8 +360,9 @@ function ImageDetail({ image, onClose, onPrevious, onNext, position, total, mark
                   <div key={idx} className="border border-[#202a34] rounded-lg p-3">
                     <div className="flex items-center justify-between mb-2">
                       <span className="font-medium text-sm capitalize">{source.provider}</span>
-                      <span className="text-xs text-slate-400">
-                        {new Date(source.fetched_at).toLocaleDateString()}
+                      <span className="text-right text-xs text-slate-400">
+                        {source.posted_at && <span className="block" title={new Date(source.posted_at).toLocaleString()}>Posted {formatDate(source.posted_at)}</span>}
+                        <span className="block" title={new Date(source.fetched_at).toLocaleString()}>Fetched {formatDate(source.fetched_at)}</span>
                       </span>
                     </div>
                     {source.remote_url && (

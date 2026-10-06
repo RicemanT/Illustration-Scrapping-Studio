@@ -33,6 +33,15 @@ class PostDateTests(unittest.TestCase):
         self.assertEqual(ordered[0], 'Fri Dec 01 00:00:00 -0600 2023')
         self.assertLess(sortable_time('2023-12-31T23:00:00Z'), sortable_time(GELBOORU_2024))
 
+    def test_posted_at_reads_every_sites_publication_date(self):
+        from app.services.post_dates import posted_at
+        self.assertEqual(posted_at({'created_at': '2019-04-30T12:00:00.000-04:00'}), '2019-04-30T16:00:00+00:00')  # Danbooru / e621
+        self.assertEqual(posted_at({'created_at': GELBOORU_2024}), '2024-03-02T19:05:57+00:00')                  # Gelbooru
+        self.assertEqual(posted_at({'date': '2023-01-02 03:04:05'}), '2023-01-02T03:04:05+00:00')                # gallery-dl
+        self.assertEqual(posted_at({'published_time': '1700000000'}), '2023-11-14T22:13:20+00:00')               # DeviantArt
+        self.assertIsNone(posted_at({'id': 5}))
+        self.assertIsNone(posted_at(None))
+
     def test_newest_posts_window_orders_gelbooru_dates_chronologically(self):
         test_planner.PlannerStoreTests.setUp(self)
         try:
@@ -247,6 +256,21 @@ class CaptionTests(DeliveredFolderTests):
         self.assertEqual(item['caption_filename'], Path(item['filename']).stem + '_nl.txt')
         self.assertEqual((Path(export['output_path']) / item['caption_filename']).read_text(encoding='utf-8'), saved['text'])
         self.assertTrue(all(i['caption_filename'] is None for i in manifest['items'] if i['image_id'] != image['id']))
+
+
+class PostedDateTests(DeliveredFolderTests):
+    async def test_image_details_include_the_original_posting_date(self):
+        from app.services.images import ImageService
+        folders = await self.delivered()
+        image = next(iter(self.images_by_post(folders['Artist X']).values()))
+        main = db.get_connection()
+        main.execute('UPDATE image_source SET metadata=? WHERE image_id=?', (json.dumps({'id': 1, 'created_at': GELBOORU_2024}), image['id']))
+        main.commit()
+        main.close()
+        details = ImageService(self.root).get_image_by_id(image['id'])
+        self.assertEqual((details['posted_at'], details['posted_on']), ('2024-03-02T19:05:57+00:00', 'danbooru'))
+        self.assertEqual(details['sources'][0]['posted_at'], '2024-03-02T19:05:57+00:00')
+        self.assertNotEqual(details['posted_at'][:10], details['added_at'][:10])
 
 
 class QualityRouteTests(DeliveredFolderTests):
