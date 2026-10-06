@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from pathlib import Path
 from typing import Iterable, Optional
 
 import numpy as np
@@ -12,12 +13,14 @@ from app.services.planner_store import now, planner_dir
 
 # Numeric results per post. Scorers feed the aesthetic ensemble; the rest are
 # content classifiers used by the adaptive gates and review flags.
-SCORERS = ('ws3', 'ws4', 'naflex', 'aps25', 'dbaes')
+SCORERS = ('ws3', 'ws4', 'naflex', 'aps25', 'dbaes', 'anzhc')
 SCORER_LABELS = {'ws3': 'waifu-scorer v3', 'ws4': 'waifu-scorer v4-beta', 'naflex': 'Naflex (SigLIP2)',
-                 'aps25': 'aesthetic-predictor v2.5', 'dbaes': 'DeepGHS dbaesthetic'}
+                 'aps25': 'aesthetic-predictor v2.5', 'dbaes': 'DeepGHS dbaesthetic', 'anzhc': "Anzhc's score (Danbooru percentile)"}
 CLASSIFIERS = ('polished', 'rough', 'monochrome', 'cls_3d', 'cls_comic', 'cls_illustration', 'cls_bangumi', 'real', 'ai', 'mono')
-COLUMNS = SCORERS + ('dbaes_pct',) + CLASSIFIERS + ('era_conf',)
+COLUMNS = SCORERS + ('dbaes_pct',) + CLASSIFIERS + ('era_conf', 'anzhc_class')
 STYLE_MODELS = ('dinov2', 'dinov3')
+# Model names as the worker reports them (a post is fully analysed when it has output from every enabled one).
+MODEL_FLAGS = ('dinov2', 'dinov3', 'ws3', 'ws4', 'naflex', 'aps25', 'deepghs', 'anzhc')
 
 SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS analysis_post (
@@ -68,6 +71,12 @@ CREATE TABLE IF NOT EXISTS analysis_setting (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS analysis_sample (
+    site TEXT NOT NULL,
+    remote_id TEXT NOT NULL,
+    bytes INTEGER NOT NULL,
+    PRIMARY KEY (site, remote_id)
+) WITHOUT ROWID;
 """
 
 
@@ -78,7 +87,21 @@ def connect() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA journal_mode = WAL')
     conn.executescript(SCHEMA)
+    present = {r[1] for r in conn.execute('PRAGMA table_info(analysis_post)')}
+    for column in COLUMNS:
+        if column not in present:  # scorers added after the database was created
+            conn.execute(f'ALTER TABLE analysis_post ADD COLUMN {column} REAL')
     return conn
+
+
+def sample_path(site: str, remote_id: str) -> Path:
+    """Where a kept sample image lives (`<planner>/analysis-samples/<site>/<last two digits>/<id>`)."""
+    remote_id = str(remote_id)
+    return planner_dir() / 'analysis-samples' / site / remote_id[-2:].rjust(2, '0') / remote_id
+
+
+def enabled_models(config: 'AnalysisConfig') -> list[str]:
+    return [name for name in MODEL_FLAGS if getattr(config, name, False)]
 
 
 class AnalysisConfig(BaseModel):
@@ -92,6 +115,7 @@ class AnalysisConfig(BaseModel):
     download_interval: float = Field(0.25, ge=0.05, le=30, description='Seconds between sample downloads per site')
     download_workers: int = Field(4, ge=1, le=32, description='Parallel downloads per site')
     max_temp: int = Field(80, ge=0, le=100, description='Pause while a used GPU is at or above this temperature in °C (0 = never)')
+    keep_samples: bool = Field(True, description='Keep downloaded samples on disk, so adding a model later needs no new downloads')
     dinov2: bool = True
     dinov3: bool = True
     dinov2_repo: str = 'facebook/dinov2-large'
@@ -104,6 +128,7 @@ class AnalysisConfig(BaseModel):
     naflex: bool = True
     aps25: bool = True
     deepghs: bool = True
+    anzhc: bool = True
 
     @field_validator('dino_ranges')
     @classmethod
@@ -174,14 +199,25 @@ def decode_vector(blob: bytes) -> np.ndarray:
 
 
 def save_results(conn, results: Iterable[dict]) -> int:
-    """Store worker results: one dict per post with site, remote_id, artist_id, status, scores and vectors."""
+    """Store worker results: one dict per post with site, remote_id, artist_id, status, scores and vectors.
+
+    Results merge into what is stored: a run with only new models keeps the earlier scores, and a failed
+    re-download never replaces earlier results.
+    """
     count = 0
+    keep = ', '.join(f'{c}=COALESCE(excluded.{c}, analysis_post.{c})' for c in (*COLUMNS, 'era', 'extra', 'source', 'artist_id'))
     for r in results:
+        old = conn.execute('SELECT status, models FROM analysis_post WHERE site=? AND remote_id=?', (r['site'], r['remote_id'])).fetchone()
+        if old and old['status'] == 'done' and r['status'] != 'done':
+            continue
+        earlier = [m for m in (old['models'] or '').split(',') if m] if old and old['status'] == 'done' else []
         values = [r['site'], r['remote_id'], r.get('artist_id'), r['status'], r.get('error'), now(), r.get('source'),
-                  ','.join(r.get('models', [])), *[r.get('scores', {}).get(c) for c in COLUMNS], r.get('era'),
+                  ','.join(dict.fromkeys([*earlier, *r.get('models', [])])), *[r.get('scores', {}).get(c) for c in COLUMNS], r.get('era'),
                   json.dumps(r['extra']) if r.get('extra') else None]
-        conn.execute(f"""INSERT OR REPLACE INTO analysis_post (site, remote_id, artist_id, status, error, analyzed_at, source, models,
-                         {', '.join(COLUMNS)}, era, extra) VALUES ({', '.join('?' * len(values))})""", values)
+        conn.execute(f"""INSERT INTO analysis_post (site, remote_id, artist_id, status, error, analyzed_at, source, models,
+                         {', '.join(COLUMNS)}, era, extra) VALUES ({', '.join('?' * len(values))})
+                         ON CONFLICT(site, remote_id) DO UPDATE SET status=excluded.status, error=excluded.error,
+                         analyzed_at=excluded.analyzed_at, models=excluded.models, {keep}""", values)
         for model, vector in (r.get('vectors') or {}).items():
             conn.execute('INSERT OR REPLACE INTO analysis_vector (site, remote_id, model, vector) VALUES (?, ?, ?, ?)',
                          (r['site'], r['remote_id'], model, encode_vector(vector)))
@@ -226,6 +262,8 @@ def stats() -> dict:
             row = conn.execute(f'SELECT count({name}), avg({name}), min({name}), max({name}) FROM analysis_post').fetchone()
             if row[0]:
                 summary[name] = {'count': row[0], 'mean': round(row[1], 3), 'min': round(row[2], 3), 'max': round(row[3], 3)}
-        return {'posts': counts, 'vectors': models, 'scorers': scorers, 'score_summary': summary}
+        samples = conn.execute('SELECT count(*), COALESCE(sum(bytes), 0) FROM analysis_sample').fetchone()
+        return {'posts': counts, 'vectors': models, 'scorers': scorers, 'score_summary': summary,
+                'samples': {'count': samples[0], 'bytes': samples[1]}}
     finally:
         conn.close()

@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from typing import Iterable, Optional
 
-from app.analysis.store import AnalysisConfig, connect as analysis_connect
+from app.analysis.store import AnalysisConfig, connect as analysis_connect, enabled_models
 from app.services.planner_select import ADAPTIVE_TAGS, PlannerConfig, rejection
 from app.services.planner_store import connect as planner_connect
 from app.services.post_dates import sortable_time
@@ -68,8 +68,10 @@ def build_queue(job_id: int, artist_ids: list[int], config: AnalysisConfig, rean
     analysis = analysis_connect()
     try:
         plan_config = _latest_config(planner)
+        wanted = set(enabled_models(config))
         done = set() if reanalyze else {(r['site'], r['remote_id']) for r in analysis.execute(
-            "SELECT site, remote_id FROM analysis_post WHERE status='done'")}
+            "SELECT site, remote_id, models FROM analysis_post WHERE status='done'")
+            if wanted <= set((r['models'] or '').split(','))}  # a newly ticked model queues the posts it has not seen
         counts = {'artists': 0, 'queued': 0, 'already': 0, 'filtered': 0}
         for artist_id in artist_ids:
             artist = planner.execute('SELECT site FROM artist WHERE id=?', (artist_id,)).fetchone()

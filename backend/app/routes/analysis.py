@@ -99,6 +99,14 @@ def resume_job(job_id: int):
         raise HTTPException(409, str(exc)) from exc
 
 
+@router.post('/samples/clear')
+def clear_samples():
+    try:
+        return service.clear_samples()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.get('/folders/{folder_id}/review')
 async def folder_review(folder_id: int):
     result = await asyncio.to_thread(review.folder_review, folder_id)

@@ -20,7 +20,9 @@ const duration = (seconds) => {
 const MODELS = [
   ['dinov2', 'DINOv2-L (style)'], ['dinov3', 'DINOv3-L (style; needs a Hugging Face token)'], ['ws3', 'waifu-scorer v3'], ['ws4', 'waifu-scorer v4-beta'],
   ['naflex', 'Naflex (SigLIP2)'], ['aps25', 'aesthetic-predictor v2.5'], ['deepghs', 'DeepGHS: dbaesthetic, sketch/comic/3D/photo/AI/monochrome, style era'],
+  ['anzhc', "Anzhc's score (Danbooru score band)"],
 ];
+const bytes = (value) => (value >= 2 ** 30 ? `${(value / 2 ** 30).toFixed(1)} GB` : `${Math.round((value || 0) / 2 ** 20)} MB`);
 const ACTIVE = ['queued', 'running', 'stopping'];
 const auc = (value) => (value == null ? '—' : value.toFixed(3));
 
@@ -63,6 +65,7 @@ export default function AnalysisPanel() {
   const [token, setToken] = useState('');
   const saveToken = useMutation({ mutationFn: () => api.analysis.saveToken(token), onSuccess: () => { setToken(''); refresh(); } });
   const install = useMutation({ mutationFn: api.analysis.install, onSuccess: refresh });
+  const clearSamples = useMutation({ mutationFn: api.analysis.clearSamples, onSuccess: refresh });
   const selftest = useMutation({ mutationFn: api.analysis.selftest, onSuccess: refresh });
   const [scope, setScope] = useState('planner');
   const [reanalyze, setReanalyze] = useState(false);
@@ -136,6 +139,9 @@ export default function AnalysisPanel() {
           <div className="flex flex-wrap gap-x-5 gap-y-2 text-sm">
             {MODELS.map(([key, label]) => <label key={key} className="flex items-center gap-2"><input type="checkbox" checked={Boolean(config[key])} onChange={(e) => set(key, e.target.checked)} />{label}</label>)}
           </div>
+          <label className="flex items-center gap-2 text-sm" title="Samples stay in the planner folder (analysis-samples), so a model ticked later is run without downloading again. Roughly 150 KB per post.">
+            <input type="checkbox" checked={config.keep_samples !== false} onChange={(e) => set('keep_samples', e.target.checked)} />Keep downloaded samples for later runs</label>
+          <p className="text-xs text-slate-500">Ticking a model later and pressing <b>Start analysis</b> analyses only the posts that model has not seen; earlier scores are kept.</p>
           <div className="flex flex-wrap items-end gap-3 text-sm">
             <label className="text-xs text-slate-400" title="Transformer blocks whose features are stored, e.g. 4-6, 10-14, 20-24. Calibration compares them.">DINO block ranges stored
               <input className={`${field} block w-48`} value={ranges.join(', ')} onChange={(e) => set('dino_ranges', e.target.value.split(',').map((x) => x.trim()).filter(Boolean))} /></label>
@@ -198,7 +204,11 @@ export default function AnalysisPanel() {
             {(job.status === 'failed' || job.status === 'interrupted') && job.log && <pre className="max-h-40 overflow-auto rounded bg-black/40 p-2 text-[11px] text-slate-400">{job.log}</pre>}
           </div>}
           {data.stats && <p className="text-xs text-slate-500">Analysed so far: {number(data.stats.posts?.done)} posts{data.stats.posts?.failed ? `, ${number(data.stats.posts.failed)} failed` : ''}
-            {Object.keys(data.stats.vectors || {}).length > 0 && ` · style vectors: ${Object.entries(data.stats.vectors).map(([k, v]) => `${k} ${number(v)}`).join(', ')}`}</p>}
+            {Object.keys(data.stats.vectors || {}).length > 0 && ` · style vectors: ${Object.entries(data.stats.vectors).map(([k, v]) => `${k} ${number(v)}`).join(', ')}`}
+            {data.stats.samples?.count > 0 && <> · kept samples: {number(data.stats.samples.count)} ({bytes(data.stats.samples.bytes)}){' '}
+              <button className="text-slate-400 underline disabled:opacity-40" disabled={clearSamples.isPending || running}
+                onClick={() => { if (window.confirm('Delete every kept sample? Later runs will download them again.')) clearSamples.mutate(); }}>delete</button></>}</p>}
+          {clearSamples.isError && <p className="text-sm text-red-400">{errorText(clearSamples.error)}</p>}
           {Object.keys(data.stats?.score_summary || {}).length > 0 && <p className="text-xs text-slate-500">Scores so far (mean, range): {Object.entries(data.stats.score_summary).map(([name, s]) => (
             <span key={name} className={`mr-3 ${s.count >= 20 && s.max - s.min < 0.01 ? 'text-red-300' : ''}`} title={s.count >= 20 && s.max - s.min < 0.01 ? 'The same value on every image: this scorer is not working' : `${number(s.count)} images`}>
               {name} {s.mean.toFixed(2)} ({s.min.toFixed(1)}–{s.max.toFixed(1)})</span>))}</p>}
@@ -217,12 +227,17 @@ export default function AnalysisPanel() {
               <tbody>{calibration.data.style.map((row, index) => (
                 <tr key={row.model}><td className="pr-4 text-slate-300">{row.model}</td><td className={`pr-4 tabular-nums ${index === 0 ? 'text-green-300' : ''}`}>{auc(row.auc)}</td>
                   <td className="pr-4 tabular-nums text-slate-400">{row.removed} / {row.kept}</td>
-                  <td>{config && row.model.includes(':') && ranges.includes(row.model.split(':')[1]) && config.style_range !== row.model.split(':')[1] &&
+                  <td>{config && row.model.includes(':') && config.style_range === row.model.split(':')[1] && <span className="text-slate-400">in use</span>}
+                    {config && row.model.includes(':') && ranges.includes(row.model.split(':')[1]) && config.style_range !== row.model.split(':')[1] &&
                     <button className="text-blue-300 underline" onClick={() => set('style_range', row.model.split(':')[1])}>use blocks {row.model.split(':')[1]}</button>}</td></tr>))}</tbody></table>
             <table><thead><tr className="text-left text-slate-400"><th className="pr-4">Scorer</th><th className="pr-4">Kept vs removed</th><th className="pr-4">Your quality marks</th><th>Your aesthetic marks</th></tr></thead>
               <tbody>{calibration.data.scorers.map((row) => (
                 <tr key={row.scorer}><td className="pr-4 text-slate-300">{row.label}</td><td className="pr-4 tabular-nums">{auc(row.kept_vs_removed)}</td>
                   <td className="pr-4 tabular-nums">{auc(row.quality_marks)}</td><td className="tabular-nums">{auc(row.aesthetic_marks)}</td></tr>))}</tbody></table>
+            {calibration.data.anzhc_bands?.length > 0 && <table><thead><tr className="text-left text-slate-400"><th className="pr-4" title="Most likely band of Danbooru scores (top 10% … bottom 10%)">Anzhc band</th><th className="pr-4">Kept</th><th className="pr-4">Removed</th><th>You removed</th></tr></thead>
+              <tbody>{calibration.data.anzhc_bands.map((row) => (
+                <tr key={row.band}><td className="pr-4 text-slate-300">top {row.band}%</td><td className="pr-4 tabular-nums">{number(row.kept)}</td><td className="pr-4 tabular-nums">{number(row.removed)}</td>
+                  <td className="tabular-nums">{Math.round(100 * row.removed / Math.max(1, row.kept + row.removed))}%</td></tr>))}</tbody></table>}
           </div>}
         </div>
 

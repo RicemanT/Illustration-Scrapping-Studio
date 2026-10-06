@@ -193,6 +193,7 @@ export const api = {
     review: (folderId) => client.get(`/analysis/folders/${folderId}/review`),
     calibration: (source) => client.get('/analysis/calibration', { params: { source } }),
     resetCuration: (artistIds) => client.post('/analysis/reset-curation', { confirm: true, artist_ids: artistIds || null }),
+    clearSamples: () => client.post('/analysis/samples/clear'),
   },
   tracker: {
     status: () => client.get('/tracker/status'),

@@ -1,0 +1,5 @@
+# Installed with `pip install --no-deps` after requirements-analysis.txt: ultralytics
+# (Anzhc's score model) depends on opencv-python, which would clash with the
+# app's opencv-python-headless; its other dependencies are listed in
+# requirements-analysis.txt.
+ultralytics>=8.3.78

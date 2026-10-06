@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 
@@ -314,7 +315,45 @@ def load_models(config: AnalysisConfig, devices: list[str], report: Callable[[st
         attempt('aps25', lambda: AestheticPredictor25(score_device))
     if config.deepghs:
         attempt('deepghs', lambda: DeepGHSClassifiers(style_device))
+    if config.anzhc:
+        attempt('anzhc', lambda: AnzhcScorer(score_device))
     return loaded
+
+
+class AnzhcScorer:
+    """Anzhc's Anime Score CLS v1 (YOLO classifier, 224 px): which 10% band of Danbooru scores an image falls in.
+
+    Score = expected band, 10 for top 10% ... 1 for the bottom 10%; `anzhc_class` = most likely band (10 = top 10%).
+    The ultralytics package is only needed to unpickle the network; preprocessing is ultralytics' classify
+    transform (shortest edge 224, centre crop, 0-1 range) done here so ultralytics never touches device selection.
+    """
+
+    REPO, FILE = 'Anzhc/Anzhcs_YOLOs', 'Anzhcs Anime Score CLS v1.pt'
+
+    def __init__(self, device: str):
+        torch = _torch()
+        from huggingface_hub import hf_hub_download
+        from torchvision import transforms
+        checkpoint = torch.load(hf_hub_download(self.REPO, self.FILE), map_location='cpu', weights_only=False)
+        net = checkpoint.get('ema') or checkpoint['model']
+        names = net.names if isinstance(net.names, dict) else dict(enumerate(net.names))
+        bands = [int(re.sub(r'\D', '', names[i])) for i in range(len(names))]  # 10 = top 10% ... 100
+        self.device, self.dtype = device, _dtype(device)
+        self.bands = torch.tensor(bands, dtype=torch.float32, device=device)
+        self.values = 11 - self.bands / 10  # top 10% -> 10, top 100% -> 1
+        self.net = net.float().to(device).to(self.dtype).eval()
+        self.transform = transforms.Compose([transforms.Resize(224, interpolation=transforms.InterpolationMode.BILINEAR),
+                                             transforms.CenterCrop(224), transforms.ToTensor()])
+
+    def __call__(self, images) -> list[dict]:
+        torch = _torch()
+        pixels = torch.stack([self.transform(image) for image in images]).to(self.device, dtype=self.dtype)
+        with torch.inference_mode():
+            output = self.net(pixels)
+            probs = (output[0] if isinstance(output, (tuple, list)) else output).float()
+            scores = (probs * self.values).sum(dim=1)
+            top = self.bands[probs.argmax(dim=1)]
+        return [{'anzhc': float(score), 'anzhc_class': float(band)} for score, band in zip(scores.cpu().numpy(), top.cpu().numpy())]
 
 
 def _device_of(model) -> str:

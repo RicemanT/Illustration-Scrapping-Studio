@@ -18,12 +18,14 @@ from app.services.planner_store import connect as planner_connect, now, planner_
 
 BACKEND = Path(__file__).resolve().parents[2]
 REQUIREMENTS = BACKEND / 'requirements-analysis.txt'
+# Installed with --no-deps: ultralytics wants opencv-python, which clashes with the app's opencv-python-headless.
+REQUIREMENTS_NO_DEPS = BACKEND / 'requirements-analysis-nodeps.txt'
 _processes: dict[str, subprocess.Popen] = {}
 
 ENVIRONMENT_PROBE = r"""
 import json, importlib
 info = {}
-for name in ('torch', 'transformers', 'onnxruntime', 'aesthetic_predictor_v2_5', 'safetensors', 'huggingface_hub'):
+for name in ('torch', 'transformers', 'onnxruntime', 'aesthetic_predictor_v2_5', 'ultralytics', 'safetensors', 'huggingface_hub'):
     try:
         module = importlib.import_module(name)
         info[name] = getattr(module, '__version__', 'installed')
@@ -59,7 +61,7 @@ ONNXRUNTIME_CUDA12 = 'onnxruntime-gpu>=1.20,<1.27'
 
 INSTALL_SCRIPT = r"""
 import os, subprocess, sys, tempfile
-index, requirements, constraint = sys.argv[1], sys.argv[2], sys.argv[3]
+index, requirements, constraint, no_deps = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 def pip(*args):
     print('$ pip ' + ' '.join(args), flush=True)
     return subprocess.call([sys.executable, '-m', 'pip', *args])
@@ -82,6 +84,8 @@ if constraint:
 code = pip(*args)
 if constraint:
     os.unlink(handle.name)
+if code == 0:
+    code = pip('install', '--no-deps', '-r', no_deps)
 sys.exit(code)
 """
 
@@ -149,7 +153,7 @@ def environment() -> dict:
         info = json.loads(result.stdout.strip().splitlines()[-1]) if result.returncode == 0 and result.stdout.strip() else {'error': result.stderr[-2000:]}
     except Exception as exc:
         info = {'error': str(exc)}
-    required = ('torch', 'transformers', 'onnxruntime', 'aesthetic_predictor_v2_5')
+    required = ('torch', 'transformers', 'onnxruntime', 'aesthetic_predictor_v2_5', 'ultralytics')
     info['ready'] = 'error' not in info and all(info.get(name) for name in required)
     info['python'] = sys.executable
     info.update(driver())
@@ -203,7 +207,7 @@ def install() -> dict:
     index, constraint = torch_index(driver_cuda) or '', onnxruntime_constraint(driver_cuda) or ''
     handle.write(f'{now()} installing {REQUIREMENTS.name}' + (f' with PyTorch from {index}' if index else '') + '\n')
     handle.flush()
-    _processes['install'] = subprocess.Popen([sys.executable, '-c', INSTALL_SCRIPT, index, str(REQUIREMENTS), constraint],
+    _processes['install'] = subprocess.Popen([sys.executable, '-c', INSTALL_SCRIPT, index, str(REQUIREMENTS), constraint, str(REQUIREMENTS_NO_DEPS)],
                                              stdout=handle, stderr=subprocess.STDOUT, cwd=BACKEND)
     return install_status()
 
@@ -325,6 +329,21 @@ def resume_job(job_id: int) -> dict:
         conn.close()
     _launch(job_id, get_config())
     return job(job_id)
+
+
+def clear_samples() -> dict:
+    """Delete every kept sample (later runs download again)."""
+    conn = connect()
+    try:
+        if active_job(conn) or _running('job'):
+            raise RuntimeError('Stop the analysis job first')
+        row = conn.execute('SELECT count(*), COALESCE(sum(bytes), 0) FROM analysis_sample').fetchone()
+        shutil.rmtree(planner_dir() / 'analysis-samples', ignore_errors=True)
+        conn.execute('DELETE FROM analysis_sample')
+        conn.commit()
+        return {'deleted': row[0], 'bytes': row[1]}
+    finally:
+        conn.close()
 
 
 def stop_job() -> Optional[dict]:

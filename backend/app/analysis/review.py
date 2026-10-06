@@ -167,6 +167,7 @@ def calibration(source: str = 'auto') -> dict:
         scorer = defaultdict(lambda: {'pos': [], 'neg': []})
         quality = defaultdict(lambda: {'pos': [], 'neg': []})
         aesthetic = defaultdict(lambda: {'pos': [], 'neg': []})
+        bands = defaultdict(lambda: {'kept': 0, 'removed': 0})
         context = AnalysisContext(config)
         scale = context.scale
         context.close()
@@ -199,6 +200,11 @@ def calibration(source: str = 'auto') -> dict:
                     bucket['pos'] += [z[k] for k in removed if k in z]
                     bucket['neg'] += [z[k] for k in kept if k in z]
                     bucket['artists'] += 1
+            for keys, side in ((kept, 'kept'), (removed, 'removed')):
+                for key in keys:
+                    band = (analysis.get(key) or {}).get('anzhc_class')
+                    if band is not None:
+                        bands[int(band)][side] += 1
             for name in (*SCORERS, 'ensemble'):
                 def value(key):
                     row = analysis.get(key)
@@ -226,6 +232,7 @@ def calibration(source: str = 'auto') -> dict:
         return {'source': used, 'artists': artists, 'labelled_artists': len(labels),
                 'removed': sum(len(l['removed']) for l in labels.values()), 'kept': sum(len(l['kept']) for l in labels.values()),
                 'style': report_style, 'scorers': report_scorers,
+                'anzhc_bands': [{'band': band, **counts} for band, counts in sorted(bands.items())],
                 'note': 'AUC 0.5 = no better than chance, 1.0 = perfect. Style: how well distance from the artist style separates what you removed from what you kept.'}
     finally:
         conn.close()

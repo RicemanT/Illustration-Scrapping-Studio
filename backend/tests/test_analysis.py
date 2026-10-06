@@ -191,7 +191,7 @@ class AnalysisLibraryTests(unittest.IsolatedAsyncioTestCase):
         conn.close()
         threads = {}
 
-        def fake_fetch(client, pacer, site, urls):
+        def fake_fetch(client, pacer, site, urls, keep=None):
             threads.setdefault(site, set()).add(threading.current_thread().name)
             if urls[0].endswith('/3.jpg'):
                 return None, 'HTTP 404'
@@ -239,6 +239,56 @@ class AnalysisLibraryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(name.startswith('download-danbooru') for name in threads['danbooru']))
         self.assertTrue(all(name.startswith('download-e621') for name in threads['e621']))
         self.assertEqual(analysis_store.stats()['score_summary']['ws3'], {'count': 7, 'mean': 7.5, 'min': 7.5, 'max': 7.5})
+
+    async def test_new_models_reuse_kept_samples_and_keep_earlier_scores(self):
+        import io as _io
+        from PIL import Image
+        from app.analysis import worker
+        buffer = _io.BytesIO()
+        Image.new('RGB', (32, 32), (200, 10, 10)).save(buffer, format='PNG')
+
+        def job(models_output):
+            conn = analysis_store.connect()
+            job_id = conn.execute("INSERT INTO analysis_job (status, params, created_at) VALUES ('queued', ?, 'x')",
+                                  (json.dumps({'config': {'batch_size': 2, 'duty': 1.0, 'gpus': ''}}),)).lastrowid
+            conn.executemany('INSERT INTO analysis_queue (job_id, site, remote_id, artist_id, urls) VALUES (?, ?, ?, 1, ?)',
+                             [(job_id, 'danbooru', str(i), json.dumps([f'https://example.test/{i}.png'])) for i in (101, 102)])
+            conn.commit()
+            conn.close()
+            return job_id
+
+        downloads = []
+
+        def first_fetch(client, pacer, site, urls, keep=None):
+            downloads.append(urls[0])
+            keep.parent.mkdir(parents=True, exist_ok=True)
+            keep.write_bytes(buffer.getvalue())
+            return worker.open_sample(buffer.getvalue()), urls[0]
+
+        def no_fetch(*args, **kwargs):
+            raise AssertionError('kept samples must not be downloaded again')
+
+        def runner(scores, name):
+            return lambda models, images: [{'scores': dict(scores), 'vectors': {}, 'models': [name]} for _ in images]
+
+        load = lambda config, devices, report: [('fake', object())]
+        with mock.patch('app.analysis.models.load_models', load), mock.patch.object(worker, 'fetch_image', first_fetch), \
+                mock.patch('app.analysis.models.run_models', runner({'ws3': 7.5}, 'ws3')):
+            self.assertEqual(worker.run_job(job({'ws3': 7.5})), 0)
+        self.assertEqual(len(downloads), 2)
+        self.assertEqual(analysis_store.stats()['samples']['count'], 2)
+        # A model ticked later: the samples come from disk and the earlier scores stay.
+        with mock.patch('app.analysis.models.load_models', load), mock.patch.object(worker, 'fetch_image', no_fetch), \
+                mock.patch('app.analysis.models.run_models', runner({'anzhc': 9.0, 'anzhc_class': 10}, 'anzhc')):
+            self.assertEqual(worker.run_job(job({'anzhc': 9.0})), 0)
+        conn = analysis_store.connect()
+        row = dict(conn.execute("SELECT * FROM analysis_post WHERE remote_id='101'").fetchone())
+        analysis_store.save_results(conn, [{'site': 'danbooru', 'remote_id': '101', 'status': 'failed', 'error': 'HTTP 404'}])
+        after = conn.execute("SELECT status FROM analysis_post WHERE remote_id='101'").fetchone()[0]
+        conn.close()
+        self.assertEqual((row['ws3'], row['anzhc'], row['anzhc_class'], row['models']), (7.5, 9.0, 10.0, 'ws3,anzhc'))
+        self.assertEqual(row['source'], 'https://example.test/101.png')
+        self.assertEqual(after, 'done')  # a failed re-download never replaces results
 
     def test_models_on_different_gpus_run_at_the_same_time(self):
         from app.analysis.models import run_models

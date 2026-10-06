@@ -22,7 +22,7 @@ from collections import defaultdict, deque
 from pathlib import PurePath
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
-from app.analysis.store import AnalysisConfig, connect, get_config, save_results
+from app.analysis.store import AnalysisConfig, connect, get_config, sample_path, save_results
 from app.services.planner_store import now
 
 log = logging.getLogger('analysis.worker')
@@ -56,8 +56,19 @@ class SitePacer:
             self.penalty[site] = max(1.0, self.penalty.get(site, 1.0) * 0.9)
 
 
-def fetch_image(client, pacer: SitePacer, site: str, urls: list[str]):
-    """First decodable image among `urls`, downscaled to at most 1024 px; (image, url) or (None, error)."""
+def open_sample(data_or_path):
+    """Decode a sample (bytes or a file) to RGB, at most 1024 px."""
+    from PIL import Image
+    with Image.open(io.BytesIO(data_or_path) if isinstance(data_or_path, bytes) else data_or_path) as raw:
+        raw.seek(0)
+        image = raw.convert('RGB')
+    image.thumbnail((1024, 1024))
+    return image
+
+
+def fetch_image(client, pacer: SitePacer, site: str, urls: list[str], keep=None):
+    """First decodable image among `urls`, downscaled to at most 1024 px; (image, url) or (None, error).
+    With `keep`, the downloaded file is also written there for later runs."""
     from PIL import Image
     error = 'no URL'
     for url in urls:
@@ -83,14 +94,19 @@ def fetch_image(client, pacer: SitePacer, site: str, urls: list[str]):
                 error = 'sample too large'
                 break
             try:
-                with Image.open(io.BytesIO(data)) as raw:
-                    raw.seek(0)
-                    image = raw.convert('RGB')
-                image.thumbnail((1024, 1024))
-                return image, url
+                image = open_sample(data)
             except Exception as exc:
                 error = f'not an image: {exc}'
                 break
+            if keep is not None:
+                try:
+                    keep.parent.mkdir(parents=True, exist_ok=True)
+                    partial = keep.with_name(keep.name + '.part')
+                    partial.write_bytes(data)
+                    partial.replace(keep)
+                except OSError as exc:
+                    log.warning('could not keep sample %s: %s', keep, exc)
+            return image, url
     return None, error
 
 
@@ -270,6 +286,18 @@ def run_job(job_id: int) -> int:
         pending: dict = {}
         open_sites = {r[0] for r in reader.execute("SELECT DISTINCT site FROM analysis_queue WHERE job_id=? AND state='queued'", (job_id,))}
 
+        def obtain(site: str, row: dict):
+            """A kept sample if there is one (no download), else a paced download that is kept when enabled."""
+            path = sample_path(site, row['remote_id'])
+            if path.exists():
+                try:
+                    return open_sample(path), None, 0
+                except Exception:
+                    path.unlink(missing_ok=True)
+            image, detail = fetch_image(client, pacer, site, json.loads(row['urls']), keep=path if config.keep_samples else None)
+            size = path.stat().st_size if image is not None and config.keep_samples and path.exists() else 0
+            return image, detail, size
+
         def claim(site: str) -> list[dict]:
             rows = reader.execute("SELECT site, remote_id, artist_id, urls FROM analysis_queue WHERE job_id=? AND site=? AND state='queued' "
                                   'ORDER BY artist_id, remote_id LIMIT ?', (job_id, site, per_site * 4)).fetchall()
@@ -293,14 +321,18 @@ def run_job(job_id: int) -> int:
                     while rows and in_flight[site] < per_site:
                         row = rows.popleft()
                         pool = pools.get(site) or pools.setdefault(site, ThreadPoolExecutor(config.download_workers, thread_name_prefix=f'download-{site}'))
-                        pending[pool.submit(fetch_image, client, pacer, site, json.loads(row['urls']))] = row
+                        pending[pool.submit(obtain, site, row)] = row
                         in_flight[site] += 1
                 if not pending:
                     break
                 done, _ = wait(list(pending), timeout=1, return_when=FIRST_COMPLETED)
                 for future in done:
                     row = pending.pop(future)
-                    image, detail = future.result()
+                    image, detail, size = future.result()
+                    if size:
+                        reader.execute('INSERT OR REPLACE INTO analysis_sample (site, remote_id, bytes) VALUES (?, ?, ?)',
+                                       (row['site'], row['remote_id'], size))
+                        reader.commit()
                     while not stop.is_set():
                         try:
                             ready.put((row, image, detail), timeout=1)

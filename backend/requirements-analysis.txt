@@ -12,3 +12,10 @@ huggingface_hub>=0.25
 # DeepGHS classifiers run as plain ONNX models (imgutils itself pins numpy<2).
 onnxruntime-gpu>=1.20
 aesthetic-predictor-v2-5>=2024.10.22
+# Dependencies of ultralytics (installed --no-deps from requirements-analysis-nodeps.txt, for Anzhc's score model).
+matplotlib>=3.3
+pyyaml>=5.3.1
+requests>=2.23
+psutil>=5.8
+polars>=0.20
+ultralytics-thop>=2.2.2
