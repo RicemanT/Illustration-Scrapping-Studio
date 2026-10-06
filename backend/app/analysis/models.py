@@ -116,7 +116,9 @@ class WaifuScorer:
         torch = _torch()
         features = self.features(images) if features is None else features
         with torch.inference_mode():
-            scores = self.head(features).clamp(0, 10).squeeze(-1).cpu().numpy()
+            # Raw output, not clamped to 0-10: v4-beta works on another (mostly negative) scale, and the planner
+            # only uses each scorer's percentiles, so the order is what matters.
+            scores = self.head(features).squeeze(-1).cpu().numpy()
         return [{self.column: float(score)} for score in scores]
 
 
@@ -213,7 +215,11 @@ class DeepGHSClassifiers:
                 log.warning('onnxruntime could not preload CUDA libraries: %s', exc)
         providers = ['CPUExecutionProvider']
         if device.startswith('cuda') and 'CUDAExecutionProvider' in onnxruntime.get_available_providers():
-            providers = [('CUDAExecutionProvider', {'device_id': int(device.split(':')[1] or 0)}), 'CPUExecutionProvider']
+            # Heuristic cuDNN algorithms: no multi-second search for every new batch size, and a bounded memory arena,
+            # so one GPU can hold every model.
+            providers = [('CUDAExecutionProvider', {'device_id': int(device.split(':')[1] or 0), 'cudnn_conv_algo_search': 'HEURISTIC',
+                                                    'arena_extend_strategy': 'kSameAsRequested', 'gpu_mem_limit': 3 * 1024 ** 3}),
+                         'CPUExecutionProvider']
         self.models, self.missing = [], []
         for name, repo, model in self.MODELS:
             try:

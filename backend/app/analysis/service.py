@@ -317,7 +317,9 @@ def resume_job(job_id: int) -> dict:
         if active_job(conn) or _running('job'):
             raise RuntimeError('An analysis job is already running')
         conn.execute("UPDATE analysis_queue SET state='queued' WHERE job_id=? AND state IN ('working', 'failed')", (job_id,))
-        conn.execute("UPDATE analysis_job SET status='queued', finished_at=NULL, error=NULL WHERE id=?", (job_id,))
+        params = {**json.loads(row['params'] or '{}'), 'config': get_config(conn).model_dump()}  # settings changed since apply
+        conn.execute("UPDATE analysis_job SET status='queued', finished_at=NULL, error=NULL, stop_requested=0, params=? WHERE id=?",
+                     (json.dumps(params), job_id))
         conn.commit()
     finally:
         conn.close()

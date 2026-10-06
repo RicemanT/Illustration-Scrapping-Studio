@@ -197,19 +197,27 @@ class AnalysisLibraryTests(unittest.IsolatedAsyncioTestCase):
                 return None, 'HTTP 404'
             return Image.new('RGB', (64, 64), (10, 20, 30)), urls[0]
 
-        # The first temperature check finds a hot GPU: the worker pauses until it has cooled, then carries on.
-        temperatures = mock.Mock(side_effect=[[{'index': 0, 'temperature': 86.0}], []] + [[]] * 50)
+        # GPU 0 starts hot: it takes no batches until it has cooled, while GPU 1 keeps working.
+        checks = []
+
+        def temperatures():
+            checks.append(1)
+            return {0: 86.0 if len(checks) <= 4 else 60.0, 1: 50.0}
 
         def fake_load(config, devices, report):
-            report('fake', 'ok')
-            return [('fake', object())]
+            report('fake', f'ok on {devices[0]}')
+            return [('fake', devices[0])]
+
+        used = set()
 
         def fake_run(models, images):
+            used.add(models[0][1])
             return [{'scores': {'ws3': 7.5, 'rough': 0.1}, 'vectors': {'dinov2:4-6': np.ones(8)}, 'models': ['fake'], 'era': '2020s'} for _ in images]
 
         with mock.patch.object(worker, 'fetch_image', fake_fetch), mock.patch('app.analysis.models.load_models', fake_load), \
                 mock.patch('app.analysis.models.run_models', fake_run), mock.patch.object(worker, 'gpu_problem', lambda config: None), \
-                mock.patch.object(worker, 'hot_gpus', temperatures), mock.patch.object(worker, 'COOLING_POLL', 0.0):
+                mock.patch.object(worker, 'gpu_temperatures', temperatures), mock.patch.object(worker, 'COOLING_POLL', 0.05), \
+                mock.patch.object(worker, 'devices', lambda config: ['cuda:0', 'cuda:1']):
             self.assertEqual(worker.run_job(job_id), 0)
         conn = analysis_store.connect()
         job = conn.execute('SELECT * FROM analysis_job WHERE id=?', (job_id,)).fetchone()
@@ -223,7 +231,10 @@ class AnalysisLibraryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((posts['1']['ws3'], posts['1']['era']), (7.5, '2020s'))
         self.assertEqual(posts['7']['status'], 'done')
         self.assertEqual(vectors, 7)
-        self.assertGreaterEqual(temperatures.call_count, 2)
+        self.assertGreaterEqual(len(checks), 2)
+        self.assertIn('cuda:1', used)
+        progress = json.loads(job['progress'])
+        self.assertEqual((progress['gpus'], progress['models']['fake']), (2, 'ok on cuda:0, cuda:1'))
         # Each site downloads on its own threads.
         self.assertTrue(all(name.startswith('download-danbooru') for name in threads['danbooru']))
         self.assertTrue(all(name.startswith('download-e621') for name in threads['e621']))

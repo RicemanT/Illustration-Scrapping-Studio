@@ -190,7 +190,7 @@ export default function AnalysisPanel() {
           {job && <div className="space-y-1 text-xs text-slate-300">
             <div>Job #{job.id} · {job.status}{progress.phase ? ` · ${progress.phase}` : ''} · {number(finished)} of {number(total)} posts
               {progress.failed ? ` (${number(progress.failed)} could not be downloaded)` : ''}{progress.rate ? ` · ${progress.rate} per second · about ${duration(progress.eta_seconds)} left` : ''}
-              {progress.gpu_busy != null ? ` · GPUs busy ${Math.round(progress.gpu_busy * 100)}% of the time` : ''}</div>
+              {progress.gpu_busy != null ? ` · ${progress.gpus > 1 ? `${progress.gpus} GPUs, each` : 'GPU'} busy ${Math.round(progress.gpu_busy * 100)}% of the time` : ''}</div>
             {total > 0 && <div className="h-1.5 overflow-hidden rounded bg-[#0c1219]"><div className="h-full bg-blue-500" style={{ width: `${Math.round((100 * finished) / total)}%` }} /></div>}
             {progress.models && <div className="flex flex-wrap gap-x-3 text-slate-400">{Object.entries(progress.models).map(([name, state]) => (
               <span key={name} className={String(state).startsWith('ok') ? '' : 'text-red-300'}>{name}: {String(state)}</span>))}</div>}

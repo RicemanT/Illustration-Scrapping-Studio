@@ -1,10 +1,12 @@
 """Analysis worker: `python -m app.analysis.worker --job ID` (started by the app) or `--self-test`.
 
 Downloads each queued post's medium-size sample (per-site pacing, in
-background threads), runs every loaded model on batches, and stores scores
-and style vectors. GPU use is capped: the app passes CUDA_VISIBLE_DEVICES and
-the worker sleeps after each batch so the GPUs are busy at most `duty` of the
-time. Stops cleanly when the app sets `stop_requested`.
+background threads), runs every model on batches, and stores scores and style
+vectors. Every GPU listed in the settings holds its own copy of the models and
+takes batches from a shared queue. GPU use is capped: after each batch a GPU
+rests so it is busy at most `duty` of the time, and a GPU at `max_temp` takes
+no batches until it is 5 °C cooler. Stops cleanly when the app sets
+`stop_requested`.
 """
 from __future__ import annotations
 
@@ -98,6 +100,8 @@ class Progress:
         self.done = self.failed = 0
         self.started = time.monotonic()
         self.gpu_seconds = 0.0
+        self.gpus = 1
+        self.cooling: dict[int, float] = {}
         self.models: dict[str, str] = {}
         self.phase = 'starting'
 
@@ -105,9 +109,12 @@ class Progress:
         elapsed = max(time.monotonic() - self.started, 1e-6)
         finished = self.done + self.failed
         rate = finished / elapsed
-        return {'phase': self.phase, 'total': self.total, 'done': self.done, 'failed': self.failed, 'rate': round(rate, 2),
+        phase = self.phase
+        if phase == 'analysing' and self.cooling:
+            phase += ' · cooling ' + ', '.join(f'GPU {index} ({temp:.0f} °C)' for index, temp in sorted(self.cooling.items()))
+        return {'phase': phase, 'gpus': self.gpus, 'total': self.total, 'done': self.done, 'failed': self.failed, 'rate': round(rate, 2),
                 'eta_seconds': int((self.total - finished) / rate) if rate > 0 else None,
-                'gpu_busy': round(self.gpu_seconds / elapsed, 3), 'models': self.models, 'updated_at': now()}
+                'gpu_busy': round(self.gpu_seconds / self.gpus / elapsed, 3), 'models': self.models, 'updated_at': now()}
 
     def save(self, conn) -> None:
         conn.execute('UPDATE analysis_job SET progress=? WHERE id=?', (json.dumps(self.snapshot()), self.job_id))
@@ -146,11 +153,10 @@ def gpu_problem(config: AnalysisConfig) -> str | None:
             f"(CUDA {report.get('torch_cuda') or 'none'}) cannot use them: {report['reason']}"[:600])
 
 
-def hot_gpus(config: AnalysisConfig, limit: float) -> list[dict]:
-    """The GPUs this job uses whose temperature is at or above `limit` (nvidia-smi numbers are physical, like `gpus`)."""
+def gpu_temperatures() -> dict[int, float]:
+    """Temperature per physical GPU number (as in nvidia-smi and the `gpus` setting)."""
     from app.analysis.service import gpu_status
-    used = set(config.gpu_list())
-    return [gpu for gpu in gpu_status() if gpu['index'] in used and (gpu.get('temperature') or 0) >= limit]
+    return {gpu['index']: gpu['temperature'] for gpu in gpu_status() if gpu.get('temperature') is not None}
 
 
 def library_images(count: int = 4) -> list:
@@ -206,11 +212,6 @@ def run_job(job_id: int) -> int:
     progress.phase = 'loading models'
     progress.save(conn)
 
-    def report(name, status):
-        progress.models[name] = status
-        log.info('model %s: %s', name, status)
-        progress.save(conn)
-
     problem = gpu_problem(config)
     if problem:
         # Running every model on the CPU would take days and load the shared server; fail with the reason instead.
@@ -219,12 +220,37 @@ def run_job(job_id: int) -> int:
         conn.commit()
         conn.close()
         return 1
-    models = load_models(config, devices(config), report)
-    if not models:
+
+    # One full copy of the models per GPU; batches go to whichever GPU is free (and cool).
+    statuses: dict[str, dict[str, str]] = {}
+
+    def report_for(device):
+        def report(name, status):
+            statuses.setdefault(name, {})[device] = status
+            ok = [d for d, s in statuses[name].items() if s.startswith('ok')]
+            bad = [f'{d}: {s}' for d, s in statuses[name].items() if not s.startswith('ok')]
+            progress.models[name] = '; '.join(([f"ok on {', '.join(ok)}"] if ok else []) + bad)
+            log.info('model %s on %s: %s', name, device, status)
+            progress.save(conn)
+        return report
+
+    physical = config.gpu_list()
+    replicas: list[tuple[str, int | None, list]] = []
+    for index, device in enumerate(devices(config)):
+        loaded = load_models(config, [device], report_for(device))
+        names = [name for name, _ in loaded]
+        if not loaded or (replicas and names != [name for name, _ in replicas[0][2]]):
+            log.warning('%s skipped: its models differ from the first GPU (%s)', device, names)
+            del loaded
+            continue
+        gpu_number = physical[index] if device.startswith('cuda') and index < len(physical) else None
+        replicas.append((device, gpu_number, loaded))
+    if not replicas:
         conn.execute("UPDATE analysis_job SET status='failed', error=?, finished_at=? WHERE id=?",
                      ('No model could be loaded; see the model list', now(), job_id))
         conn.commit()
         return 1
+    progress.gpus = len(replicas)
     progress.phase = 'analysing'
     progress.save(conn)
 
@@ -296,59 +322,90 @@ def run_job(job_id: int) -> int:
     finished = False
     batch: list = []
     last_save = 0.0
-    next_temperature_check = 0.0
+    work: queue.Queue = queue.Queue(maxsize=len(replicas))
+    results_ready: queue.Queue = queue.Queue()
 
     def stop_requested() -> bool:
         return bool(conn.execute('SELECT stop_requested FROM analysis_job WHERE id=?', (job_id,)).fetchone()[0])
 
-    def cool_down() -> None:
-        """Pause while a used GPU is at or above `max_temp`, until it is 5 °C below (checked every 10 s)."""
-        nonlocal next_temperature_check
-        if not config.max_temp or not config.gpu_list() or time.monotonic() < next_temperature_check:
+    def cool(gpu_number) -> None:
+        """Wait while this GPU is at or above `max_temp`, until it is 5 °C below; the other GPUs keep working."""
+        if not config.max_temp or gpu_number is None:
             return
-        next_temperature_check = time.monotonic() + COOLING_POLL
-        try:
-            hot = hot_gpus(config, config.max_temp)
-            while hot and not stop_requested():
-                progress.phase = 'cooling: ' + ', '.join(f"GPU {gpu['index']} at {gpu['temperature']:.0f} °C" for gpu in hot)
-                progress.save(conn)
-                time.sleep(COOLING_POLL)
-                hot = hot_gpus(config, config.max_temp - 5)
-        except Exception as exc:
-            log.warning('temperature check failed: %s', exc)
-        if progress.phase.startswith('cooling'):
-            progress.phase = 'analysing'
-            progress.save(conn)
-
-    def flush(items):
-        good = [(row, image, url) for row, image, url in items if image is not None]
-        results = []
-        for row, image, error in items:
-            if image is None:
-                results.append({'site': row['site'], 'remote_id': row['remote_id'], 'artist_id': row['artist_id'], 'status': 'failed', 'error': error})
-        if good:
-            cool_down()
-            started = time.monotonic()
+        limit = config.max_temp
+        while not stop.is_set():
             try:
-                outputs = run_models(models, [image for _, image, _ in good])
+                temperature = gpu_temperatures().get(gpu_number)
             except Exception as exc:
-                log.exception('batch failed')
-                outputs = None
-                error = f'{type(exc).__name__}: {exc}'[:400]
+                log.warning('temperature check failed: %s', exc)
+                temperature = None
+            if temperature is None or temperature < limit:
+                break
+            progress.cooling[gpu_number] = temperature
+            limit = config.max_temp - 5
+            time.sleep(COOLING_POLL)
+        progress.cooling.pop(gpu_number, None)
+
+    def gpu_worker(device: str, gpu_number, models) -> None:
+        next_check = 0.0
+        while True:
+            items = work.get()
+            if items is None:
+                return
+            if time.monotonic() >= next_check:
+                cool(gpu_number)
+                next_check = time.monotonic() + COOLING_POLL
+            started = time.monotonic()
+            error = None
+            try:
+                outputs = run_models(models, [image for _, image, _ in items])
+            except Exception as exc:
+                log.exception('batch failed on %s', device)
+                outputs, error = None, f'{type(exc).__name__}: {exc}'[:400]
             busy = time.monotonic() - started
             progress.gpu_seconds += busy
-            for (row, _, url), output in zip(good, outputs or [None] * len(good)):
-                base = {'site': row['site'], 'remote_id': row['remote_id'], 'artist_id': row['artist_id'], 'source': url}
-                results.append({**base, 'status': 'done', **output} if output else {**base, 'status': 'failed', 'error': error})
-            # Keep the GPUs busy at most `duty` of the time.
+            results_ready.put((items, outputs, error))
+            # Rest so this GPU is busy at most `duty` of the time.
             if config.duty < 1.0:
                 time.sleep(busy * (1.0 - config.duty) / config.duty)
+
+    workers = [threading.Thread(target=gpu_worker, args=replica, daemon=True, name=f'gpu-{replica[0]}') for replica in replicas]
+    for worker_thread in workers:
+        worker_thread.start()
+
+    def store(results: list[dict]) -> None:
         save_results(conn, results)
         conn.executemany('UPDATE analysis_queue SET state=? WHERE job_id=? AND site=? AND remote_id=?',
                          [('done' if r['status'] == 'done' else 'failed', job_id, r['site'], r['remote_id']) for r in results])
         conn.commit()
         progress.done += sum(r['status'] == 'done' for r in results)
         progress.failed += sum(r['status'] != 'done' for r in results)
+
+    def collect() -> None:
+        """Store every batch the GPUs have finished (the database is written from this thread only)."""
+        while True:
+            try:
+                items, outputs, error = results_ready.get_nowait()
+            except queue.Empty:
+                return
+            results = []
+            for (row, _, url), output in zip(items, outputs or [None] * len(items)):
+                base = {'site': row['site'], 'remote_id': row['remote_id'], 'artist_id': row['artist_id'], 'source': url}
+                results.append({**base, 'status': 'done', **output} if output else {**base, 'status': 'failed', 'error': error})
+            store(results)
+
+    def dispatch(items) -> None:
+        failed = [{'site': row['site'], 'remote_id': row['remote_id'], 'artist_id': row['artist_id'], 'status': 'failed', 'error': error}
+                  for row, image, error in items if image is None]
+        if failed:
+            store(failed)
+        good = [item for item in items if item[1] is not None]
+        while good:
+            try:
+                work.put(good, timeout=0.5)
+                break
+            except queue.Full:
+                collect()
 
     try:
         while True:
@@ -364,19 +421,34 @@ def run_job(job_id: int) -> int:
             elif item != 'idle':
                 batch.append(item)
             if batch and (len(batch) >= config.batch_size or finished or item == 'idle'):
-                flush(batch)
+                dispatch(batch)
                 batch = []
+            collect()
             if time.monotonic() - last_save > 3:
                 progress.save(conn)
                 last_save = time.monotonic()
             if finished:
                 break
-        if batch:
-            flush(batch)
+        if batch and not stop.is_set():
+            dispatch(batch)
+        if stop.is_set():
+            while True:  # batches not started yet go back to the queue
+                try:
+                    work.get_nowait()
+                except queue.Empty:
+                    break
+        for _ in workers:
+            work.put(None)
+        for worker_thread in workers:
+            while worker_thread.is_alive():
+                worker_thread.join(timeout=0.5)
+                collect()
+        collect()
         stop.set()
         status = 'completed' if finished else 'stopped'
         conn.execute("UPDATE analysis_queue SET state='queued' WHERE job_id=? AND state='working'", (job_id,))
         progress.phase = status
+        progress.cooling.clear()
         progress.save(conn)
         conn.execute('UPDATE analysis_job SET status=?, finished_at=? WHERE id=?', (status, now(), job_id))
         conn.commit()
@@ -414,8 +486,9 @@ def self_test() -> int:
         draw.rectangle((230, 520, 540, 950), fill=(70, 90, 160), outline=(30, 30, 50), width=6)
         images = [image, image]
         print(json.dumps({'model': 'images', 'ok': True, 'detail': 'no library images found; a drawn test image (scores mean little)'}), flush=True)
-    loaded = load_models(config, devices(config), lambda name, status: statuses.__setitem__(name, status))
-    print(json.dumps({'devices': devices(config), 'load': statuses}), flush=True)
+    all_devices = devices(config)
+    loaded = load_models(config, all_devices[:1], lambda name, status: statuses.__setitem__(name, status))
+    print(json.dumps({'devices': all_devices, 'load': statuses}), flush=True)
     failures = sum(not str(s).startswith('ok') for s in statuses.values()) + (problem is not None)
     for name, model in loaded:
         try:
@@ -437,9 +510,10 @@ def self_test() -> int:
             started = time.monotonic()
             run_models(loaded, images)
             seconds = time.monotonic() - started
+            rate, gpus = len(images) / seconds, len(all_devices)
             print(json.dumps({'model': 'all models', 'ok': True, 'seconds': round(seconds, 3), 'images': len(images),
-                              'detail': f'GPUs in parallel · about {len(images) / seconds:.1f} images/s while busy, '
-                                        f'{len(images) / seconds * config.duty:.1f} images/s at {round(config.duty * 100)}% busy'}), flush=True)
+                              'detail': f'one GPU: about {rate:.1f} images/s while busy · {gpus} GPU{"s" if gpus > 1 else ""} at '
+                                        f'{round(config.duty * 100)}% busy: about {rate * config.duty * gpus:.1f} images/s · '}), flush=True)
         except Exception as exc:
             failures += 1
             print(json.dumps({'model': 'all models', 'ok': False, 'error': f'{type(exc).__name__}: {exc}'[:500]}), flush=True)

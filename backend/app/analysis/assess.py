@@ -55,9 +55,13 @@ class AestheticScale:
 
     @classmethod
     def load(cls, conn) -> 'AestheticScale':
-        columns = {name: [] for name in SCORERS}
-        for row in conn.execute(f"SELECT {', '.join(SCORERS)} FROM analysis_post WHERE status='done'"):
-            for name in SCORERS:
+        """Percentiles of the scorers ticked in the analysis settings (unticking one drops its stored scores too)."""
+        from app.analysis.store import get_config
+        config = get_config(conn)
+        enabled = [name for name in SCORERS if getattr(config, 'deepghs' if name == 'dbaes' else name, True)]
+        columns = {name: [] for name in enabled}
+        for row in conn.execute(f"SELECT {', '.join(enabled)} FROM analysis_post WHERE status='done'"):
+            for name in enabled:
                 if row[name] is not None:
                     columns[name].append(row[name])
         return cls(columns)
