@@ -27,6 +27,14 @@ def _dtype(device: str):
     return torch.float16 if device.startswith('cuda') else torch.float32
 
 
+def _pooled(output):
+    """`get_image_features` returns a tensor in transformers 4 and an output object in 5 (whose `pooler_output` is the embedding)."""
+    if isinstance(output, _torch().Tensor):
+        return output
+    embeds = getattr(output, 'image_embeds', None)
+    return embeds if embeds is not None else output.pooler_output
+
+
 class StyleModel:
     """DINOv2 / DINOv3: mean-pooled patch tokens of chosen transformer blocks, averaged over each block range."""
 
@@ -70,7 +78,7 @@ class ClipFeatures:
         torch = _torch()
         pixels = self.processor(images=images, return_tensors='pt')['pixel_values'].to(self.device, dtype=self.dtype)
         with torch.inference_mode():
-            features = self.model.get_image_features(pixel_values=pixels).float()
+            features = _pooled(self.model.get_image_features(pixel_values=pixels)).float()
         return features / features.norm(dim=-1, keepdim=True).clamp_min(1e-6)
 
 
@@ -147,10 +155,7 @@ class NaflexScorer:
         processor = getattr(self.processor, 'image_processor', self.processor)
         inputs = processor(images=images, max_num_patches=self.max_patches, return_tensors='pt').to(self.device)
         with torch.inference_mode():
-            output = self.backbone.get_image_features(**inputs)
-            features = getattr(output, 'image_embeds', None)
-            if features is None:
-                features = getattr(output, 'pooler_output', output)
+            features = _pooled(self.backbone.get_image_features(**inputs))
             logits = self.head.net(features.float())
             if self.distribution:
                 scores = (torch.softmax(logits, dim=1) * self.head.bins).sum(dim=1)
@@ -199,6 +204,11 @@ class DeepGHSClassifiers:
     def __init__(self, device: str):
         import onnxruntime
         from huggingface_hub import hf_hub_download
+        if device.startswith('cuda') and hasattr(onnxruntime, 'preload_dlls'):
+            try:  # CUDA/cuDNN libraries from the nvidia-* pip packages that came with PyTorch
+                onnxruntime.preload_dlls()
+            except Exception as exc:
+                log.warning('onnxruntime could not preload CUDA libraries: %s', exc)
         providers = ['CPUExecutionProvider']
         if device.startswith('cuda') and 'CUDAExecutionProvider' in onnxruntime.get_available_providers():
             providers = [('CUDAExecutionProvider', {'device_id': int(device.split(':')[1] or 0)}), 'CPUExecutionProvider']
@@ -216,6 +226,8 @@ class DeepGHSClassifiers:
                 log.warning('DeepGHS %s unavailable: %s', name, exc)
         if not self.models:
             raise RuntimeError('No DeepGHS model could be loaded: ' + '; '.join(self.missing))
+        used = self.models[0][1].get_providers()
+        self.runs_on = (device if 'CUDAExecutionProvider' in used else 'cpu (onnxruntime has no CUDA here)' if device.startswith('cuda') else 'cpu')
 
     @staticmethod
     def encode(image, size) -> np.ndarray:
@@ -267,8 +279,10 @@ def load_models(config: AnalysisConfig, devices: list[str], report: Callable[[st
 
     def attempt(name, factory):
         try:
-            loaded.append((name, factory()))
-            report(name, 'ok')
+            model = factory()
+            loaded.append((name, model))
+            where = getattr(model, 'runs_on', None) or getattr(model, 'device', None) or getattr(getattr(model, 'features', None), 'device', None)
+            report(name, f'ok on {where}' if where else 'ok')
         except Exception as exc:
             report(name, f'error: {type(exc).__name__}: {exc}'[:400])
 

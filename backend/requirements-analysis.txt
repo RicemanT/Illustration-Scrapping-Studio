@@ -2,7 +2,10 @@
 # content classifiers. Installed into the app's Python from the Planner page or
 # with `pip install -r backend/requirements-analysis.txt`. Needs an NVIDIA GPU
 # for reasonable speed; models are downloaded from Hugging Face on first use.
+# On NVIDIA servers the Planner's install button first installs torch and
+# torchvision from the PyTorch index matching the driver's CUDA version.
 torch>=2.4
+torchvision>=0.19
 transformers>=4.56
 safetensors>=0.4
 huggingface_hub>=0.25

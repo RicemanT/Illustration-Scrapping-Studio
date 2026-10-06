@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -29,8 +30,12 @@ for name in ('torch', 'transformers', 'onnxruntime', 'aesthetic_predictor_v2_5',
     except Exception as exc:
         info[name] = None
 try:
-    import torch
-    info['cuda'] = torch.cuda.is_available()
+    import torch, warnings
+    info['torch_cuda'] = torch.version.cuda
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        info['cuda'] = torch.cuda.is_available()
+    info['cuda_warning'] = ' '.join(str(w.message) for w in caught).strip()[:600]
     info['devices'] = [{'index': i, 'name': torch.cuda.get_device_name(i),
                         'memory_gb': round(torch.cuda.get_device_properties(i).total_memory / 2**30, 1)} for i in range(torch.cuda.device_count())]
 except Exception:
@@ -43,6 +48,59 @@ except Exception:
     info['onnx_providers'] = []
 print(json.dumps(info))
 """
+
+
+# PyTorch publishes builds per CUDA version; a driver runs builds up to the CUDA version it reports.
+# The PyPI default build follows the newest CUDA and silently falls back to the CPU on older drivers.
+TORCH_INDEX = 'https://download.pytorch.org/whl/{}'
+
+INSTALL_SCRIPT = r"""
+import subprocess, sys
+index, requirements = sys.argv[1], sys.argv[2]
+def pip(*args):
+    print('$ pip ' + ' '.join(args), flush=True)
+    return subprocess.call([sys.executable, '-m', 'pip', *args])
+if index:
+    probe = subprocess.run([sys.executable, '-c', 'import torch, torchvision; print(torch.cuda.is_available())'], capture_output=True, text=True)
+    if probe.stdout.strip().endswith('True'):
+        print('PyTorch already uses the GPU; keeping it', flush=True)
+    else:
+        print('Installing the PyTorch build for this GPU driver from ' + index, flush=True)
+        pip('uninstall', '-y', 'torch', 'torchvision', 'torchaudio')
+        if pip('install', 'torch', 'torchvision', '--index-url', index) != 0:
+            print('That failed; falling back to the PyPI build', flush=True)
+sys.exit(pip('install', '-r', requirements))
+"""
+
+
+def driver() -> dict:
+    """NVIDIA driver version and the newest CUDA it supports, from the nvidia-smi header ({} without NVIDIA drivers)."""
+    smi = shutil.which('nvidia-smi')
+    if not smi:
+        return {}
+    try:
+        text = subprocess.run([smi], capture_output=True, text=True, timeout=10).stdout
+    except Exception:
+        return {}
+    version, cuda = re.search(r'Driver Version:\s*([\d.]+)', text), re.search(r'CUDA Version:\s*([\d.]+)', text)
+    return {'driver': version.group(1) if version else None, 'driver_cuda': cuda.group(1) if cuda else None}
+
+
+def torch_index(driver_cuda: Optional[str]) -> Optional[str]:
+    """The PyTorch wheel index whose CUDA runs on a driver supporting `driver_cuda` (None: use PyPI)."""
+    try:
+        major, minor = (int(part) for part in (driver_cuda or '').split('.')[:2])
+    except ValueError:
+        return None
+    if major >= 13:
+        tag = 'cu130'
+    elif major == 12:
+        tag = 'cu126'  # runs on any 12.x driver (minor version compatibility) and gets the newest torch releases
+    elif (major, minor) >= (11, 8):
+        tag = 'cu118'
+    else:
+        return None
+    return TORCH_INDEX.format(tag)
 
 
 def _log_path(name: str) -> Path:
@@ -68,6 +126,12 @@ def environment() -> dict:
     required = ('torch', 'transformers', 'onnxruntime', 'aesthetic_predictor_v2_5')
     info['ready'] = 'error' not in info and all(info.get(name) for name in required)
     info['python'] = sys.executable
+    info.update(driver())
+    info['torch_index'] = torch_index(info.get('driver_cuda'))
+    if info.get('torch') and info.get('driver') and not info.get('cuda'):
+        info['cuda_problem'] = (f"The GPUs work (driver {info['driver']}, CUDA up to {info.get('driver_cuda') or '?'}) but PyTorch "
+                                f"{info['torch']} (built for CUDA {info.get('torch_cuda') or 'none'}) cannot use them"
+                                + (f": {info['cuda_warning']}" if info.get('cuda_warning') else '') + '.')
     return info
 
 
@@ -103,9 +167,10 @@ def install() -> dict:
         raise RuntimeError('Installation is already running')
     log = _log_path('install')
     handle = log.open('w', encoding='utf-8')
-    handle.write(f'{now()} pip install -r {REQUIREMENTS}\n')
+    index = torch_index(driver().get('driver_cuda')) or ''
+    handle.write(f'{now()} installing {REQUIREMENTS.name}' + (f' with PyTorch from {index}' if index else '') + '\n')
     handle.flush()
-    _processes['install'] = subprocess.Popen([sys.executable, '-m', 'pip', 'install', '-r', str(REQUIREMENTS)],
+    _processes['install'] = subprocess.Popen([sys.executable, '-c', INSTALL_SCRIPT, index, str(REQUIREMENTS)],
                                              stdout=handle, stderr=subprocess.STDOUT, cwd=BACKEND)
     return install_status()
 

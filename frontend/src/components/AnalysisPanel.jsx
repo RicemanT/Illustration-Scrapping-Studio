@@ -101,12 +101,14 @@ export default function AnalysisPanel() {
         <div className="space-y-2 rounded border border-slate-800 p-3">
           <div className="flex flex-wrap items-center gap-3 text-sm">
             <span className={env?.ready ? 'text-green-300' : 'text-amber-300'}>{env?.ready ? 'Analysis packages installed' : 'Analysis packages missing'}</span>
-            {env && <span className="text-xs text-slate-400">torch {env.torch || '—'} · transformers {env.transformers || '—'} · onnxruntime {env.onnxruntime || '—'}
+            {env && <span className="text-xs text-slate-400">torch {env.torch || '—'}{env.torch_cuda ? ` (CUDA ${env.torch_cuda})` : ''}{env.driver ? ` · driver ${env.driver} (CUDA ≤ ${env.driver_cuda || '?'})` : ''} · transformers {env.transformers || '—'} · onnxruntime {env.onnxruntime || '—'}
               {env.cuda ? ` · CUDA, ${env.devices?.length || 0} GPU${env.devices?.length === 1 ? '' : 's'}` : ' · no CUDA'}</span>}
             <button className={quiet} disabled={data.install?.status === 'running' || install.isPending} onClick={() => install.mutate()}>
-              {data.install?.status === 'running' ? 'Installing…' : env?.ready ? 'Reinstall / update packages' : 'Install analysis packages'}</button>
+              {data.install?.status === 'running' ? 'Installing…' : env?.cuda_problem ? 'Install PyTorch for this GPU driver' : env?.ready ? 'Reinstall / update packages' : 'Install analysis packages'}</button>
             <button className={quiet} onClick={() => queryClient.fetchQuery({ queryKey: ['analysis-status'], queryFn: async () => (await api.analysis.status(true)).data })}>Check again</button>
           </div>
+          {env?.cuda_problem && <p className="text-sm text-amber-300">{env.cuda_problem} Analysis would run on the CPU, so jobs refuse to start.
+            {env.torch_index ? ` The button above installs the PyTorch build from ${env.torch_index} (no app restart needed); then Check again and run the model test.` : ''}</p>}
           {(data.install?.status === 'running' || data.install?.status === 'failed') && <pre className="max-h-40 overflow-auto rounded bg-black/40 p-2 text-[11px] text-slate-400">{data.install.log}</pre>}
           {install.isError && <p className="text-sm text-red-400">{errorText(install.error)}</p>}
           <GpuTable gpus={gpus.data?.gpus || data.gpus} allowed={allowed} />
@@ -163,7 +165,7 @@ export default function AnalysisPanel() {
               <tr key={index} className="align-top">
                 <td className="pr-4 text-slate-300">{r.model || (r.load ? 'loading' : 'result')}</td>
                 <td className={`pr-4 ${r.ok === false ? 'text-red-300' : 'text-green-300'}`}>{r.ok === false ? r.error : r.load ? Object.entries(r.load).map(([k, v]) => `${k}: ${v}`).join(' · ') : r.result || 'ok'}</td>
-                <td className="text-slate-500">{r.seconds_for_2 != null ? `${r.seconds_for_2} s · ` : ''}{r.scores ? Object.entries(r.scores).map(([k, v]) => `${k} ${Number(v).toFixed(2)}`).join(' · ') : ''}{r.vectors ? ` · vectors ${Object.keys(r.vectors).join(', ')}` : ''}</td>
+                <td className="text-slate-500">{r.detail || ''}{r.seconds_for_2 != null ? `${r.seconds_for_2} s · ` : ''}{r.scores ? Object.entries(r.scores).map(([k, v]) => `${k} ${Number(v).toFixed(2)}`).join(' · ') : ''}{r.vectors ? ` · vectors ${Object.keys(r.vectors).join(', ')}` : ''}</td>
               </tr>))}</tbody></table>}
           {data.selftest?.status === 'failed' && <pre className="max-h-40 overflow-auto rounded bg-black/40 p-2 text-[11px] text-slate-400">{data.selftest.log}</pre>}
         </div>

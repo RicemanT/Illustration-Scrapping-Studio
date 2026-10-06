@@ -202,7 +202,7 @@ class AnalysisLibraryTests(unittest.IsolatedAsyncioTestCase):
             return [{'scores': {'ws3': 7.5, 'rough': 0.1}, 'vectors': {'dinov2:4-6': np.ones(8)}, 'models': ['fake'], 'era': '2020s'} for _ in images]
 
         with mock.patch.object(worker, 'fetch_image', fake_fetch), mock.patch('app.analysis.models.load_models', fake_load), \
-                mock.patch('app.analysis.models.run_models', fake_run):
+                mock.patch('app.analysis.models.run_models', fake_run), mock.patch.object(worker, 'gpu_problem', lambda config: None):
             self.assertEqual(worker.run_job(job_id), 0)
         conn = analysis_store.connect()
         job = conn.execute('SELECT * FROM analysis_job WHERE id=?', (job_id,)).fetchone()
@@ -214,6 +214,31 @@ class AnalysisLibraryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((posts['3']['status'], posts['3']['error']), ('failed', 'HTTP 404'))
         self.assertEqual((posts['1']['ws3'], posts['1']['era']), (7.5, '2020s'))
         self.assertEqual(vectors, 4)
+
+    async def test_worker_refuses_to_run_on_the_cpu_when_gpus_are_set(self):
+        from app.analysis import worker
+        conn = analysis_store.connect()
+        job_id = conn.execute("INSERT INTO analysis_job (status, params, created_at) VALUES ('queued', '{}', 'x')").lastrowid
+        conn.commit()
+        conn.close()
+        loaded = mock.Mock()
+        report = {'wanted': [0, 1], 'available': False, 'torch': '2.14.1', 'torch_cuda': '13.0', 'reason': 'driver too old'}
+        with mock.patch.object(worker, 'cuda_report', lambda config: report), mock.patch('app.analysis.models.load_models', loaded):
+            self.assertEqual(worker.run_job(job_id), 1)
+        conn = analysis_store.connect()
+        job = conn.execute('SELECT * FROM analysis_job WHERE id=?', (job_id,)).fetchone()
+        conn.close()
+        self.assertEqual(job['status'], 'failed')
+        self.assertIn('driver too old', job['error'])
+        loaded.assert_not_called()
+
+    def test_torch_index_matches_the_driver(self):
+        from app.analysis.service import torch_index
+        self.assertTrue(torch_index('13.0').endswith('/cu130'))
+        self.assertTrue(torch_index('12.2').endswith('/cu126'))
+        self.assertTrue(torch_index('11.8').endswith('/cu118'))
+        self.assertIsNone(torch_index('11.4'))
+        self.assertIsNone(torch_index(None))
 
     async def test_plan_with_analysis_drops_off_style_posts(self):
         await self.delivered()

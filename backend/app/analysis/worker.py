@@ -111,6 +111,38 @@ class Progress:
         conn.commit()
 
 
+def cuda_report(config: AnalysisConfig) -> dict:
+    """Whether PyTorch can use the configured GPUs, and why not (the warning PyTorch gives, e.g. a driver too old for its CUDA)."""
+    import os
+    import warnings
+    info = {'wanted': config.gpu_list(), 'visible': os.environ.get('CUDA_VISIBLE_DEVICES')}
+    try:
+        import torch
+    except ImportError:
+        return {**info, 'available': False, 'reason': 'PyTorch is not installed'}
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        available = torch.cuda.is_available()
+    info.update(torch=torch.__version__, torch_cuda=torch.version.cuda, available=available)
+    if available:
+        info['devices'] = [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())]
+    else:
+        reason = ' '.join(str(w.message) for w in caught).strip()
+        info['reason'] = reason or ('this PyTorch build has no CUDA' if not torch.version.cuda else 'no GPU visible to PyTorch')
+    return info
+
+
+def gpu_problem(config: AnalysisConfig) -> str | None:
+    """A message when GPUs are configured but PyTorch cannot use them (None when fine or the CPU was chosen)."""
+    if not config.gpu_list():
+        return None
+    report = cuda_report(config)
+    if report['available']:
+        return None
+    return (f"GPUs {','.join(map(str, report['wanted']))} are set but PyTorch {report.get('torch', '')} "
+            f"(CUDA {report.get('torch_cuda') or 'none'}) cannot use them: {report['reason']}"[:600])
+
+
 def devices(config: AnalysisConfig) -> list[str]:
     try:
         import torch
@@ -143,6 +175,14 @@ def run_job(job_id: int) -> int:
         log.info('model %s: %s', name, status)
         progress.save(conn)
 
+    problem = gpu_problem(config)
+    if problem:
+        # Running every model on the CPU would take days and load the shared server; fail with the reason instead.
+        conn.execute("UPDATE analysis_job SET status='failed', error=?, finished_at=? WHERE id=?",
+                     (problem + '. Click Reinstall / update packages, or clear "GPUs to use" to run on the CPU.', now(), job_id))
+        conn.commit()
+        conn.close()
+        return 1
     models = load_models(config, devices(config), report)
     if not models:
         conn.execute("UPDATE analysis_job SET status='failed', error=?, finished_at=? WHERE id=?",
@@ -269,9 +309,14 @@ def self_test() -> int:
     draw.ellipse((200, 150, 560, 520), fill=(250, 210, 190), outline=(40, 30, 30), width=6)
     draw.rectangle((230, 520, 540, 950), fill=(70, 90, 160), outline=(30, 30, 50), width=6)
     statuses = {}
+    gpu = cuda_report(config)
+    problem = gpu_problem(config)
+    print(json.dumps({'model': 'gpu', 'ok': problem is None, 'error': problem,
+                      'detail': f"PyTorch {gpu.get('torch')} · CUDA {gpu.get('torch_cuda') or 'none'} · " +
+                                (', '.join(gpu.get('devices', [])) or 'CPU only')}), flush=True)
     loaded = load_models(config, devices(config), lambda name, status: statuses.__setitem__(name, status))
     print(json.dumps({'devices': devices(config), 'load': statuses}), flush=True)
-    failures = sum(not str(s).startswith('ok') for s in statuses.values())
+    failures = sum(not str(s).startswith('ok') for s in statuses.values()) + (problem is not None)
     for name, model in loaded:
         started = time.monotonic()
         try:
