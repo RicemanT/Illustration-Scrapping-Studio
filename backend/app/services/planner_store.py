@@ -20,7 +20,7 @@ from pathlib import Path
 import app.db as db
 from app.services.post_dates import sortable_time
 from app.services.planner_select import (
-    MOTION_EXTS, PlannerConfig, RarityIndex, candidate_from_row, plan_family, real_artists, rejection, score_artist,
+    ADAPTIVE_TAGS, MOTION_EXTS, PlannerConfig, RarityIndex, candidate_from_row, plan_family, real_artists, rejection, score_artist,
 )
 
 SITES = ('danbooru', 'gelbooru', 'e621')
@@ -587,6 +587,10 @@ def _plan_family(conn, family: str, config: PlannerConfig, log):
     priority = {r['tag'] for r in target_rows if r['priority']}
     rarity = RarityIndex(config.rarity_min_df)
     rejections = Counter()
+    analysis = None
+    if config.use_analysis:
+        from app.analysis.planning import AnalysisContext
+        analysis = AnalysisContext(config)
     # Pass 1: tag document frequencies over usable posts.
     for row in _family_posts(conn, sites):
         action = overrides.get((row['artist_id'], row['site'], row['remote_id']))
@@ -603,19 +607,35 @@ def _plan_family(conn, family: str, config: PlannerConfig, log):
             return
         candidates, families = [], set()
         window = rows
-        if config.newest_posts_per_artist:
+        if config.newest_posts_per_artist and analysis is None:
             # Styles drift over the years; recent work is the most consistent.
             window = sorted(rows, key=lambda r: (sortable_time(r['created_at']), int(r['remote_id']) if str(r['remote_id']).isdigit() else 0),
                             reverse=True)[:config.newest_posts_per_artist]
         if current in completed:
             window = [r for r in rows if overrides.get((r['artist_id'], r['site'], r['remote_id'])) == 'lock']
+        # Comic-type tags are blocked only when they are a minority of the artist's work.
+        artist_blocked = blocked
+        tagged = sum(1 for r in window if ADAPTIVE_TAGS.intersection((r['general'] or '').split() + (r['meta'] or '').split()))
+        if window and tagged / len(window) >= config.content_majority:
+            artist_blocked = blocked - ADAPTIVE_TAGS
+        verdicts = None
+        if analysis is not None and current not in completed:
+            eligible = {(r['site'], str(r['remote_id'])) for r in rows
+                        if rejection(r, config, artist_blocked, banned=overrides.get((r['artist_id'], r['site'], r['remote_id'])) == 'ban') is None}
+            assessed = analysis.assess(rows, eligible, config.max_images)
+            verdicts = assessed[0].verdicts if assessed else None
         for r in window:
             action = overrides.get((r['artist_id'], r['site'], r['remote_id']))
-            reason = rejection(r, config, blocked, banned=action == 'ban')
+            reason = rejection(r, config, artist_blocked, banned=action == 'ban')
+            verdict = verdicts.get((r['site'], str(r['remote_id']))) if verdicts is not None else None
+            if reason is None and verdicts is not None:
+                reason = verdict.reject if verdict else 'not_analyzed'
             if reason and not (action == 'lock' and reason not in {'no_file', 'banned_by_user'}):
                 rejections[reason] += 1
                 continue
             c = candidate_from_row(r, locked=action == 'lock')
+            if verdict is not None:
+                c.style, c.aesthetic = verdict.style, verdict.aesthetic
             families.add(c.family)
             candidates.append(c)
         usable_counts[current] = len(families)
@@ -632,6 +652,10 @@ def _plan_family(conn, family: str, config: PlannerConfig, log):
         usable_counts.setdefault(artist_id, 0)
     log(f'{family}: scoring done for {len(pools)} artists; selecting')
     result = plan_family(pools, usable_counts, config, ranked, priority)
+    if analysis is not None:
+        result.analysis = analysis.summary()
+        log(f"{family}: analysis {result.analysis}")
+        analysis.close()
     return result, rejections, ranked
 
 
@@ -675,6 +699,7 @@ def run_plan(config: PlannerConfig, run_id: int | None = None) -> int:
                     'characters_partial': sum(1 for _, n in result.unmet_characters if n > 0),
                     'characters_missing': sum(1 for _, n in result.unmet_characters if n == 0),
                     'unmet_characters': result.unmet_characters[:500],
+                    'analysis': getattr(result, 'analysis', None),
                 }
                 conn.commit()
             totals = summary['families'].values()

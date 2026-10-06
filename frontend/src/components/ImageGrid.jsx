@@ -4,8 +4,9 @@ import ImageDetail from './ImageDetail';
 import { backendAssetUrl } from '../api/client';
 import { markFor, markTags, marksOf } from './qualityMarks';
 import useDragSelect from './useDragSelect';
+import { LEVEL_CLASS, flagInfo, parseFlags } from './analysisFlags';
 
-function ImageGrid({ images, selected = new Set(), onToggle, onSelectRange, onDragSelect, targetHeight = 220, marking = null, onViewerClose, eraFrom = null }) {
+function ImageGrid({ images, selected = new Set(), onToggle, onSelectRange, onDragSelect, targetHeight = 220, marking = null, onViewerClose, eraFrom = null, analysis = null }) {
   const [selectedImage, setSelectedImage] = useState(null);
   // Shift+click selects every image between the last clicked checkbox and this one.
   const anchor = useRef(null);
@@ -65,6 +66,9 @@ function ImageGrid({ images, selected = new Set(), onToggle, onSelectRange, onDr
               {onToggle && <button type="button" aria-label={`${selected.has(image.id) ? 'Deselect' : 'Select'} image`} onClick={(event) => { event.preventDefault(); event.stopPropagation(); toggle(event, index); }} className={`absolute top-2 left-2 z-10 h-4 w-4 rounded border ${selected.has(image.id) ? 'bg-blue-500 border-blue-300' : 'bg-black/40 border-white/60'}`} />}
               {selected.has(image.id) && <div className="pointer-events-none absolute inset-0 ring-2 ring-inset ring-blue-400 " />}
               {hits.has(String(image.id)) && <div className={`pointer-events-none absolute inset-0 ring-2 ring-inset ${box?.remove ? 'bg-rose-500/15 ring-rose-400' : 'bg-sky-400/15 ring-sky-300'}`} />}
+              {parseFlags(image.analysis_flags).length > 0 && <div className="pointer-events-none absolute right-2 top-2 z-10 flex max-w-[70%] flex-wrap justify-end gap-1 text-[10px]">
+                {parseFlags(image.analysis_flags).slice(0, 3).map((flag) => { const info = flagInfo(flag); return <span key={flag} title={info.label} className={`rounded px-1 ${LEVEL_CLASS[info.level]}`}>{info.short}</span>; })}
+              </div>}
               {Boolean(image.derived_media_source || image.derived_from_preview) && <div title={isArchiveFrame ? `Frame extracted from original ${image.original_media_format || 'archive'}, then normalized for training` : isOriginalFrame ? `Frame extracted from original ${image.original_media_format || 'media'}, then normalized for training` : `Provider preview derived from ${image.original_media_format || 'unsupported media'}, then normalized for training`} className={`absolute right-2 top-2 rounded px-1.5 py-0.5 text-[10px] font-medium uppercase ring-1 ${isOriginalFrame ? 'bg-emerald-950/90 text-emerald-200 ring-emerald-700/70' : 'bg-amber-950/90 text-amber-200 ring-amber-700/70'}`}>{isArchiveFrame ? 'archive frame' : isOriginalFrame ? 'original frame' : 'preview still'}</div>}
               <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent p-2">
                 <div className="text-white text-xs" title={image.posted_at ? `Posted ${new Date(image.posted_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}` : 'Posting date unknown'}>
@@ -98,6 +102,8 @@ function ImageGrid({ images, selected = new Set(), onToggle, onSelectRange, onDr
           onNext={currentIndex >= 0 && currentIndex < images.length - 1 ? () => setSelectedImage(images[currentIndex + 1]) : undefined}
           onClose={() => { setSelectedImage(null); onViewerClose?.(); }}
           marking={marking}
+          analysis={analysis?.images?.[selectedImage.id] || null}
+          review={analysis}
         />
       )}
     </>

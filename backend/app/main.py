@@ -117,6 +117,13 @@ async def shutdown_event():
         from app.services import planner_harvest, planner_delivery
         await planner_harvest.shutdown()
         await planner_delivery.shutdown()
+        try:
+            from app.analysis import service as analysis_service
+            import asyncio
+            await asyncio.to_thread(analysis_service.shutdown)
+        except Exception as exc:  # the analysis database may not exist yet
+            from app.services.diagnostics import emit
+            emit("service.notice", f"Analysis worker shutdown: {exc}", "WARNING")
         from app.routes.planner import close_thumbnail_client
         await close_thumbnail_client()
         from app.services.diagnostics import emit
@@ -151,6 +158,8 @@ from app.routes import planner
 app.include_router(planner.router, prefix="/api/planner", tags=["planner"])
 from app.routes import tracker as tracker_routes
 app.include_router(tracker_routes.router, prefix="/api/tracker", tags=["tracker"])
+from app.routes import analysis as analysis_routes
+app.include_router(analysis_routes.router, prefix="/api/analysis", tags=["analysis"])
 app.include_router(dataset.router, prefix="/api/dataset", tags=["dataset"])
 
 app.include_router(collections.router, prefix="/api/folders", tags=["folders"])

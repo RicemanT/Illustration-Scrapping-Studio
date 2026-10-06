@@ -6,6 +6,7 @@ import ImageStorageLocations from './ImageStorageLocations';
 import { MARKS, applyMark, isActive, markFor, markTags, marksOf } from './qualityMarks';
 import { describeAuto } from './qualityJob';
 import CaptionEditor from './CaptionEditor';
+import AnalysisDetails from './AnalysisDetails';
 
 // Unambiguous dates ("Mar 2, 2024"), whatever the browser's day/month order.
 const formatDate = (value) => {
@@ -15,9 +16,10 @@ const formatDate = (value) => {
 const PROVIDER_LABEL = { danbooru: 'Danbooru', gelbooru: 'Gelbooru', e621: 'e621', pixiv: 'Pixiv', deviantart: 'DeviantArt', twitter: 'Twitter / X', artstation: 'ArtStation' };
 const parseInfo = (value) => { try { return value ? JSON.parse(value) : null; } catch { return null; } };
 const autoOf = (row) => ({ source: row?.quality_source || null, tag: row?.quality_auto || null, info: parseInfo(row?.quality_auto_info) });
+const aestheticAutoOf = (row) => ({ source: row?.aesthetic_source || null, tag: row?.aesthetic_auto || null, info: parseInfo(row?.aesthetic_auto_info) });
 
 // marking: { folderId, locked } for planner collections; enables quality marks.
-function ImageDetail({ image, onClose, onPrevious, onNext, position, total, marking = null }) {
+function ImageDetail({ image, onClose, onPrevious, onNext, position, total, marking = null, analysis = null, review = null }) {
   const dialog = useRef(null);
   const [showInfo, setShowInfo] = useState(() => { try { return localStorage.getItem('artist.viewerInfo') !== 'false'; } catch { return true; } });
   const [zoom, setZoom] = useState(false);
@@ -74,8 +76,9 @@ function ImageDetail({ image, onClose, onPrevious, onNext, position, total, mark
   const [markError, setMarkError] = useState(null);
   // Where the quality mark came from (hand or score percentile) and the automatic suggestion.
   const [auto, setAuto] = useState(() => autoOf(image));
+  const [aestheticAuto, setAestheticAuto] = useState(() => aestheticAutoOf(image));
   useEffect(() => {
-    if (fullImage && !marksTouched.current) { marksRef.current = marksOf(fullImage); setMarks(marksRef.current); setAuto(autoOf(fullImage)); }
+    if (fullImage && !marksTouched.current) { marksRef.current = marksOf(fullImage); setMarks(marksRef.current); setAuto(autoOf(fullImage)); setAestheticAuto(aestheticAutoOf(fullImage)); }
   }, [fullImage]);
   const updateImageCaches = (row) => {
     queryClient.setQueryData(['image', image.id], (old) => (old ? { ...old, ...row } : old));
@@ -92,7 +95,7 @@ function ImageDetail({ image, onClose, onPrevious, onNext, position, total, mark
     setMarks(next);
     saveChain.current = saveChain.current
       .then(() => api.planner.setMarks(marking.folderId, image.id, { ...next, ...options }))
-      .then((response) => { setMarkError(null); setAuto(autoOf(response.data)); updateImageCaches(response.data); })
+      .then((response) => { setMarkError(null); setAuto(autoOf(response.data)); setAestheticAuto(aestheticAutoOf(response.data)); updateImageCaches(response.data); })
       .catch((error) => setMarkError(`Mark not saved: ${error.response?.data?.detail || error.message}`));
   };
   const chooseMark = (mark) => {
@@ -100,7 +103,13 @@ function ImageDetail({ image, onClose, onPrevious, onNext, position, total, mark
     // Normal (no scale) sets both scales by hand; a hand-set quality mark is never replaced automatically.
     const touched = mark.axis ? [mark.axis] : ['quality', 'aesthetic'];
     if (touched.includes('quality')) setAuto((current) => ({ ...current, source: 'manual' }));
+    if (touched.includes('aesthetic')) setAestheticAuto((current) => ({ ...current, source: 'manual' }));
     saveMarks(applyMark(mark, marksRef.current), { touched });
+  };
+  const applyAutoAesthetic = () => {
+    if (!markable) return;
+    setAestheticAuto((current) => ({ ...current, source: 'auto' }));
+    saveMarks({ ...marksRef.current, aesthetic: aestheticAuto.tag }, { use_auto_aesthetic: true });
   };
   const applyAutoQuality = () => {
     if (!markable) return;
@@ -235,7 +244,7 @@ function ImageDetail({ image, onClose, onPrevious, onNext, position, total, mark
                       className={`flex items-center gap-2 rounded-md border px-2.5 py-2 text-left text-xs font-medium transition-all duration-150 disabled:cursor-not-allowed ${on ? mark.active : `border-[#26313d] bg-[#0d141c] text-slate-300 ${markable ? mark.hover : 'opacity-60'}`}`}>
                       <span className={`h-2 w-2 shrink-0 rounded-full ${mark.dot} ${on ? '' : 'opacity-40'}`} />
                       <span className="flex-1 truncate">{mark.label}</span>
-                      {on && mark.axis === 'quality' && auto.source === 'auto' && <span className="rounded bg-black/30 px-1 text-[9px] uppercase tracking-wide opacity-80" title="Set automatically from the post's score">auto</span>}
+                      {on && ((mark.axis === 'quality' && auto.source === 'auto') || (mark.axis === 'aesthetic' && aestheticAuto.source === 'auto')) && <span className="rounded bg-black/30 px-1 text-[9px] uppercase tracking-wide opacity-80" title="Set automatically from the post's score">auto</span>}
                       <kbd className={`rounded border px-1.5 font-mono text-[10px] uppercase ${on ? 'border-white/30 bg-black/30' : 'border-[#2b3744] bg-black/30 text-slate-400'}`}>{mark.key}</kbd>
                     </button>
                   );
@@ -253,9 +262,19 @@ function ImageDetail({ image, onClose, onPrevious, onNext, position, total, mark
                   )}
                 </div>
               )}
+              {aestheticAuto.info && (
+                <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
+                  <span>Auto aesthetic: {aestheticAuto.tag || 'none'} · scorer ensemble top {aestheticAuto.info.top}% of analysed images</span>
+                  {markable && aestheticAuto.source === 'manual' && (aestheticAuto.tag || null) !== (marks.aesthetic || null) && (
+                    <button type="button" onClick={applyAutoAesthetic} className="rounded border border-slate-600 px-1.5 py-0.5 text-slate-200 hover:border-slate-400">Use auto</button>
+                  )}
+                </div>
+              )}
               {markError && <p role="alert" className="mt-1 text-xs text-red-300">{markError}</p>}
             </div>
           )}
+
+          <AnalysisDetails detail={analysis} review={review} />
 
           <ImageStorageLocations locations={displayImage.storage_locations} />
 

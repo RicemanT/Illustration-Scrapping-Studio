@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import api, { backendAssetUrl } from '../api/client';
 import QualityTagsPanel from '../components/QualityTagsPanel';
+import AnalysisPanel from '../components/AnalysisPanel';
 
 const field = 'rounded border border-slate-700 bg-[#090d12] px-3 py-2 text-sm';
 const button = 'rounded bg-blue-700 px-3 py-2 text-sm text-white disabled:opacity-40';
@@ -144,6 +145,7 @@ export default function Planner() {
     {runId && <ReviewPanel runId={runId} />}
     <DeliveryPanel status={status.data} runId={runId} onChange={refresh} />
     <QualityTagsPanel />
+    <AnalysisPanel />
   </div>;
 }
 
@@ -188,7 +190,15 @@ const NUMBER_FIELDS = [
   ['topup_max_per_artist', 'Character top-ups per artist at most'], ['candidate_pool', 'Candidates kept per artist'],
   ['min_year', 'Posts from year (blank = any)'], ['newest_posts_per_artist', 'Only each artist’s newest posts (0 = all)'],
 ];
-const WEIGHT_FIELDS = ['weight_quality', 'weight_novelty', 'weight_character', 'weight_rarity', 'weight_boost', 'priority_character_boost'];
+const WEIGHT_FIELDS = ['weight_quality', 'weight_novelty', 'weight_character', 'weight_rarity', 'weight_boost', 'priority_character_boost', 'weight_style', 'weight_aesthetic'];
+const ANALYSIS_FIELDS = [
+  ['style_keep_z', 'Off-style beyond (robust z)', 'Posts farther than this from the artist style are dropped'],
+  ['style_flag_z', 'Flag for review beyond (z)', 'Kept, but flagged so you look at them first'],
+  ['aesthetic_floor', 'Drop the dataset’s weakest (0–1)', 'Aesthetic percentile below which posts are dropped; 0.2 drops the bottom 20%'],
+  ['content_majority', 'Keep a content type when its share is at least', 'Sketch, monochrome, comic, 3D, photo, AI: kept only when they are at least this share of the artist’s style'],
+  ['latest_style_posts', 'Latest style from the newest (0 = auto)', 'How many of the newest analysed posts define the latest style (auto: half the target, 20 to 40)'],
+  ['near_duplicate', 'Near-duplicate similarity', 'Two posts at least this similar count as the same picture'],
+];
 
 function RunPanel({ status, runId, setRunId, onChange }) {
   const defaults = useQuery({ queryKey: ['planner-defaults'], queryFn: async () => (await api.planner.defaults()).data, staleTime: Infinity });
@@ -216,6 +226,15 @@ function RunPanel({ status, runId, setRunId, onChange }) {
       <label className="flex flex-col gap-1"><span className="text-slate-400">Ratings (blank = all)</span>
         <input className={field} value={(config.allowed_ratings || []).join(', ')} placeholder="general, sensitive, safe, questionable, explicit"
           onChange={(event) => { const values = event.target.value.split(',').map((item) => item.trim()).filter(Boolean); set('allowed_ratings', values.length ? values : null); }} /></label>
+    </div>}
+    {config && <div className="rounded border border-slate-800 p-3 space-y-2 text-sm">
+      <label className="flex items-center gap-2 font-medium"><input type="checkbox" checked={Boolean(config.use_analysis)} onChange={(event) => set('use_analysis', event.target.checked)} />
+        Use image analysis (style consistency, content rules, aesthetics)</label>
+      <p className="text-xs text-slate-400">Needs 7. Image analysis to have run for the artists. Each artist keeps their latest style (their main career style when the latest era is too small); off-style posts, a minority of sketches/monochrome/comic/3D/photos/AI images, the dataset’s weakest images and near-duplicates are dropped; style fit and aesthetic rank join the picking. Artists without analysis are planned from metadata as before. The “newest posts” window is not used with analysis.</p>
+      {config.use_analysis && <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        {ANALYSIS_FIELDS.map(([key, label, hint]) => <label key={key} className="flex flex-col gap-1" title={hint}><span className="text-slate-400">{label}</span>
+          <input type="number" step="any" className={field} value={config[key] ?? ''} onChange={(event) => set(key, Number(event.target.value))} /></label>)}
+      </div>}
     </div>}
     {config && <details className="text-sm"><summary className="cursor-pointer text-slate-300">Score weights and tag lists</summary>
       <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mt-3">{WEIGHT_FIELDS.map((key) => <label key={key} className="flex flex-col gap-1"><span className="text-slate-400">{key === 'priority_character_boost' ? 'priority character ×' : key.replace('weight_', '')}</span>
@@ -349,6 +368,9 @@ function RunSummary({ summary }) {
         <p>{number(data.artists_kept)} {data.artists_kept === 1 ? 'artist' : 'artists'} kept{Object.entries(data.artists_dropped || {}).map(([reason, count]) => ` · ${number(count)} dropped (${reason.replace(/_/g, ' ')})`).join('')}</p>
         <p>{number(data.images)} images ({Object.entries(data.roles || {}).map(([role, count]) => `${number(count)} ${role.replace('_', ' ')}`).join(', ')}) · {number(data.samples_per_pass)} samples</p>
         <p>Characters: {number(data.characters_at_floor)} at target · {number(data.characters_partial)} partial · {number(data.characters_missing)} absent of {number(data.character_targets)}</p>
+        {data.analysis && <p className="text-xs text-slate-300">Analysis: {Object.entries(data.analysis.eras || {}).map(([era, n]) => `${number(n)} by ${era === 'latest' ? 'latest style' : 'career style'}`).join(' · ') || 'no analysed artists'}
+          {data.analysis.artists_without_analysis ? ` · ${number(data.analysis.artists_without_analysis)} without analysis (metadata only)` : ''}
+          {Object.keys(data.analysis.excluded_content || {}).length ? ` · content excluded: ${Object.entries(data.analysis.excluded_content).map(([k, n]) => `${k} for ${number(n)}`).join(', ')}` : ''}</p>}
         <p className="text-xs text-slate-400">Posts skipped: {Object.entries(data.rejected_posts || {}).sort((a, b) => b[1] - a[1]).map(([reason, count]) => `${reason.replace(/_/g, ' ')} ${number(count)}`).join(' · ') || 'none'}</p>
         {data.unmet_characters?.length > 0 && <details><summary className="text-xs text-slate-400 cursor-pointer">Characters below target (highest priority first)</summary>
           <p className="text-xs text-slate-400 max-h-40 overflow-auto">{data.unmet_characters.map(([tag, count]) => `${tag} (${count})`).join(', ')}</p></details>}

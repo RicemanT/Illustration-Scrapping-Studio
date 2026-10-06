@@ -394,6 +394,7 @@ class MarksRequest(BaseModel):
     aesthetic: Optional[Literal['very aesthetic', 'aesthetic']] = None
     touched: Optional[list[Literal['quality', 'aesthetic']]] = None
     use_auto: bool = False
+    use_auto_aesthetic: bool = False
 
 
 class QualityApplyRequest(BaseModel):
@@ -450,7 +451,8 @@ def set_folder_era(folder_id: int, request: EraRequest):
 @router.put('/folders/{folder_id}/images/{image_id}/marks')
 def set_image_marks(folder_id: int, image_id: int, request: MarksRequest):
     try:
-        return curation.set_marks(folder_id, image_id, request.quality, request.aesthetic, request.touched, request.use_auto)
+        return curation.set_marks(folder_id, image_id, request.quality, request.aesthetic, request.touched, request.use_auto,
+                                  request.use_auto_aesthetic)
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
     except ValueError as exc:

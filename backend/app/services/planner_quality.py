@@ -38,9 +38,15 @@ class QualityConfig(BaseModel):
     min_bucket: int = Field(300, ge=1, le=10_000_000, description='Smaller year/rating buckets fall back to a wider one')
     by_year: bool = True
     by_rating: bool = True
+    # Aesthetic marks from the image-analysis scorer ensemble (dataset-wide percentile).
+    aesthetic_tags: bool = True
+    very_aesthetic_top: float = Field(5.0, ge=0, le=100, description='Top percent of analysed images marked very aesthetic')
+    aesthetic_top: float = Field(15.0, ge=0, le=100, description='Top percent marked aesthetic (includes the very aesthetic share)')
 
     @model_validator(mode='after')
     def shares(self):
+        if self.aesthetic_top < self.very_aesthetic_top:
+            raise ValueError('Aesthetic must cover at least the very aesthetic share')
         if self.best_quality_top < self.masterpiece_top:
             raise ValueError('Best quality must cover at least the masterpiece share')
         if self.best_quality_top + self.low_quality_bottom > 100:
@@ -239,7 +245,8 @@ def apply(folder_ids: Optional[list[int]], config: QualityConfig, progress: Call
     finally:
         conn.close()
     result = {'folders': 0, 'images': 0, 'assigned': Counter(), 'normal': 0, 'kept_manual': 0, 'no_score': 0,
-              'locked_folders': 0, 'missing_folders': 0}
+              'locked_folders': 0, 'missing_folders': 0, 'aesthetic': Counter(), 'aesthetic_kept_manual': 0, 'not_analysed': 0}
+    aesthetics = _AestheticTags(config) if config.aesthetic_tags else None
     progress(done=0, total=len(folders))
     main = db.get_connection()
     planner = connect()
@@ -254,10 +261,11 @@ def apply(folder_ids: Optional[list[int]], config: QualityConfig, progress: Call
                 continue
             posts = {(r['site'], r['remote_id']): r for r in planner.execute(
                 f'SELECT site, remote_id, {column} AS value, rating, created_at FROM post WHERE artist_id=?', (artist_id,))}
-            images = {}
-            for r in main.execute("""SELECT i.id, i.quality_source, s.provider, s.remote_id FROM image i
+            images, aesthetic_sources = {}, {}
+            for r in main.execute("""SELECT i.id, i.quality_source, i.aesthetic_source, s.provider, s.remote_id FROM image i
                                      JOIN image_source s ON s.image_id=i.id WHERE i.folder_id=? ORDER BY s.id""", (folder_id,)):
                 post = posts.get((r['provider'], str(r['remote_id']).split(':', 1)[0]))
+                aesthetic_sources[r['id']] = r['aesthetic_source']
                 if r['id'] not in images or (post is not None and images[r['id']][1] is None):
                     images[r['id']] = (r['quality_source'], post)
             updates = []
@@ -279,6 +287,22 @@ def apply(folder_ids: Optional[list[int]], config: QualityConfig, progress: Call
                                   quality_mark=CASE WHEN COALESCE(quality_source, 'auto')='auto' THEN ? ELSE quality_mark END,
                                   quality_source=CASE WHEN COALESCE(quality_source, 'auto')='auto' THEN 'auto' ELSE quality_source END
                                 WHERE id=?""", updates)
+            if aesthetics is not None:
+                aesthetic_updates = []
+                for image_id, (_, post) in images.items():
+                    tag, info = aesthetics.assess(post)
+                    if info is None:
+                        result['not_analysed'] += 1
+                        continue
+                    if aesthetic_sources.get(image_id) == 'manual':
+                        result['aesthetic_kept_manual'] += 1
+                    elif tag:
+                        result['aesthetic'][tag] += 1
+                    aesthetic_updates.append((tag, json.dumps(info), tag, image_id))
+                main.executemany("""UPDATE image SET aesthetic_auto=?, aesthetic_auto_info=?,
+                                      aesthetic_mark=CASE WHEN COALESCE(aesthetic_source, 'auto')='auto' THEN ? ELSE aesthetic_mark END,
+                                      aesthetic_source=CASE WHEN COALESCE(aesthetic_source, 'auto')='auto' THEN 'auto' ELSE aesthetic_source END
+                                    WHERE id=?""", aesthetic_updates)
             main.commit()
             result['folders'] += 1
             result['images'] += len(updates)
@@ -286,5 +310,41 @@ def apply(folder_ids: Optional[list[int]], config: QualityConfig, progress: Call
     finally:
         main.close()
         planner.close()
+    if aesthetics is not None:
+        aesthetics.close()
     result['assigned'] = dict(result['assigned'])
+    result['aesthetic'] = dict(result['aesthetic'])
     return result
+
+
+class _AestheticTags:
+    """very aesthetic / aesthetic from the analysis scorer ensemble's dataset-wide percentile."""
+
+    def __init__(self, config: QualityConfig):
+        self.config = config
+        self.conn = None
+        try:
+            from app.analysis.assess import AestheticScale
+            from app.analysis.store import connect as analysis_connect
+            self.conn = analysis_connect()
+            self.scale = AestheticScale.load(self.conn)
+        except Exception:
+            self.scale = None
+
+    def assess(self, post):
+        if post is None or self.scale is None or not self.scale.sorted:
+            return None, None
+        from app.analysis.store import load_posts
+        row = load_posts(self.conn, [(post['site'], str(post['remote_id']))]).get((post['site'], str(post['remote_id'])))
+        if row is None:
+            return None, None
+        ensemble = self.scale.ensemble(row)
+        if ensemble is None:
+            return None, None
+        top = round(100 * (1 - ensemble), 2)
+        tag = 'very aesthetic' if top <= self.config.very_aesthetic_top else 'aesthetic' if top <= self.config.aesthetic_top else None
+        return tag, {'ensemble': round(ensemble, 4), 'top': top, 'scorers': {k: round(v, 4) for k, v in self.scale.parts(row).items()}}
+
+    def close(self):
+        if self.conn is not None:
+            self.conn.close()

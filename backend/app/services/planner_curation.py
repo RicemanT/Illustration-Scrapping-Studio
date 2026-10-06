@@ -186,7 +186,8 @@ def set_era(folder_id: int, era_from: int | None) -> dict:
 
 
 def _folder_image(main, folder_id: int, image_id: int):
-    row = main.execute('''SELECT id, quality_mark, aesthetic_mark, marks_viewed_at, quality_source, quality_auto, quality_auto_info
+    row = main.execute('''SELECT id, quality_mark, aesthetic_mark, marks_viewed_at, quality_source, quality_auto, quality_auto_info,
+                                 aesthetic_source, aesthetic_auto, aesthetic_auto_info
                           FROM image WHERE id=? AND folder_id=?''', (image_id, folder_id)).fetchone()
     if not row:
         raise LookupError('Image not found in this collection')
@@ -206,7 +207,7 @@ def _require_open(folder_id: int) -> None:
 
 
 def set_marks(folder_id: int, image_id: int, quality: str | None, aesthetic: str | None,
-              touched: list[str] | None = None, use_auto: bool = False) -> dict:
+              touched: list[str] | None = None, use_auto: bool = False, use_auto_aesthetic: bool = False) -> dict:
     """Save an image's working marks; they reach the ground truth when the folder is accepted.
 
     `touched` lists the scales the user set by hand; a hand-set quality mark
@@ -219,17 +220,23 @@ def set_marks(folder_id: int, image_id: int, quality: str | None, aesthetic: str
     main = db.get_connection()
     try:
         row = _folder_image(main, folder_id, image_id)
-        source = row['quality_source']
+        source, aesthetic_source = row['quality_source'], row['aesthetic_source']
         if use_auto:
             quality, source = row['quality_auto'], 'auto'
         elif touched is not None:
             source = 'manual' if 'quality' in touched else source
         elif quality != row['quality_mark']:
             source = 'manual'
+        if use_auto_aesthetic:
+            aesthetic, aesthetic_source = row['aesthetic_auto'], 'auto'
+        elif touched is not None:
+            aesthetic_source = 'manual' if 'aesthetic' in touched else aesthetic_source
+        elif aesthetic != row['aesthetic_mark']:
+            aesthetic_source = 'manual'
         stamp = now()
-        main.execute("""UPDATE image SET quality_mark=?, aesthetic_mark=?, quality_source=?,
+        main.execute("""UPDATE image SET quality_mark=?, aesthetic_mark=?, quality_source=?, aesthetic_source=?,
                         marks_viewed_at=COALESCE(marks_viewed_at, ?) WHERE id=?""",
-                     (quality, aesthetic, source, stamp, image_id))
+                     (quality, aesthetic, source, aesthetic_source, stamp, image_id))
         main.commit()
         return dict(_folder_image(main, folder_id, image_id))
     finally:

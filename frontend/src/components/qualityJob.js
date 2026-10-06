@@ -40,9 +40,12 @@ export function describeQualityJob(job) {
   const r = job.result;
   if (!r) return '';
   const assigned = ['masterpiece', 'best quality', 'low quality'].filter((tag) => r.assigned?.[tag]).map((tag) => `${number(r.assigned[tag])} ${tag}`);
+  const aesthetic = ['very aesthetic', 'aesthetic'].filter((tag) => r.aesthetic?.[tag]).map((tag) => `${number(r.aesthetic[tag])} ${tag}`);
   return [
     `Done: ${number(r.images)} images in ${number(r.folders)} ${r.folders === 1 ? 'collection' : 'collections'}`,
     assigned.length ? assigned.join(', ') : 'no quality tags',
+    aesthetic.length ? aesthetic.join(', ') : null,
+    r.not_analysed ? `${number(r.not_analysed)} not analysed (no aesthetic tag)` : null,
     `${number(r.normal)} normal`,
     r.kept_manual ? `${number(r.kept_manual)} hand-set marks kept` : null,
     r.no_score ? `${number(r.no_score)} without a usable score` : null,

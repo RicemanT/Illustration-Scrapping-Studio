@@ -50,6 +50,9 @@ DEFAULT_BLOCKED_TAGS = {
     # e621 no longer accepts AI-generated uploads, so it has no AI tag to block.
     'e621': ['comic', 'low_res', 'compression_artifacts', 'upscale'],
 }
+# Style-dependent blocked tags: blocked only when they are a minority of the
+# artist's work, so artists who mostly draw comics keep them.
+ADAPTIVE_TAGS = {'comic', '4koma', '2koma', '3koma', 'multiple_4koma'}
 # Useful but underrepresented concepts: camera and composition, action and
 # poses, interaction, environments, vehicles, weather, lighting and effects.
 # Each is on well under 2% of the site's posts.
@@ -116,6 +119,16 @@ class PlannerConfig(BaseModel):
     weight_rarity: float = Field(0.5, ge=0, le=100)
     weight_boost: float = Field(0.3, ge=0, le=100)
     priority_character_boost: float = Field(1.5, ge=1, le=10, description='Character-need multiplier for priority targets')
+    content_majority: float = Field(0.5, ge=0.05, le=1.0, description="Comic-type tags and content classes are kept when at least this share of the artist's work has them")
+    # Image analysis (DINO style, aesthetic scorers, content classifiers).
+    use_analysis: bool = Field(False, description='Choose images with the image analysis results')
+    style_keep_z: float = Field(2.5, ge=0.1, le=20, description='Farther from the artist style than this (robust z): off-style')
+    style_flag_z: float = Field(1.8, ge=0.1, le=20, description='Kept but flagged for review above this distance')
+    latest_style_posts: int = Field(0, ge=0, le=100000, description="Newest analysed posts that set the latest style's centre (0 = half the target, 20 to 40)")
+    aesthetic_floor: float = Field(0.2, ge=0, le=0.95, description='Drop posts below this dataset-wide aesthetic percentile')
+    near_duplicate: float = Field(0.97, ge=0.5, le=1.0, description='Deep-feature similarity above which two posts count as one picture')
+    weight_style: float = Field(1.0, ge=0, le=100)
+    weight_aesthetic: float = Field(1.0, ge=0, le=100)
 
     def tag_set(self, kind: str, family: str) -> set[str]:
         return {tag.strip().replace(' ', '_') for tag in getattr(self, f'{kind}_tags_{family}') if tag.strip()}
@@ -151,8 +164,11 @@ def rejection(row, config: PlannerConfig, blocked: set[str], banned: bool = Fals
         return 'blocked_tag'
     if len(real_artists(row)) > config.max_credited_artists:
         return 'too_many_artists'
-    if config.min_year and (row['created_at'] or '0')[:4] < str(config.min_year):
-        return 'too_old'
+    if config.min_year:
+        from app.services.post_dates import post_year
+        year = post_year(row['created_at'])
+        if year and year < config.min_year:
+            return 'too_old'
     return None
 
 
@@ -173,6 +189,8 @@ class Candidate:
     rarity: float = 0.0
     boost: float = 0.0
     prefilter: float = 0.0
+    style: float = 0.0
+    aesthetic: float = 0.0
 
     @property
     def key(self) -> tuple[str, str]:
@@ -234,7 +252,8 @@ def score_artist(candidates: list[Candidate], rarity: RarityIndex, boost: set[st
         c.quality = 0.8 * pop + 0.2 * min(1.0, c.short_side / 1024)
         c.rarity = rare
         c.boost = 1.0 if boost.intersection(c.general) else 0.0
-        c.prefilter = c.quality + 0.5 * c.rarity + 0.5 * c.boost + (0.5 if targets.intersection(c.characters) else 0.0)
+        c.prefilter = (c.quality + 0.5 * c.rarity + 0.5 * c.boost + (0.5 if targets.intersection(c.characters) else 0.0)
+                       + config.weight_style * c.style + config.weight_aesthetic * c.aesthetic)
     locked = [c for c in candidates if c.locked]
     rest = sorted((c for c in candidates if not c.locked), key=lambda c: (-c.prefilter, c.remote_id))
     return locked + rest[:max(config.candidate_pool - len(locked), 0)]
@@ -284,9 +303,13 @@ class Selector:
         need = max(((floor - self.character_counts[ch]) / floor * (cfg.priority_character_boost if ch in self.priority else 1.0)
                     for ch in c.characters if ch in self.targets and self.character_counts[ch] < floor), default=0.0) if floor else 0.0
         gain = (cfg.weight_quality * c.quality + cfg.weight_novelty * novelty + cfg.weight_character * need
-                + cfg.weight_rarity * c.rarity + cfg.weight_boost * c.boost)
-        return {'gain': round(gain, 4), 'quality': round(c.quality, 4), 'novelty': round(novelty, 4),
-                'character_need': round(need, 4), 'rarity': round(c.rarity, 4), 'boost': c.boost}
+                + cfg.weight_rarity * c.rarity + cfg.weight_boost * c.boost
+                + cfg.weight_style * c.style + cfg.weight_aesthetic * c.aesthetic)
+        reasons = {'gain': round(gain, 4), 'quality': round(c.quality, 4), 'novelty': round(novelty, 4),
+                   'character_need': round(need, 4), 'rarity': round(c.rarity, 4), 'boost': c.boost}
+        if cfg.use_analysis:
+            reasons.update(style=round(c.style, 4), aesthetic=round(c.aesthetic, 4))
+        return reasons
 
     def available(self, c: Candidate, plan: ArtistPlan) -> bool:
         return c.family not in plan.families and (not c.md5 or c.md5 not in self.used_md5)

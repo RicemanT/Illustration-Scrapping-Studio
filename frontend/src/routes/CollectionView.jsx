@@ -14,6 +14,7 @@ import FilterReview from '../components/FilterReview';
 import PlannerCandidates from '../components/PlannerCandidates';
 import EraBar from '../components/EraBar';
 import FolderCharacters from '../components/FolderCharacters';
+import AnalysisReview from '../components/AnalysisReview';
 import { notify } from '../components/Feedback';
 import { describeQualityJob, useQualityJob } from '../components/qualityJob';
 import { ActiveTransferProgress, formatTransferSummary, SyncProgressDetails } from '../components/SyncProgress';
@@ -133,6 +134,23 @@ function CollectionView() {
   const unviewed = marks ? Math.max(0, marks.total - marks.viewed) : 0;
   const markSummary = marks ? ['masterpiece', 'best quality', 'low quality', 'very aesthetic', 'aesthetic'].filter(tag => marks[tag]).map(tag => `${marks[tag]} ${tag}`).join(' · ') : '';
   const quality = useQualityJob();
+  // Image analysis of a planner collection: flags per image (stored, so the gallery can sort flags first).
+  const review = useQuery({
+    queryKey: ['analysis-review', id, collection?.image_count],
+    queryFn: async () => {
+      const data = (await api.analysis.review(id)).data;
+      queryClient.invalidateQueries({ queryKey: ['collection-images', id] });
+      return data;
+    },
+    enabled: Boolean(plannerFolder),
+    retry: false,
+    staleTime: 60000,
+  });
+  const sortTouched = useRef(false);
+  useEffect(() => { sortTouched.current = false; }, [id]);
+  useEffect(() => {
+    if (review.data?.analysed && !sortTouched.current && sort !== 'flags') setSort('flags');
+  }, [review.data?.analysed, id]);
   // After a deletion: a short, non-blocking notice about characters now short of their goal.
   const reportCharacterLoss = (imageIds) => {
     api.tracker.impact(Number(id), imageIds).then(({ data }) => {
@@ -447,7 +465,7 @@ function CollectionView() {
           {tab === 'gallery' && <>
             <label className="flex items-center gap-2 text-xs text-slate-400">Thumbnail size <input aria-label="Thumbnail size" type="range" min="120" max="360" step="20" value={tileHeight} onChange={event => setTileHeight(Number(event.target.value))} className="w-24 accent-blue-400" /><span className="w-10 tabular-nums">{tileHeight}px</span></label>
 
-            <select value={sort} onChange={(e) => { setSort(e.target.value); setOffset(0); }} className="px-2 py-1 bg-[#090d12] border border-[#202a34] rounded text-xs"><option value="newest">Newest</option><option value="oldest">Oldest</option><option value="posted_newest">Posted (newest)</option><option value="posted_oldest">Posted (oldest)</option><option value="width">Width</option><option value="height">Height</option></select>
+            <select value={sort} onChange={(e) => { sortTouched.current = true; setSort(e.target.value); setOffset(0); }} className="px-2 py-1 bg-[#090d12] border border-[#202a34] rounded text-xs"><option value="newest">Newest</option><option value="oldest">Oldest</option><option value="flags">Flags first</option><option value="posted_newest">Posted (newest)</option><option value="posted_oldest">Posted (oldest)</option><option value="width">Width</option><option value="height">Height</option></select>
             {selected.size > 0 && <span className="text-xs text-blue-300">{selected.size} selected across pages <button onClick={() => setSelected(new Set())}>Clear selection</button></span>}
             <button type="button" onClick={togglePage} disabled={images.length === 0} className="px-2 py-1 text-xs rounded bg-[#273451] text-blue-200 hover:bg-[#354666] disabled:opacity-50">{images.length > 0 && images.every((image) => selected.has(image.id)) ? 'Deselect page (Q)' : 'Select page (Q)'}</button>
             <span className="text-[11px] text-slate-500" title="Drag across tiles with the left or right mouse button (touchpad: double-tap and drag). Hold Alt or Ctrl to deselect. Esc cancels.">Drag to select an area · Alt deselects</span>
@@ -456,6 +474,8 @@ function CollectionView() {
           </>}
         </div>
 
+        {tab === 'gallery' && plannerFolder && <AnalysisReview review={review.data} loading={review.isFetching} flaggedOnly={filters.flagged === true}
+          onFlaggedOnly={(only) => { const next = { ...filters }; if (only) next.flagged = true; else delete next.flagged; changeFilters(next); }} />}
         {tab === 'gallery' && plannerFolder && <FolderCharacters folderId={Number(id)} imageCount={collection.image_count}
           onFilter={(tag) => changeFilters({ ...filters, required_tags: [...new Set([...(filters.required_tags || []), tag])] })} />}
         {tab === 'gallery' && plannerFolder && <EraBar folderId={Number(id)} context={plannerFolder} disabled={folderComplete}
@@ -470,6 +490,7 @@ function CollectionView() {
           </div>
         ) : (
           tab === 'gallery' ? <ImageGrid key={id} targetHeight={tileHeight} images={visibleImages} selected={selected} onToggle={toggleSelected}
+            analysis={review.data?.analysed ? review.data : null}
             onSelectRange={selectMany} onDragSelect={(ids, add) => (add ? selectMany(ids) : setSelected((current) => { const next = new Set(current); ids.forEach((imageId) => next.delete(imageId)); return next; }))} eraFrom={plannerFolder?.era_from || null}
             marking={plannerFolder ? { folderId: Number(id), locked: folderComplete } : null}
             onViewerClose={plannerFolder ? () => queryClient.invalidateQueries({ queryKey: ['collection-images', id] }) : undefined} /> : tab === 'tags' ? <><TagExplorer key={`${id}-${JSON.stringify(filters)}`} collectionId={Number(id)} filters={filters} onTag={(tag, exclude) => { const key = exclude ? 'excluded_tags' : 'required_tags'; changeFilters({ ...filters, [key]: [...new Set([...(filters[key] || []), tag])] }); setTab('gallery'); }} /><CollectionTagEditor collectionId={Number(id)} selected={selected} /></> : <div className="p-3 space-y-3">

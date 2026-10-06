@@ -476,6 +476,14 @@ def init_db():
     _ensure_column(cursor, "image", "quality_auto_info", "TEXT")
     # When the post was originally published on its site (UTC ISO), for era sorting.
     _ensure_column(cursor, "image", "posted_at", "TEXT")
+    # Aesthetic marks from the analysis scorers, kept apart from hand-set ones like quality marks.
+    _ensure_column(cursor, "image", "aesthetic_source", "TEXT")
+    _ensure_column(cursor, "image", "aesthetic_auto", "TEXT")
+    _ensure_column(cursor, "image", "aesthetic_auto_info", "TEXT")
+    # Review flags from the image analysis (JSON list), for flags-first review.
+    _ensure_column(cursor, "image", "analysis_flags", "TEXT")
+    _ensure_column(cursor, "image", "analysis_flag_count", "INTEGER")
+    cursor.execute("UPDATE image SET aesthetic_source = 'manual' WHERE aesthetic_mark IS NOT NULL AND aesthetic_source IS NULL")
     cursor.execute("UPDATE image SET quality_source = 'manual' WHERE quality_mark IS NOT NULL AND quality_source IS NULL")
     _migrate_folder_scoped_images(conn)
     cursor = conn.cursor()

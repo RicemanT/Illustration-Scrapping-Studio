@@ -81,6 +81,13 @@ export default function QualityTagsPanel() {
         </label>
         <label className="flex items-center gap-2 text-xs text-slate-300"><input type="checkbox" checked={config.by_year} onChange={(event) => set('by_year', event.target.checked)} /> Separate years</label>
         <label className="flex items-center gap-2 text-xs text-slate-300"><input type="checkbox" checked={config.by_rating} onChange={(event) => set('by_rating', event.target.checked)} /> Separate ratings</label>
+        <label className="flex items-center gap-2 text-xs text-slate-300" title="From the image-analysis scorer ensemble; needs 7. Image analysis"><input type="checkbox" checked={config.aesthetic_tags ?? true} onChange={(event) => set('aesthetic_tags', event.target.checked)} /> Aesthetic tags from scorers</label>
+        {config.aesthetic_tags !== false && <>
+          <label className="text-xs text-slate-400">Very aesthetic: top %
+            <input type="number" min="0" max="100" step="0.5" className={`${field} block w-24`} value={config.very_aesthetic_top ?? 5} onChange={(event) => set('very_aesthetic_top', Number(event.target.value))} /></label>
+          <label className="text-xs text-slate-400" title="Includes the very aesthetic share">Aesthetic: top %
+            <input type="number" min="0" max="100" step="0.5" className={`${field} block w-24`} value={config.aesthetic_top ?? 15} onChange={(event) => set('aesthetic_top', Number(event.target.value))} /></label>
+        </>}
         {draft && <button className={button} disabled={save.isPending} onClick={() => save.mutate()}>Save settings</button>}
         {draft && <button className={quiet} onClick={() => setDraft(null)}>Discard</button>}
       </div>}
