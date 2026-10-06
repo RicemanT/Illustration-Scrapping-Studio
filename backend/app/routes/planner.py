@@ -411,7 +411,7 @@ def folder_context(folder_id: int):
 
 @router.get('/folders/{folder_id}/candidates')
 def folder_candidates(folder_id: int, include_filtered: bool = False, include_banned: bool = False,
-                      sort: Literal['popular', 'newest'] = 'popular', offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=200),
+                      sort: Literal['popular', 'newest', 'gaps'] = 'popular', offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=200),
                       min_year: Optional[int] = Query(None, ge=1990, le=2100)):
     try:
         return curation.candidates(folder_id, include_filtered, include_banned, sort, offset, limit, min_year)

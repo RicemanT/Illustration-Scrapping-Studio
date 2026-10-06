@@ -13,6 +13,8 @@ import TagExplorer from '../components/TagExplorer';
 import FilterReview from '../components/FilterReview';
 import PlannerCandidates from '../components/PlannerCandidates';
 import EraBar from '../components/EraBar';
+import FolderCharacters from '../components/FolderCharacters';
+import { notify } from '../components/Feedback';
 import { describeQualityJob, useQualityJob } from '../components/qualityJob';
 import { ActiveTransferProgress, formatTransferSummary, SyncProgressDetails } from '../components/SyncProgress';
 
@@ -131,6 +133,20 @@ function CollectionView() {
   const unviewed = marks ? Math.max(0, marks.total - marks.viewed) : 0;
   const markSummary = marks ? ['masterpiece', 'best quality', 'low quality', 'very aesthetic', 'aesthetic'].filter(tag => marks[tag]).map(tag => `${marks[tag]} ${tag}`).join(' · ') : '';
   const quality = useQualityJob();
+  // After a deletion: a short, non-blocking notice about characters now short of their goal.
+  const reportCharacterLoss = (imageIds) => {
+    api.tracker.impact(Number(id), imageIds).then(({ data }) => {
+      const short = data.characters || [];
+      if (!short.length) return;
+      const priority = short.some((row) => row.priority);
+      const lines = short.slice(0, 6).map((row) => `${row.priority ? '★ ' : ''}${row.tag.replaceAll('_', ' ')}: ${row.now} of ${row.goal}${row.now === 0 ? ' (none left)' : ''}`);
+      notify(lines.join('\n') + (short.length > 6 ? `\n…and ${short.length - 6} more` : ''), false, null, {
+        tone: priority ? 'priority' : 'warning', duration: priority ? 10000 : 6000,
+        title: priority ? 'Priority characters are now short' : 'Characters now short of their goal',
+      });
+      queryClient.invalidateQueries({ queryKey: ['tracker-folder', Number(id)] });
+    }).catch(() => {});
+  };
   const qualityHere = quality.job?.status && quality.job.status !== 'idle' && (quality.job.folder_ids == null || quality.job.folder_ids.includes(Number(id)));
   const [candidatesHotkeys, setCandidatesHotkeys] = useState(false);
   const completeMutation = useMutation({
@@ -139,6 +155,8 @@ function CollectionView() {
     onSuccess: (response) => {
       queryClient.setQueryData(['planner-folder', id], response.data);
       refreshFolderViews(queryClient, id);
+      queryClient.invalidateQueries({ queryKey: ['tracker-folders'] });
+      queryClient.invalidateQueries({ queryKey: ['tracker-folder', Number(id)] });
       queryClient.invalidateQueries({ queryKey: ['planner-candidates', Number(id)] });
     },
   });
@@ -166,7 +184,7 @@ function CollectionView() {
   const images = imagesData?.items || imagesData?.images || [];
   const visibleImages = images;
   const togglePage = () => setSelected(current => { const next = new Set(current); const all = images.every(i => next.has(i.id)); for (const image of images) all ? next.delete(image.id) : next.add(image.id); return next; });
-  const confirmDeleteSelected = () => { if (confirm(`Delete ${selected.size} explicitly selected images, including selections on other pages? This replaces the previous recovery batch.`)) bulkRemoveMutation.mutate(); };
+  const confirmDeleteSelected = () => { if (confirm(`Delete ${selected.size} explicitly selected images, including selections on other pages? This replaces the previous recovery batch.`)) bulkRemoveMutation.mutate([...selected]); };
   const selectMany = (imageIds) => setSelected((current) => new Set([...current, ...imageIds]));
   const toggleSelected = (imageId) => setSelected((current) => { const next = new Set(current); next.has(imageId) ? next.delete(imageId) : next.add(imageId); return next; });
 
@@ -199,8 +217,9 @@ function CollectionView() {
 
   const bulkRemoveMutation = useMutation({
     meta: { successMessage: 'Images moved to recovery' },
-    mutationFn: () => api.folders.bulkRemoveImages(id, [...selected]),
-    onSuccess: (response) => {
+    mutationFn: (imageIds) => api.folders.bulkRemoveImages(id, imageIds),
+    onSuccess: (response, imageIds) => {
+      if (plannerFolder) reportCharacterLoss(imageIds);
       setUndoToken(response.data.undo_token);
       setSelected(new Set());
       refreshFolderViews(queryClient, id);
@@ -436,6 +455,8 @@ function CollectionView() {
           </>}
         </div>
 
+        {tab === 'gallery' && plannerFolder && <FolderCharacters folderId={Number(id)} imageCount={collection.image_count}
+          onFilter={(tag) => changeFilters({ ...filters, required_tags: [...new Set([...(filters.required_tags || []), tag])] })} />}
         {tab === 'gallery' && plannerFolder && <EraBar folderId={Number(id)} context={plannerFolder} disabled={folderComplete}
           onSelectOlder={(ids) => { selectMany(ids); }} />}
         {['gallery','tags','dataset'].includes(tab) && <LocalFilters filters={filters} onChange={changeFilters} providers={collection.sources.map(s => s.provider)} total={imagesData?.total || 0} qualityFilter={Boolean(plannerFolder)} />}

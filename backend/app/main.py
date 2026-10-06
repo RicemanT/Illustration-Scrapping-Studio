@@ -149,6 +149,8 @@ from app.routes import groups
 app.include_router(groups.router, prefix="/api/groups", tags=["groups"])
 from app.routes import planner
 app.include_router(planner.router, prefix="/api/planner", tags=["planner"])
+from app.routes import tracker as tracker_routes
+app.include_router(tracker_routes.router, prefix="/api/tracker", tags=["tracker"])
 app.include_router(dataset.router, prefix="/api/dataset", tags=["dataset"])
 
 app.include_router(collections.router, prefix="/api/folders", tags=["folders"])

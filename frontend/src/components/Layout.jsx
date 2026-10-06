@@ -64,6 +64,9 @@ function Layout() {
               <Link to="/" className="px-3 py-1 text-xs border border-[#202a34] rounded hover:bg-[#0c1219]">
                 Dashboard
               </Link>
+              <Link to="/tracker" className="px-3 py-1 text-xs border border-[#202a34] rounded hover:bg-[#0c1219]">
+                Tracker
+              </Link>
               <button onClick={() => { syncAll.reset(); setShowSyncAllOptions(true); }} disabled={syncAll.isPending || (syncAllJobId && !allFinished)} className="px-3 py-1 text-xs bg-[#273451] text-blue-200 rounded hover:bg-[#354666] disabled:opacity-50">
                 {syncAllJobId && !allFinished ? 'Batch running...' : 'Sync All'}
               </button>

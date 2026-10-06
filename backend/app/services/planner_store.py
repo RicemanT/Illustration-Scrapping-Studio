@@ -123,6 +123,64 @@ CREATE TABLE IF NOT EXISTS delivery_item (
 );
 CREATE INDEX IF NOT EXISTS delivery_item_pending ON delivery_item(delivery_id, site, status);
 CREATE INDEX IF NOT EXISTS delivery_item_folder ON delivery_item(folder_id);
+CREATE TABLE IF NOT EXISTS tracker_folder (
+    folder_id INTEGER PRIMARY KEY,
+    artist_id INTEGER NOT NULL,
+    family TEXT NOT NULL,
+    images INTEGER NOT NULL DEFAULT 0,
+    planned INTEGER NOT NULL DEFAULT 0,
+    refreshed_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS tracker_folder_char (
+    folder_id INTEGER NOT NULL,
+    family TEXT NOT NULL,
+    tag TEXT NOT NULL,
+    now INTEGER NOT NULL DEFAULT 0,
+    planned INTEGER NOT NULL DEFAULT 0,
+    spare INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (folder_id, family, tag)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS tracker_folder_char_tag ON tracker_folder_char(family, tag);
+CREATE TABLE IF NOT EXISTS tracker_general (
+    family TEXT NOT NULL,
+    tag TEXT NOT NULL,
+    now INTEGER NOT NULL,
+    accepted INTEGER NOT NULL,
+    planned INTEGER NOT NULL,
+    folders INTEGER NOT NULL,
+    spare INTEGER NOT NULL,
+    spare_artists INTEGER NOT NULL,
+    PRIMARY KEY (family, tag)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS tracker_series (
+    family TEXT NOT NULL,
+    tag TEXT NOT NULL,
+    series TEXT NOT NULL,
+    PRIMARY KEY (family, tag)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS tracker_goal (
+    kind TEXT NOT NULL,
+    family TEXT NOT NULL,
+    tag TEXT NOT NULL,
+    goal INTEGER NOT NULL,
+    PRIMARY KEY (kind, family, tag)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS tracker_snapshot (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    summary TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS tracker_snapshot_stat (
+    snapshot_id INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    family TEXT NOT NULL,
+    tag TEXT NOT NULL,
+    now INTEGER NOT NULL,
+    accepted INTEGER NOT NULL,
+    planned INTEGER NOT NULL,
+    PRIMARY KEY (snapshot_id, kind, family, tag)
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS planner_setting (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL

@@ -9,6 +9,11 @@ function Sidebar() {
   const location = useLocation();
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [hideAccepted, setHideAccepted] = useState(() => { try { return localStorage.getItem('artist.hideAccepted') === 'true'; } catch { return false; } });
+  const toggleHideAccepted = (value) => { setHideAccepted(value); try { localStorage.setItem('artist.hideAccepted', String(value)); } catch { /* storage unavailable */ } };
+  // Review state of planner collections: accepted folders get a check mark.
+  const review = useQuery({ queryKey: ['tracker-folders'], queryFn: async () => (await api.tracker.folders()).data, refetchInterval: 30000 });
+  const reviewState = new Map((review.data?.items || []).map((item) => [item.folder_id, item]));
 
   const { data: collectionsData, isLoading } = useQuery({
     queryKey: ['collections'],
@@ -25,8 +30,9 @@ function Sidebar() {
   const collections = collectionsData || [];
   const sections = [...(groups.data || []), { id: null, name: 'Ungrouped' }];
   const filteredCollections = collections.filter((c) =>
-    c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    c.query.toLowerCase().includes(searchQuery.toLowerCase())
+    (c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    c.query.toLowerCase().includes(searchQuery.toLowerCase()))
+    && !(hideAccepted && reviewState.get(c.id)?.completed_at && location.pathname !== `/folder/${c.id}`)
   );
 
   return (
@@ -60,6 +66,11 @@ function Sidebar() {
           />
         </div>
 
+        {review.data?.total > 0 && <label className="flex items-center gap-2 border-b border-[#202a34] px-4 py-2 text-xs text-slate-400">
+          <input type="checkbox" checked={hideAccepted} onChange={(e) => toggleHideAccepted(e.target.checked)} />
+          Hide accepted ({review.data.accepted}/{review.data.total})
+        </label>}
+
         {/* Folders List */}
         <div className="flex-1 overflow-y-auto p-4">
           {isLoading && <div className="text-slate-400">Loading...</div>}
@@ -67,11 +78,11 @@ function Sidebar() {
             const members = filteredCollections.filter((folder) => folder.group_id === section.id);
             if (searchQuery && !members.length) return null;
             return <details key={section.id ?? 'ungrouped'} open={searchQuery || section.id === null || location.pathname === `/groups/${section.id}` || members.some((folder) => location.pathname === `/folder/${folder.id}`) ? true : undefined} className="mb-3">
-              <summary className="cursor-pointer text-xs font-semibold text-slate-300 py-2">{section.name} ({collections.filter((folder) => folder.group_id === section.id).length})</summary>
+              <summary className="cursor-pointer text-xs font-semibold text-slate-300 py-2">{section.name} ({collections.filter((folder) => folder.group_id === section.id).length}){(() => { const accepted = collections.filter((folder) => folder.group_id === section.id && reviewState.get(folder.id)?.completed_at).length; return accepted ? <span className="ml-1 font-normal text-emerald-400" title="Accepted collections">· {accepted} ✓</span> : null; })()}</summary>
               {section.id && <Link to={`/groups/${section.id}`} className="block text-xs text-blue-300 mb-2">Manage / scrape group</Link>}
               <div className="space-y-1">{members.map((collection) => (
                 <Link key={collection.id} to={`/folder/${collection.id}`} className={`block px-3 py-2 rounded-lg hover:bg-[#1b2539] ${location.pathname === `/folder/${collection.id}` ? 'bg-[#1b2539] text-blue-200' : 'text-slate-400'}`}>
-                  <div className="font-medium truncate">{collection.name}</div>
+                  <div className="flex items-center gap-1 font-medium"><span className="truncate">{collection.name}</span>{reviewState.get(collection.id)?.completed_at && <span className="text-emerald-400" title="Accepted">✓</span>}</div>
                   <div className="text-xs text-slate-400">{collection.image_count} images / {collection.type === 'tag' ? 'query' : collection.type}</div>
                 </Link>
               ))}</div>

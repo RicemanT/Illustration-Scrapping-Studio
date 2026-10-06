@@ -105,9 +105,9 @@ function PlannerCandidates({ folderId, context, tileHeight, hotkeysActive, onHov
       className={`gallery-surface rounded border ${hotkeysActive ? 'border-amber-700/70' : 'border-[#202a34]'}`} aria-label="Planner candidates">
       <div className="flex flex-wrap items-center gap-2 border-b border-[#202a34] p-2 text-xs">
         <button type="button" aria-expanded={open} onClick={() => setOpen(value => !value)} className="font-semibold text-amber-200">{open ? '−' : '+'} Wildcards: not selected by the plan</button>
-        <span className="text-slate-400">{data ? `${data.total} posts` : ''}{missing ? ` · ${missing} short of the target ${context.target}` : ''}</span>
+        <span className="text-slate-400">{data ? `${data.total} ${data.total === 1 ? 'post' : 'posts'}` : ''}{missing ? ` · ${missing} short of the target ${context.target}` : ''}</span>
         {open && <>
-          <select value={sort} onChange={(e) => setSort(e.target.value)} className="rounded border border-[#202a34] bg-[#090d12] px-2 py-1"><option value="popular">Most favorited</option><option value="newest">Newest</option></select>
+          <select value={sort} onChange={(e) => setSort(e.target.value)} className="rounded border border-[#202a34] bg-[#090d12] px-2 py-1"><option value="popular">Most favorited</option><option value="newest">Newest</option><option value="gaps">Fills gaps</option></select>
           <label className="flex items-center gap-1 text-slate-400" title="Posts the plan's blocked tags or quality rules rejected"><input type="checkbox" checked={includeFiltered} onChange={(e) => setIncludeFiltered(e.target.checked)} /> Show filtered</label>
           <label className="flex items-center gap-1 text-slate-400" title="Posts you removed or banned earlier"><input type="checkbox" checked={includeBanned} onChange={(e) => setIncludeBanned(e.target.checked)} /> Show banned</label>
           {context.era_from && <label className="flex items-center gap-1 text-slate-400" title="Hide posts from before the folder's era"><input type="checkbox" checked={eraOnly} onChange={(e) => setEraOnly(e.target.checked)} /> Only {context.era_from}+</label>}
@@ -143,6 +143,10 @@ function PlannerCandidates({ folderId, context, tileHeight, hotkeysActive, onHov
                     <button type="button" aria-label={`${selected.has(key) ? 'Deselect' : 'Select'} post`} onClick={(event) => { event.stopPropagation(); toggle(key); }}
                       className={`absolute left-2 top-2 z-10 h-4 w-4 rounded border ${selected.has(key) ? 'border-amber-200 bg-amber-500' : 'border-white/60 bg-black/40'}`} />
                     {selected.has(key) && <div className="pointer-events-none absolute inset-0 ring-2 ring-inset ring-amber-400" />}
+                    {item.fills?.length > 0 && <div className="pointer-events-none absolute left-8 right-2 top-2 flex flex-wrap gap-1 text-[10px]">
+                      {item.fills.slice(0, 3).map((fill) => <span key={fill.tag} title={`${fill.now} of ${fill.goal} in the dataset`}
+                        className={`rounded px-1 ${fill.priority ? 'bg-rose-950/90 text-rose-100 ring-1 ring-rose-600/60' : 'bg-emerald-950/90 text-emerald-100'}`}>+ {fill.priority ? '★ ' : ''}{fill.tag.replaceAll('_', ' ')}</span>)}
+                    </div>}
                     <div className="pointer-events-none absolute right-2 top-2 flex flex-col items-end gap-1 text-[10px]">
                       {item.override === 'ban' && <span className="rounded bg-red-950/90 px-1 text-red-200">banned</span>}
                       {item.filtered && <span className="rounded bg-amber-950/90 px-1 text-amber-200">{item.filtered.replaceAll('_', ' ')}</span>}

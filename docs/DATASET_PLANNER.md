@@ -142,6 +142,28 @@ The planner balances content, not style: it only sees tags, favorites and sizes,
 7. **Accept the folder.** The header shows the folder's images against the plan's target. When it looks right, **Accept folder** marks every image accepted (no longer pending) and locks exactly these posts: every later plan selects exactly this collection's images for the artist, whatever the target, and deleting or accepting images is turned off. **Reopen folder** sets the images back to pending; they stay locked, and removing one bans it. Quality marks can be changed again after reopening; the sidecars keep the previously accepted quality tags until you accept the folder again.
 8. **Export the training layout last.** Repeats are recalculated from the images actually left in each folder, so an artist trimmed from 60 to 40 images gets more repeats and keeps about the same number of training samples.
 
+### Tracker
+
+**Tracker** (top bar) follows characters and general tags across every planner collection as one growing dataset: the pilot, then each batch of artists you plan and download into the same groups. Planner collections show a ✓ in the sidebar once accepted, each group shows how many are accepted, and **Hide accepted** leaves only the collections still to review; the Tracker's **Collections** card lists them too, with each one's images against the target.
+
+For each character (and, on the second tab, each general tag) the tables show:
+
+| Column | Meaning |
+| --- | --- |
+| Planned | Images the plans picked for the collections (the latest download into each collection) |
+| Now | Images in the collections now |
+| Accepted | Images in accepted collections |
+| Goal | Your goal, or the planner's **character floor** for target characters (marked * when it is yours) |
+| Gap | How many images are still missing to reach the goal |
+| Spare | Usable harvested posts not in any collection yet, in collections still under review (number of artists in brackets); posts before a collection's era, filtered, banned or removed by hand are not counted |
+| Status | **missing** (a target with no images), **lost in curation** (fewer than planned), **below goal**, **ok**; general tags only get a status against a goal you set |
+
+Filter by status, series, priority series or target list, and click a row to see which collections contain the character, where curation lost it, and which collections' wildcards could add it; set your own goal there, for one character or every character of the series. Character counts update as you curate; general tags are recounted in the background (automatically when they are older than 30 minutes, or with **Recount now**).
+
+In a planner collection, the **Characters** strip above the gallery lists the characters it contains with their dataset-wide counts against the goal (★ marks priority series); click one to show its images. **Lost vs. plan** lists characters the plan picked here that curation removed. Deleting images that leave a character short of its goal shows a short notice (longer and red for priority characters); it never blocks the deletion. In the wildcards, **Fills gaps** sorts the posts that add the most-needed characters first and labels what each would add.
+
+**Releases.** When you train a release, save a snapshot under **Release snapshots** (for example `v0.4`). Then continue: rename the pilot groups if you like (for example to `Full danbooru`), plan the next batch of artists and download it with the same group prefix (`Full`), so the new artists' collections join the same groups and the accepted ones stay as they are. **Compare** with a snapshot adds a Δ column showing what the batch changed, and every table and snapshot downloads as CSV.
+
 ### Quality tags from scores
 
 Section **6. Quality tags from scores** on the Planner page, or **Auto quality from scores** in a planner collection's header, sets the quality scale (masterpiece, best quality, low quality) from each post's score on its site. Raw scores are not comparable across years or ratings: newer posts reach more users and explicit posts collect more votes. So each post is ranked only against the harvested posts from the same site, year and rating:

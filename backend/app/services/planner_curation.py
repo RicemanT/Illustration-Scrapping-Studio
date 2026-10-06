@@ -96,6 +96,8 @@ def candidates(folder_id: int, include_filtered: bool = False, include_banned: b
         family = 'e621' if artist['site'] == 'e621' else 'danbooru'
         blocked = config.tag_set('blocked', family)
         overrides = {(r['site'], r['remote_id']): r['action'] for r in conn.execute('SELECT * FROM override WHERE artist_id=?', (artist['id'],))}
+        delivered = {(r['site'], r['remote_id']) for r in conn.execute(
+            "SELECT site, remote_id FROM delivery_item WHERE folder_id=? AND status IN ('done', 'skipped')", (folder_id,))}
         rows = conn.execute('SELECT * FROM post WHERE artist_id=?', (artist['id'],)).fetchall()
     finally:
         conn.close()
@@ -106,6 +108,9 @@ def candidates(folder_id: int, include_filtered: bool = False, include_banned: b
         if key in present:
             continue
         action = overrides.get(key)
+        if action is None and key in delivered:
+            # Downloaded here and removed by hand: a ban from the next plan on, hidden like one now.
+            action = 'ban'
         if action == 'ban' and not include_banned:
             continue
         year = post_year(r['created_at'])
@@ -120,7 +125,16 @@ def candidates(folder_id: int, include_filtered: bool = False, include_banned: b
                       'tags': (r['general'] or '').split(), 'override': action, 'filtered': reason, 'year': year or None,
                       'posted_at': sortable_time(r['created_at']) or None,
                       'url': POST_URLS[r['site']].format(r['remote_id'])})
-    if sort == 'newest':
+    if sort == 'gaps':
+        # Wildcards that add characters still short of their goal across the dataset come first.
+        from app.services.tracker import character_needs
+        needs = character_needs(family)
+        for item in items:
+            fills = [{'tag': tag, **{k: needs[tag][k] for k in ('now', 'goal', 'priority')}} for tag in item['characters'] if tag in needs]
+            item['fills'] = sorted(fills, key=lambda f: (not f['priority'], f['now'] / f['goal']))
+            item['gain'] = round(sum(needs[f['tag']]['need'] for f in fills), 4)
+        items.sort(key=lambda i: (-i['gain'], -(i['fav_count'] if i['fav_count'] is not None else (i['score'] or 0)), i['remote_id']))
+    elif sort == 'newest':
         items.sort(key=lambda i: (i['posted_at'] or '', int(i['remote_id']) if str(i['remote_id']).isdigit() else 0), reverse=True)
     else:
         items.sort(key=lambda i: (-(i['fav_count'] if i['fav_count'] is not None else (i['score'] or 0)), i['remote_id']))
