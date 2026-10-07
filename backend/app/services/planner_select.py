@@ -24,7 +24,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.services.media import ARCHIVE_FORMATS, PIL_IMAGE_FORMATS, VIDEO_FORMATS
 
@@ -89,6 +89,10 @@ DEFAULT_BOOST_TAGS = {
 }
 
 
+CONTENT_GATES = ('rough', 'monochrome', 'comic', '3d', 'photo', 'ai')
+DEFAULT_CONTENT_GATES = ('rough', 'monochrome', 'comic', '3d', 'photo')
+
+
 class PlannerConfig(BaseModel):
     min_images: int = Field(20, ge=1, le=10000, description='Artists with fewer usable images are dropped')
     max_images: int = Field(60, ge=1, le=10000, description='Unique images per artist at most')
@@ -127,8 +131,19 @@ class PlannerConfig(BaseModel):
     latest_style_posts: int = Field(0, ge=0, le=100000, description="Newest analysed posts that set the latest style's centre (0 = half the target, 20 to 40)")
     aesthetic_floor: float = Field(0.2, ge=0, le=0.95, description='Drop posts below this dataset-wide aesthetic percentile')
     near_duplicate: float = Field(0.97, ge=0.5, le=1.0, description='Deep-feature similarity above which two posts count as one picture')
+    # Content types the classifiers may exclude (when a minority of the artist's style). AI is off by default:
+    # artist lists usually avoid AI artists already, so its hits are mostly false positives.
+    content_gates: list[str] = Field(default_factory=lambda: list(DEFAULT_CONTENT_GATES))
     weight_style: float = Field(1.0, ge=0, le=100)
     weight_aesthetic: float = Field(1.0, ge=0, le=100)
+
+    @field_validator('content_gates')
+    @classmethod
+    def known_gates(cls, value):
+        unknown = sorted(set(value) - set(CONTENT_GATES))
+        if unknown:
+            raise ValueError(f"Unknown content type(s): {', '.join(unknown)}")
+        return [gate for gate in CONTENT_GATES if gate in value]
 
     def tag_set(self, kind: str, family: str) -> set[str]:
         return {tag.strip().replace(' ', '_') for tag in getattr(self, f'{kind}_tags_{family}') if tag.strip()}

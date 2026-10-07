@@ -100,7 +100,10 @@ class AssessTests(unittest.TestCase):
         self.assertEqual(verdicts['30'].reject, 'low_aesthetic')
         self.assertEqual(verdicts['2'].reject, 'near_duplicate')  # the lower-scored copy goes
         self.assertIsNone(verdicts['1'].reject)
-        self.assertEqual(verdicts['4'].reject, 'content_ai')
+        self.assertIsNone(verdicts['4'].reject)  # AI is not a content rule by default
+        gated = A.assess_artist(posts, rows, {'dinov2': vectors}, self.scale(),
+                                A.AssessOptions(aesthetic_floor=0.2, gates=('rough', 'ai')), target=20)
+        self.assertEqual(gated.verdicts[('danbooru', '4')].reject, 'content_ai')
         self.assertIsNone(A.assess_artist(posts, {}, {}, self.scale(), A.AssessOptions(), target=20))
 
     def test_auc(self):

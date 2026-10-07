@@ -45,6 +45,7 @@ class AssessOptions:
     aesthetic_floor: float = 0.2  # dataset-wide aesthetic percentile below which posts are dropped
     near_duplicate: float = 0.97  # deep-feature cosine above which two posts count as the same picture
     min_style_samples: int = 8    # fewer analysed posts than this: style is not judged
+    gates: tuple = ('rough', 'monochrome', 'comic', '3d', 'photo')  # content types that may be excluded (AI off by default)
 
 
 class AestheticScale:
@@ -191,7 +192,7 @@ def assess_artist(posts: list, analysis: dict, vectors: dict[str, dict], scale: 
         z = _style_z(analysed, vectors, latest_count, era) if judged else {}
         in_style = [key for key in analysed if key in eligible and (not judged or z.get(key, 0.0) <= options.keep_z)]
         shares = {name: sum(name in categories[key] for key in in_style) / len(in_style) if in_style else 0.0 for name in CONTENT}
-        excluded = [name for name, share in shares.items() if share < options.majority]
+        excluded = [name for name, share in shares.items() if name in options.gates and share < options.majority]
         usable = [key for key in in_style if not set(categories[key]) & set(excluded)
                   and (ensemble[key] is None or ensemble[key] >= options.aesthetic_floor)]
         return z, excluded, usable
@@ -254,7 +255,7 @@ def assess_artist(posts: list, analysis: dict, vectors: dict[str, dict], scale: 
             verdict.flags.append('off_style')
         if hit:
             verdict.flags.extend(f'content_{name}' for name in hit)
-        if 'ai' not in hit and _value(row, 'ai') >= AI_SUSPECT:
+        if 'ai' in options.gates and 'ai' not in hit and _value(row, 'ai') >= AI_SUSPECT:
             verdict.flags.append('ai_suspect')
         if key in usable_set and ranks.get(key, 1.0) < 0.15:
             verdict.flags.append('low_aesthetic_here')

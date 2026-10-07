@@ -37,6 +37,9 @@ def _present(main, folder_id: int) -> dict[int, tuple]:
     return images
 
 
+SOFT_FLAGS = {'style_borderline', 'ai_suspect', 'low_aesthetic_here'}
+
+
 def folder_review(folder_id: int) -> Optional[dict]:
     """Flags and model results for every image in a planner collection; stores the flags on the images."""
     planner = planner_connect()
@@ -72,16 +75,21 @@ def folder_review(folder_id: int) -> Optional[dict]:
                       latest_usable=assessment.latest_usable, career_usable=assessment.career_usable)
         counts = Counter()
         updates = []
-        severity = {'off_style': 3, 'low_aesthetic': 3, 'near_duplicate': 2, 'ai_suspect': 2,
-                    'style_borderline': 1, 'low_aesthetic_here': 1, 'not_analyzed': 1}
+        severity = {'off_style': 3, 'low_aesthetic': 3, 'near_duplicate': 2, 'not_analyzed': 1}
+        hints_counter = Counter()
         for image_id, key in images.items():
             verdict = assessment.verdicts.get(key)
             row = analysis.get(key)
             flags = list(verdict.flags) if verdict else ['not_analyzed']
             if verdict is None and row is None:
                 flags = ['not_analyzed']
+            # Gallery badges and flags-first order use only hard flags (what the plan would drop); soft hints
+            # (borderline style, possibly AI, among the artist's weakest) stay in the viewer's analysis panel.
+            hints = [flag for flag in flags if flag in SOFT_FLAGS]
+            detail = {'flags': flags, 'hints': hints}
+            flags = [flag for flag in flags if flag not in SOFT_FLAGS]
             counts.update(flags)
-            detail = {'flags': flags}
+            hints_counter.update(hints)
             if verdict is not None and row is not None:
                 detail.update(z=verdict.z, style=round(verdict.style, 3), aesthetic_rank=round(verdict.aesthetic, 3),
                               ensemble=round(verdict.ensemble, 4) if verdict.ensemble is not None else None,
@@ -98,6 +106,7 @@ def folder_review(folder_id: int) -> Optional[dict]:
         main.executemany('UPDATE image SET analysis_flags=?, analysis_flag_count=? WHERE id=?', updates)
         main.commit()
         result['counts'] = dict(counts)
+        result['hints'] = dict(hints_counter)
         return result
     finally:
         main.close()

@@ -191,6 +191,7 @@ const NUMBER_FIELDS = [
   ['min_year', 'Posts from year (blank = any)'], ['newest_posts_per_artist', 'Only each artist’s newest posts (0 = all)'],
 ];
 const WEIGHT_FIELDS = ['weight_quality', 'weight_novelty', 'weight_character', 'weight_rarity', 'weight_boost', 'priority_character_boost', 'weight_style', 'weight_aesthetic'];
+const CONTENT_GATES = [['rough', 'sketch / rough'], ['monochrome', 'monochrome'], ['comic', 'comic page'], ['3d', '3D'], ['photo', 'photo'], ['ai', 'AI-generated']];
 const ANALYSIS_FIELDS = [
   ['style_keep_z', 'Off-style beyond (robust z)', 'Posts farther than this from the artist style are dropped'],
   ['style_flag_z', 'Flag for review beyond (z)', 'Kept, but flagged so you look at them first'],
@@ -234,6 +235,12 @@ function RunPanel({ status, runId, setRunId, onChange }) {
       {config.use_analysis && <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         {ANALYSIS_FIELDS.map(([key, label, hint]) => <label key={key} className="flex flex-col gap-1" title={hint}><span className="text-slate-400">{label}</span>
           <input type="number" step="any" className={field} value={config[key] ?? ''} onChange={(event) => set(key, Number(event.target.value))} /></label>)}
+        <div className="md:col-span-3 flex flex-wrap items-center gap-x-4 gap-y-1" title="Only ticked types are dropped (when they are a minority of the artist's style). Untick a type whose detector catches good images.">
+          <span className="text-slate-400">Content rules for</span>
+          {CONTENT_GATES.map(([key, label]) => { const gates = config.content_gates || ['rough', 'monochrome', 'comic', '3d', 'photo'];
+            return <label key={key} className="flex items-center gap-1"><input type="checkbox" checked={gates.includes(key)}
+              onChange={(event) => set('content_gates', event.target.checked ? [...gates, key] : gates.filter((gate) => gate !== key))} />{label}</label>; })}
+        </div>
       </div>}
     </div>}
     {config && <details className="text-sm"><summary className="cursor-pointer text-slate-300">Score weights and tag lists</summary>

@@ -10,7 +10,8 @@ from app.analysis.store import STYLE_MODELS, connect, get_config, load_posts, lo
 
 def options_from(config) -> AssessOptions:
     return AssessOptions(keep_z=config.style_keep_z, flag_z=config.style_flag_z, latest_posts=config.latest_style_posts,
-                         majority=config.content_majority, aesthetic_floor=config.aesthetic_floor, near_duplicate=config.near_duplicate)
+                         majority=config.content_majority, aesthetic_floor=config.aesthetic_floor, near_duplicate=config.near_duplicate,
+                         gates=tuple(getattr(config, 'content_gates', ('rough', 'monochrome', 'comic', '3d', 'photo'))))
 
 
 class AnalysisContext:
