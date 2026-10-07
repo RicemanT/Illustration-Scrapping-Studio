@@ -241,6 +241,7 @@ export const api = {
     candidates: (folderId, params) => client.get(`/planner/folders/${folderId}/candidates`, { params }),
     acceptCandidates: (folderId, posts) => client.post(`/planner/folders/${folderId}/accept`, { posts }),
     completeFolder: (folderId, complete) => client.post(`/planner/folders/${folderId}/complete`, { complete }),
+    completeAllFolders: (complete) => client.post('/planner/folders/complete-all', { complete }),
     setEra: (folderId, eraFrom) => client.put(`/planner/folders/${folderId}/era`, { era_from: eraFrom }),
     setMarks: (folderId, imageId, marks) => client.put(`/planner/folders/${folderId}/images/${imageId}/marks`, marks),
     markViewed: (folderId, imageId) => client.post(`/planner/folders/${folderId}/images/${imageId}/viewed`),

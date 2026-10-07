@@ -49,7 +49,7 @@ export function describeQualityJob(job) {
     `${number(r.normal)} normal`,
     r.kept_manual ? `${number(r.kept_manual)} hand-set marks kept` : null,
     r.no_score ? `${number(r.no_score)} without a usable score` : null,
-    r.locked_folders ? `${number(r.locked_folders)} accepted ${r.locked_folders === 1 ? 'collection' : 'collections'} skipped` : null,
+    r.locked_folders ? `${number(r.locked_folders)} accepted ${r.locked_folders === 1 ? 'collection' : 'collections'} skipped (tick “Include accepted collections” to tag them too)` : null,
   ].filter(Boolean).join(' · ');
 }
 

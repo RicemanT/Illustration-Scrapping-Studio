@@ -430,6 +430,12 @@ def accept_candidates(folder_id: int, request: AcceptRequest):
         raise HTTPException(409, str(exc)) from exc
 
 
+@router.post('/folders/complete-all')
+def complete_all_folders(request: CompleteRequest):
+    """Accept or reopen every planner collection at once."""
+    return curation.set_complete_all(request.complete)
+
+
 @router.post('/folders/{folder_id}/complete')
 def complete_folder(folder_id: int, request: CompleteRequest):
     try:

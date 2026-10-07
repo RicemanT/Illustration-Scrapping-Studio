@@ -273,6 +273,27 @@ def commit_marks(folder_id: int) -> int:
     return len(changed)
 
 
+def set_complete_all(complete: bool) -> dict:
+    """Accept (or reopen) every planner collection whose state differs; returns how many changed."""
+    conn = connect()
+    try:
+        folders = {r['folder_id']: r['completed_at'] for r in conn.execute(
+            'SELECT DISTINCT d.folder_id, a.completed_at FROM delivery_item d JOIN artist a ON a.id=d.artist_id WHERE d.folder_id IS NOT NULL')}
+    finally:
+        conn.close()
+    main = db.get_connection()
+    try:
+        existing = {r[0] for r in main.execute('SELECT id FROM collection')}
+    finally:
+        main.close()
+    changed = 0
+    for folder_id, completed_at in sorted(folders.items()):
+        if folder_id in existing and bool(completed_at) != complete:
+            set_complete(folder_id, complete)
+            changed += 1
+    return {'changed': changed, 'folders': sum(1 for folder_id in folders if folder_id in existing)}
+
+
 def set_complete(folder_id: int, complete: bool) -> dict:
     """Complete: accept every image, lock exactly their posts and freeze the artist's selection."""
     conn = connect()

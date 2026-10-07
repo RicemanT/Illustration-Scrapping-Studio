@@ -42,6 +42,8 @@ class QualityConfig(BaseModel):
     aesthetic_tags: bool = True
     very_aesthetic_top: float = Field(5.0, ge=0, le=100, description='Top percent of analysed images marked very aesthetic')
     aesthetic_top: float = Field(15.0, ge=0, le=100, description='Top percent marked aesthetic (includes the very aesthetic share)')
+    # Accepted collections are skipped unless this is on (hand-set marks are never replaced either way).
+    include_accepted: bool = False
 
     @model_validator(mode='after')
     def shares(self):
@@ -253,7 +255,7 @@ def apply(folder_ids: Optional[list[int]], config: QualityConfig, progress: Call
     try:
         for index, (folder_id, (artist_id, completed_at)) in enumerate(sorted(folders.items()), 1):
             progress(done=index - 1, total=len(folders))
-            if completed_at:
+            if completed_at and not config.include_accepted:
                 result['locked_folders'] += 1
                 continue
             if not main.execute('SELECT 1 FROM collection WHERE id=?', (folder_id,)).fetchone():

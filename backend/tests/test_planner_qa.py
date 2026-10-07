@@ -131,6 +131,16 @@ class CurationTests(unittest.IsolatedAsyncioTestCase):
         finally:
             conn.close()
 
+    async def test_accept_all_and_reopen_all(self):
+        from app.services import planner_curation as curation
+        folder_id = await self._delivered_folder()
+        accepted = curation.set_complete_all(True)
+        self.assertTrue(accepted['folders'] >= 1 and accepted['changed'] == accepted['folders'])
+        self.assertTrue(curation.folder_context(folder_id)['completed_at'])
+        self.assertEqual(curation.set_complete_all(True)['changed'], 0)  # already accepted
+        self.assertEqual(curation.set_complete_all(False)['changed'], accepted['folders'])
+        self.assertIsNone(curation.folder_context(folder_id)['completed_at'])
+
     async def test_candidates_accept_and_complete_freeze_the_selection(self):
         from app.services import planner_curation as curation
         folder_id = await self._delivered_folder()

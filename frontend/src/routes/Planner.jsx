@@ -318,6 +318,8 @@ function DeliveryPanel({ status, runId, onChange }) {
   const layout = useMutation({ mutationFn: () => api.planner.trainingLayout(deliveryId) });
   const prunePreview = useMutation({ mutationFn: () => api.planner.prunePreview(deliveryId) });
   const pruneApply = useMutation({ mutationFn: () => api.planner.pruneApply(deliveryId), onSuccess: () => prunePreview.reset() });
+  const queryClient = useQueryClient();
+  const completeAll = useMutation({ mutationFn: (complete) => api.planner.completeAllFolders(complete), onSuccess: () => { queryClient.invalidateQueries(); onChange(); } });
   const sites = Object.keys(data?.progress?.sites || {});
   return <section className="rounded border border-slate-800 p-4 space-y-3">
     <h2 className="font-semibold">5. Download selected images</h2>
@@ -329,9 +331,14 @@ function DeliveryPanel({ status, runId, onChange }) {
       {data && !active && (data.status !== 'completed' || errorCount > 0) && <button className={quiet} disabled={resume.isPending || harvesting} onClick={() => resume.mutate()}>{data.status === 'completed' ? `Retry ${number(errorCount)} failed` : `Resume download #${data.id}`}</button>}
       {data && !active && <button className={quiet} disabled={layout.isPending} onClick={() => layout.mutate()}>Export training layout</button>}
       {data && !active && <button className={quiet} disabled={prunePreview.isPending || pruneApply.isPending} onClick={() => { pruneApply.reset(); prunePreview.mutate(); }}>Remove images no longer selected…</button>}
+      <button className={quiet} disabled={completeAll.isPending || active} title="Accept every planner collection: its images become the artist's selection and are locked"
+        onClick={() => { if (window.confirm('Accept every planner collection?')) completeAll.mutate(true); }}>Accept all collections</button>
+      <button className={quiet} disabled={completeAll.isPending || active} title="Reopen every accepted planner collection for more curation (its images stay locked)"
+        onClick={() => { if (window.confirm('Reopen every accepted planner collection?')) completeAll.mutate(false); }}>Reopen all</button>
+      {completeAll.data && <span className="text-xs text-green-300">{number(completeAll.data.changed)} of {number(completeAll.data.folders)} collections {completeAll.variables ? 'accepted' : 'reopened'}</span>}
       {harvesting && <span className="text-xs text-slate-400">Wait for the harvest to finish first.</span>}
     </div>
-    {[start.error, resume.error, cancel.error, layout.error, job.error, prunePreview.error, pruneApply.error].filter(Boolean).map((error, index) => <p role="alert" className="text-red-400" key={index}>{errorText(error)}</p>)}
+    {[start.error, resume.error, cancel.error, layout.error, job.error, prunePreview.error, pruneApply.error, completeAll.error].filter(Boolean).map((error, index) => <p role="alert" className="text-red-400" key={index}>{errorText(error)}</p>)}
     {prunePreview.data && <div className="rounded border border-amber-700/60 p-3 text-sm space-y-2">
       {prunePreview.data.data.images ? <>
         <p>{number(prunePreview.data.data.images)} images in {number(prunePreview.data.data.collections)} collections came from an earlier planner download but are not selected by run #{data?.run_id}, for example posts you banned since. Removing them keeps your training folders matching the plan.</p>

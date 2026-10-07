@@ -166,6 +166,8 @@ Section **7. Image analysis** on the Planner page lets the server's GPUs look at
 
 **Calibration and the redo.** **Compare** measures how well each style model and block range, and each scorer, agrees with what you removed and marked by hand (AUC: 0.5 is chance, 1.0 perfect); **use blocks …** switches the planner to the best range. **Reset hand curation** writes every decision (removals, locks, bans, accepted folders, marks, eras) to `<planner>/exports/curation-backup-*.json` and clears them: removed images become choosable again (their delivery items are marked `removed`, so the next plan does not ban them), and the backup keeps them as calibration labels. Then analyse, plan with analysis, download into the same prefix, **Remove images no longer selected**, apply tags, and review flags-first.
 
+**Bulk accept.** Section 5 has **Accept all collections** and **Reopen all**, which accept or reopen every planner collection at once (the same as each folder's Accept button). The quality and aesthetic tag pass skips accepted collections unless **Include accepted collections** is ticked, for example after pulling wildcards into folders you had already accepted; hand-set marks are never replaced either way.
+
 ### Tracker
 
 **Tracker** (top bar) follows characters and general tags across every planner collection as one growing dataset: the pilot, then each batch of artists you plan and download into the same groups. Planner collections show a ✓ in the sidebar once accepted, each group shows how many are accepted, and **Hide accepted** leaves only the collections still to review; the Tracker's **Collections** card lists them too, with each one's images against the target.

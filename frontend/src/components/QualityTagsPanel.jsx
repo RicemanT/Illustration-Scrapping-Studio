@@ -81,6 +81,8 @@ export default function QualityTagsPanel() {
         </label>
         <label className="flex items-center gap-2 text-xs text-slate-300"><input type="checkbox" checked={config.by_year} onChange={(event) => set('by_year', event.target.checked)} /> Separate years</label>
         <label className="flex items-center gap-2 text-xs text-slate-300"><input type="checkbox" checked={config.by_rating} onChange={(event) => set('by_rating', event.target.checked)} /> Separate ratings</label>
+        <label className="flex items-center gap-2 text-xs text-slate-300" title="Also tag accepted collections, e.g. after adding wildcards to them. Marks set by hand are still never replaced.">
+          <input type="checkbox" checked={Boolean(config.include_accepted)} onChange={(event) => set('include_accepted', event.target.checked)} /> Include accepted collections</label>
         <label className="flex items-center gap-2 text-xs text-slate-300" title="From the image-analysis scorer ensemble; needs 7. Image analysis"><input type="checkbox" checked={config.aesthetic_tags ?? true} onChange={(event) => set('aesthetic_tags', event.target.checked)} /> Aesthetic tags from scorers</label>
         {config.aesthetic_tags !== false && <>
           <label className="text-xs text-slate-400">Very aesthetic: top %
