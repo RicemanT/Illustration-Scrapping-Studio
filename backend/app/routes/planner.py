@@ -186,6 +186,20 @@ def enable_only(request: EnableOnly):
     return result
 
 
+class EnableBatch(BaseModel):
+    sites: list[str] = Field(min_length=1, max_length=3)
+    add: int = Field(0, ge=0, le=1_000_000)
+    keep_collections: bool = True
+
+
+@router.post('/artists/enable-batch')
+def enable_batch(request: EnableBatch):
+    try:
+        return store.enable_batch(request.sites, request.add, request.keep_collections)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
 @router.post('/artists/enable-all')
 def enable_all():
     return {'enabled': store.enable_all()}

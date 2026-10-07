@@ -67,6 +67,11 @@ export default function Planner() {
   const enableOnly = useMutation({ mutationFn: () => api.planner.enableOnly(scope.split('\n').map((line) => line.trim()).filter(Boolean)),
     onSuccess: ({ data }) => { setNotice(`Planning limited to ${number(data.enabled)} artists.${data.unknown.length ? ` Not on the list: ${data.unknown.slice(0, 20).join(', ')}${data.unknown.length > 20 ? '…' : ''}.` : ''}${data.ambiguous.length ? ` On several sites, so all were enabled: ${data.ambiguous.slice(0, 20).join(', ')}.` : ''}`); refresh(); } });
   const enableAll = useMutation({ mutationFn: api.planner.enableAll, onSuccess: ({ data }) => { setNotice(`Enabled ${number(data.enabled)} more artists; every listed artist is in scope again.`); refresh(); } });
+  const [batchSites, setBatchSites] = usePersisted('batchSites', ['danbooru', 'gelbooru']);
+  const [batchAdd, setBatchAdd] = usePersisted('batchAdd', 500);
+  const [batchKeep, setBatchKeep] = usePersisted('batchKeep', true);
+  const enableBatch = useMutation({ mutationFn: () => api.planner.enableBatch({ sites: batchSites, add: Number(batchAdd) || 0, keep_collections: batchKeep }),
+    onSuccess: ({ data }) => { setNotice(`${number(data.enabled)} artists in scope: ${number(data.added)} added, ${number(data.with_collections)} with collections kept; ${number(data.remaining)} more waiting on ${batchSites.join(' and ')}.`); refresh(); } });
   const clearPriority = useMutation({ mutationFn: api.planner.clearPriority, onSuccess: ({ data }) => { setNotice(`Priority cleared; ${number(data.removed)} series-only targets removed.`); refresh(); } });
   const fetchCharacters = useMutation({ mutationFn: () => api.planner.fetchCharacters({ danbooru: Number(topCounts.danbooru) || 0, e621: Number(topCounts.e621) || 0 }),
     onSuccess: ({ data }) => { setNotice(`Character targets: ${Object.entries(data.imported).map(([site, count]) => `${number(count)} ${site}`).join(', ')} fetched.`); refresh(); } });
@@ -84,7 +89,7 @@ export default function Planner() {
       <p className="text-sm text-slate-400">Choose each artist's training images from post metadata (tags, favorites, sizes) before downloading anything. The planner keeps its own data and never changes your collections.</p>
       {status.data?.path && <p className="text-xs text-slate-500" title="Inside the active library. Set ARTIST_PLANNER_PATH before starting the backend to store it elsewhere.">Planner data: {status.data.path}</p>}
     </div>
-    {[status.error, importArtists.error, importCharacters.error, fetchCharacters.error, addSeries.error, clearPriority.error, enableOnly.error, enableAll.error].filter(Boolean).map((error, index) => <p role="alert" className="text-red-400" key={index}>{errorText(error)}</p>)}
+    {[status.error, importArtists.error, importCharacters.error, fetchCharacters.error, addSeries.error, clearPriority.error, enableOnly.error, enableAll.error, enableBatch.error].filter(Boolean).map((error, index) => <p role="alert" className="text-red-400" key={index}>{errorText(error)}</p>)}
     {fileError && <p role="alert" className="text-red-400">{fileError}</p>}
     {notice && <p role="status" className="text-green-300">{notice}</p>}
 
@@ -128,6 +133,16 @@ export default function Planner() {
           <textarea aria-label="Artists to keep in scope" className={`${field} block w-full h-28`} value={scope} onChange={(event) => setScope(event.target.value)} placeholder={'danbooru,example_artist\nanother artist'} />
           <div className="flex flex-wrap gap-2"><button className={quiet} disabled={enableOnly.isPending || !scope.trim()} onClick={() => { setNotice(''); enableOnly.mutate(); }}>Enable only these</button>
             <button className={quiet} disabled={enableAll.isPending} onClick={() => { setNotice(''); enableAll.mutate(); }}>Enable all listed artists</button></div>
+          <div className="mt-3 space-y-2 rounded border border-slate-800 p-2">
+            <p className="text-xs text-slate-400"><b>Plan in batches.</b> Keeps the chosen sites' artists already in scope and adds the next ones in list order; artists that already have collections (the pilot, earlier batches) stay in, on any site, so their characters keep counting towards the shared goals. Everyone else is left out. Deliver each batch under its own group name prefix: artists with folders keep them.</p>
+            <div className="flex flex-wrap items-center gap-3 text-sm">
+              {SITES.map((site) => <label key={site} className="flex items-center gap-1"><input type="checkbox" checked={batchSites.includes(site)}
+                onChange={(event) => setBatchSites(event.target.checked ? [...batchSites, site] : batchSites.filter((item) => item !== site))} />{site}</label>)}
+              <label className="text-xs text-slate-400">Add the next<input type="number" min="0" className={`${field} ml-2 w-24`} value={batchAdd} onChange={(event) => setBatchAdd(event.target.value)} /> artists (0 = all)</label>
+              <label className="flex items-center gap-1 text-xs text-slate-300"><input type="checkbox" checked={batchKeep} onChange={(event) => setBatchKeep(event.target.checked)} />Keep artists with collections</label>
+              <button className={quiet} disabled={enableBatch.isPending || batchSites.length === 0} onClick={() => { setNotice(''); enableBatch.mutate(); }}>Enable batch</button>
+            </div>
+          </div>
         </div>
       </details>
       <table className="text-sm"><tbody>

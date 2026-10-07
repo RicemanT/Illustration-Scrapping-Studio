@@ -159,6 +159,33 @@ class PlannerStoreTests(unittest.TestCase):
         self.assertEqual(status['artists']['danbooru']['enabled'], 1)
         self.assertEqual(status['artists']['e621']['disabled'], 1)
 
+    def test_enable_batch_keeps_collections_and_adds_the_next_artists(self):
+        store.import_artists('site,display_name,query_tag\ndanbooru,d1,d1\ne621,e1,e1\ndanbooru,d2,d2\ndanbooru,d3,d3\n'
+                             'gelbooru,g1,g1\ne621,e2,e2\n')
+        conn = store.connect()
+        ids = {r['tag']: r['id'] for r in conn.execute('SELECT id, tag FROM artist')}
+        conn.execute('PRAGMA foreign_keys = OFF')  # a bare delivery_item stands in for an earlier delivery
+        conn.executemany("INSERT INTO delivery_item (delivery_id, site, remote_id, artist_id, folder_id, status) VALUES (1, ?, '1', ?, 1, 'done')",
+                         [('danbooru', ids['d1']), ('e621', ids['e1'])])  # the pilot
+        conn.commit()
+        conn.close()
+        store.enable_only(['d1', 'e621,e1'])  # planning was limited to the pilot
+
+        def enabled():
+            conn = store.connect()
+            names = {r['tag'] for r in conn.execute('SELECT tag FROM artist WHERE enabled=1')}
+            conn.close()
+            return names
+
+        first = store.enable_batch(['danbooru', 'gelbooru'], add=2)
+        self.assertEqual(enabled(), {'d1', 'e1', 'd2', 'd3'})  # pilot on any site + the next two
+        self.assertEqual((first['added'], first['with_collections'], first['remaining']), (2, 2, 1))
+        second = store.enable_batch(['danbooru', 'gelbooru'], add=2)
+        self.assertEqual(enabled(), {'d1', 'e1', 'd2', 'd3', 'g1'})
+        self.assertEqual(second['remaining'], 0)
+        with self.assertRaises(ValueError):
+            store.enable_batch(['pixiv'])
+
     def test_character_import_merges_danbooru_and_gelbooru_family(self):
         result = store.import_characters('site,tag,post_count\ndanbooru,hatsune miku,10\ngelbooru,hatsune_miku,5\ne621,judy_hopps,3\n')
         self.assertEqual(result['by_family'], {'danbooru': 1, 'e621': 1})

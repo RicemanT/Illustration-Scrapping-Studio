@@ -110,6 +110,22 @@ def _ensure_folders(group_id: int, site: str, artists: list[dict], library: Path
         main.close()
 
 
+def _existing_folders() -> dict[tuple[str, int], int]:
+    """(site, artist_id) -> the artist's planner folder from earlier deliveries, if that folder still exists."""
+    conn = connect()
+    try:
+        latest = {(r['site'], r['artist_id']): r['folder_id'] for r in conn.execute(
+            'SELECT site, artist_id, folder_id FROM delivery_item WHERE folder_id IS NOT NULL ORDER BY delivery_id')}
+    finally:
+        conn.close()
+    main = db.get_connection()
+    try:
+        alive = {r[0] for r in main.execute("SELECT id FROM collection WHERE type='artist'")}
+    finally:
+        main.close()
+    return {key: folder for key, folder in latest.items() if folder in alive}
+
+
 def create_delivery(run_id: int, group_prefix: str, library: Path) -> dict:
     group_prefix = ' '.join(group_prefix.split()) or 'Planner'
     if _task and not _task.done():
@@ -133,14 +149,19 @@ def create_delivery(run_id: int, group_prefix: str, library: Path) -> dict:
     by_site = defaultdict(dict)
     for row in selections:
         by_site[row['site']][row['artist_id']] = {'artist_id': row['artist_id'], 'tag': row['tag'], 'display_name': row['display_name']}
-    folders, groups = {}, {}
+    # An artist delivered before (the pilot, an earlier batch) keeps its folder whatever the prefix; only new
+    # artists get folders in this delivery's groups, so batches stay separate without duplicating anyone.
+    folders, groups = _existing_folders(), {}
     for site, artists in by_site.items():
+        new = [artist for artist_id, artist in artists.items() if (site, artist_id) not in folders]
+        if not new:
+            continue
         main = db.get_connection()
         try:
             groups[site] = _ensure_group(main, f'{group_prefix} {site}', site, library)
         finally:
             main.close()
-        folders.update({(site, a): f for a, f in _ensure_folders(groups[site], site, list(artists.values()), library).items()})
+        folders.update({(site, a): f for a, f in _ensure_folders(groups[site], site, new, library).items()})
     progress = {'sites': {site: {'total': sum(1 for r in selections if r['site'] == site), 'current': None} for site in by_site},
                 'groups': groups, 'log': []}
     conn = connect()

@@ -128,6 +128,12 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         main = db.get_connection()
         self.assertEqual(main.execute('SELECT count(*) FROM collection').fetchone()[0], 2)
         main.close()
+        # A later batch under another prefix keeps these artists in their folders: no duplicates, no new groups.
+        batch = delivery.create_delivery(self.run_id, 'batch1', self.root)
+        self.assertEqual(batch['progress']['groups'], {})
+        main = db.get_connection()
+        self.assertEqual(main.execute('SELECT count(*) FROM collection').fetchone()[0], 2)
+        main.close()
 
     async def test_problems_list_reasons_and_completed_downloads_can_retry_errors(self):
         job = delivery.create_delivery(self.run_id, 'Planner', self.root)

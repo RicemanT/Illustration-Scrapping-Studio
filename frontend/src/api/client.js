@@ -228,6 +228,7 @@ export const api = {
     pruneApply: (id) => client.post(`/planner/deliveries/${id}/prune`, { confirmed: true }),
     enableOnly: (lines) => client.post('/planner/artists/enable-only', { lines }),
     enableAll: () => client.post('/planner/artists/enable-all'),
+    enableBatch: (body) => client.post('/planner/artists/enable-batch', body),
     artists: (params) => client.get('/planner/artists', { params }),
     artist: (id, runId) => client.get(`/planner/artists/${id}`, { params: { run_id: runId || undefined } }),
     override: (data) => client.post('/planner/overrides', data),

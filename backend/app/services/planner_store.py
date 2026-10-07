@@ -369,6 +369,31 @@ def enable_only(lines: list[str]) -> dict:
         conn.close()
 
 
+def enable_batch(sites: list[str], add: int = 0, keep_collections: bool = True) -> dict:
+    """Plan in batches: keep the enabled artists of `sites`, plus (by default) every artist that already has a
+    planner collection, such as the pilot on any site, and enable the next `add` artists of `sites` in list
+    order (0 = all of them). Everyone else is disabled. Accepted collections keep exactly their images, so
+    their characters still count towards the shared goals."""
+    unknown = sorted(set(sites) - set(SITES))
+    if unknown or not sites:
+        raise ValueError(f"Unknown site(s): {', '.join(unknown)}" if unknown else 'Choose at least one site')
+    conn = connect()
+    try:
+        artists = conn.execute('SELECT id, site, enabled FROM artist WHERE in_list=1 ORDER BY id').fetchall()
+        with_collection = {r[0] for r in conn.execute('SELECT DISTINCT artist_id FROM delivery_item')} if keep_collections else set()
+        keep = {a['id'] for a in artists if a['id'] in with_collection or (a['enabled'] and a['site'] in sites)}
+        waiting = [a['id'] for a in artists if a['site'] in sites and a['id'] not in keep]
+        new = waiting if add <= 0 else waiting[:add]
+        enabled = keep | set(new)
+        conn.execute('UPDATE artist SET enabled=0 WHERE in_list=1')
+        conn.executemany('UPDATE artist SET enabled=1 WHERE id=?', [(i,) for i in sorted(enabled)])
+        conn.commit()
+        return {'enabled': len(enabled), 'added': len(new), 'with_collections': len(with_collection & enabled),
+                'remaining': len(waiting) - len(new), 'disabled': len(artists) - len(enabled)}
+    finally:
+        conn.close()
+
+
 def enable_all() -> int:
     """Enable every artist on the latest artists CSV again."""
     conn = connect()

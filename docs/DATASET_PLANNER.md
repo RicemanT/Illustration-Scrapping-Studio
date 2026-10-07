@@ -142,6 +142,10 @@ The planner balances content, not style: it only sees tags, favorites and sizes,
 7. **Accept the folder.** The header shows the folder's images against the plan's target. When it looks right, **Accept folder** marks every image accepted (no longer pending) and locks exactly these posts: every later plan selects exactly this collection's images for the artist, whatever the target, and deleting or accepting images is turned off. **Reopen folder** sets the images back to pending; they stay locked, and removing one bans it. Quality marks can be changed again after reopening; the sidecars keep the previously accepted quality tags until you accept the folder again.
 8. **Export the training layout last.** Repeats are recalculated from the images actually left in each folder, so an artist trimmed from 60 to 40 images gets more repeats and keeps about the same number of training samples.
 
+### Batches
+
+**Inputs → Limit planning → Plan in batches** grows the dataset a chunk at a time: tick the sites to plan (for example Danbooru and Gelbooru), set **Add the next** (say 500) and press **Enable batch**. Artists of those sites already in scope stay, the next ones in list order join, and every artist that already has a planner collection stays in too, on any site, so the pilot and earlier batches (frozen once accepted) keep counting towards the shared character and tag goals. Everyone else is left out of analysis, plans and downloads. Then analyse the enabled artists (7. Image analysis, scope "enabled artists"; only new posts are analysed), run the plan, and download it under a new group name prefix (for example `batch1`): artists who already have a folder keep it, so only new artists get folders in the new groups. Remove images no longer selected, tag, curate, accept, and press **Enable batch** again for the next chunk.
+
 ### Image analysis
 
 Section **7. Image analysis** on the Planner page lets the server's GPUs look at the images, so a plan can choose by style consistency, content and aesthetics instead of metadata alone, and your work becomes skimming flagged images.
