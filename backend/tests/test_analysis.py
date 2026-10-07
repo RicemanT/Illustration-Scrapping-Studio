@@ -290,6 +290,22 @@ class AnalysisLibraryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row['source'], 'https://example.test/101.png')
         self.assertEqual(after, 'done')  # a failed re-download never replaces results
 
+    def test_broken_vectors_are_purged_once_and_never_used(self):
+        conn = analysis_store.connect()
+        good, bad = np.ones(8), np.full(8, np.nan)
+        analysis_store.save_results(conn, [{'site': 'danbooru', 'remote_id': str(i), 'status': 'done', 'models': ['dinov2', 'dinov3'],
+                                            'vectors': {'dinov2:4-6': good, 'dinov3:4-6': bad}} for i in (1, 2)])
+        conn.commit()
+        keys = [('danbooru', '1'), ('danbooru', '2')]
+        self.assertEqual(analysis_store.load_vectors(conn, keys, 'dinov3:4-6'), {})
+        self.assertEqual(len(analysis_store.load_vectors(conn, keys, 'dinov2:4-6')), 2)
+        self.assertEqual(analysis_store.purge_invalid_vectors(conn), 2)
+        self.assertEqual(analysis_store.purge_invalid_vectors(conn), 0)  # once per database
+        models = conn.execute("SELECT models FROM analysis_post WHERE remote_id='1'").fetchone()[0]
+        count = conn.execute("SELECT count(*) FROM analysis_vector WHERE model LIKE 'dinov3:%'").fetchone()[0]
+        conn.close()
+        self.assertEqual((models, count), ('dinov2', 0))  # the next run redoes just DINOv3
+
     def test_models_on_different_gpus_run_at_the_same_time(self):
         from app.analysis.models import run_models
         barrier = threading.Barrier(2)

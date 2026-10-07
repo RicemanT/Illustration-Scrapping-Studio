@@ -198,6 +198,35 @@ def decode_vector(blob: bytes) -> np.ndarray:
     return np.frombuffer(blob, dtype=np.float16).astype(np.float32)
 
 
+def valid_vector(vector: np.ndarray) -> bool:
+    return bool(np.isfinite(vector).all()) and float(np.linalg.norm(vector)) > 1e-3
+
+
+def purge_invalid_vectors(conn) -> int:
+    """Delete stored style vectors that are NaN/inf/zero (DINOv3 in float16 overflowed) and forget that their model
+    analysed those posts, so the next run redoes just that model (from kept samples when there are some).
+    Runs once per database; returns the number of vectors removed."""
+    if conn.execute("SELECT 1 FROM analysis_setting WHERE key='vector_check'").fetchone():
+        return 0
+    bad: dict[tuple, set] = {}
+    for row in conn.execute('SELECT site, remote_id, model, vector FROM analysis_vector'):
+        if not valid_vector(decode_vector(row['vector'])):
+            bad.setdefault((row['site'], row['remote_id']), set()).add(row['model'])
+    removed = 0
+    for (site, remote_id), keys in bad.items():
+        for key in keys:
+            conn.execute('DELETE FROM analysis_vector WHERE site=? AND remote_id=? AND model=?', (site, remote_id, key))
+            removed += 1
+        models = {key.split(':', 1)[0] for key in keys}
+        row = conn.execute('SELECT models FROM analysis_post WHERE site=? AND remote_id=?', (site, remote_id)).fetchone()
+        if row and row['models']:
+            kept = [m for m in row['models'].split(',') if m and m not in models]
+            conn.execute('UPDATE analysis_post SET models=? WHERE site=? AND remote_id=?', (','.join(kept), site, remote_id))
+    conn.execute("INSERT OR REPLACE INTO analysis_setting (key, value) VALUES ('vector_check', ?)", (json.dumps({'removed': removed, 'at': now()}),))
+    conn.commit()
+    return removed
+
+
 def save_results(conn, results: Iterable[dict]) -> int:
     """Store worker results: one dict per post with site, remote_id, artist_id, status, scores and vectors.
 
@@ -246,7 +275,9 @@ def load_vectors(conn, keys: list[tuple[str, str]], model: str) -> dict[tuple, n
             chunk = ids[start:start + 500]
             for r in conn.execute(f"SELECT remote_id, vector FROM analysis_vector WHERE model=? AND site=? AND remote_id IN ({','.join('?' * len(chunk))})",
                                   (model, site, *chunk)):
-                found[(site, r['remote_id'])] = decode_vector(r['vector'])
+                vector = decode_vector(r['vector'])
+                if valid_vector(vector):  # never let a broken vector into a style decision
+                    found[(site, r['remote_id'])] = vector
     return found
 
 

@@ -13,6 +13,7 @@ from typing import Optional
 
 import app.db as db
 from app.analysis import queue as analysis_queue
+from app.analysis import store
 from app.analysis.store import AnalysisConfig, connect, get_config
 from app.services.planner_store import connect as planner_connect, now, planner_dir
 
@@ -283,6 +284,11 @@ def start_job(scope: str, artist_ids: Optional[list[int]] = None, reanalyze: boo
         artists = analysis_queue.scope_artists(planner, scope, artist_ids)
     finally:
         planner.close()
+    purge = connect()
+    try:
+        store.purge_invalid_vectors(purge)  # once: broken DINOv3 float16 vectors get redone by this job
+    finally:
+        purge.close()
     counts = analysis_queue.build_queue(job_id, artists, config, reanalyze)
     conn = connect()
     try:

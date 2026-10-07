@@ -160,7 +160,7 @@ def _style_z(order: list[tuple], vectors: dict[str, dict], latest_count: int, er
         per_model.append(dict(zip(keys, robust_z(matrix, center, reference))))
     combined = {}
     for key in order:
-        values = [z[key] for z in per_model if key in z]
+        values = [z[key] for z in per_model if key in z and np.isfinite(z[key])]
         if values:
             combined[key] = float(np.mean(values))
     return combined

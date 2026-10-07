@@ -42,7 +42,11 @@ class StyleModel:
 
     def __init__(self, name: str, repo: str, ranges: list[str], device: str):
         from transformers import AutoImageProcessor, AutoModel
+        torch = _torch()
         self.name, self.device, self.dtype = name, device, _dtype(device)
+        if name == 'dinov3' and device.startswith('cuda') and torch.cuda.is_bf16_supported():
+            # DINOv3's activations overflow float16 (every vector became NaN); bfloat16 has float32's range.
+            self.dtype = torch.bfloat16
         self.processor = AutoImageProcessor.from_pretrained(repo)
         self.model = AutoModel.from_pretrained(repo, torch_dtype=self.dtype).to(device).eval()
         config = self.model.config
@@ -63,7 +67,10 @@ class StyleModel:
             # hidden[0] is the embedding output; hidden[i] is block i.
             pooled = torch.stack([hidden[i][:, self.skip:, :].float().mean(dim=1) for i in range(a, b + 1)]).mean(dim=0)
             for index, vector in enumerate(pooled.cpu().numpy()):
-                results[index][vector_key(self.name, f'{a}-{b}')] = vector
+                if np.isfinite(vector).all() and np.linalg.norm(vector) > 1e-6:
+                    results[index][vector_key(self.name, f'{a}-{b}')] = vector
+                else:
+                    log.warning('%s gave a non-finite vector; not stored', self.name)
         return results
 
 
@@ -400,5 +407,6 @@ def run_models(models: list[tuple[str, object]], images) -> list[dict]:
                     result['era'] = value
                 else:
                     result['scores'][key] = value
-            result['models'].append(name)
+            if output:  # a model that produced nothing for this image has not analysed it
+                result['models'].append(name)
     return results
