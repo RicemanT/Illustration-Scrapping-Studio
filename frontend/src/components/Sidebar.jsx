@@ -4,10 +4,15 @@ import { useQuery } from '@tanstack/react-query';
 import api from '../api/client';
 import { FOLDER_COUNT_REFRESH_MS } from '../api/folderCache';
 import CreateCollectionModal from './CreateCollectionModal';
+import MergeGroupsModal from './MergeGroupsModal';
 
 function Sidebar() {
   const location = useLocation();
   const [showCreateModal, setShowCreateModal] = useState(false);
+  // Drag a group heading onto another to merge them.
+  const [dragGroup, setDragGroup] = useState(null);
+  const [dropTarget, setDropTarget] = useState(null);
+  const [merging, setMerging] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [hideAccepted, setHideAccepted] = useState(() => { try { return localStorage.getItem('artist.hideAccepted') === 'true'; } catch { return false; } });
   const toggleHideAccepted = (value) => { setHideAccepted(value); try { localStorage.setItem('artist.hideAccepted', String(value)); } catch { /* storage unavailable */ } };
@@ -78,7 +83,13 @@ function Sidebar() {
             const members = filteredCollections.filter((folder) => folder.group_id === section.id);
             if (searchQuery && !members.length) return null;
             return <details key={section.id ?? 'ungrouped'} open={searchQuery || section.id === null || location.pathname === `/groups/${section.id}` || members.some((folder) => location.pathname === `/folder/${folder.id}`) ? true : undefined} className="mb-3">
-              <summary className="cursor-pointer text-xs font-semibold text-slate-300 py-2">{section.name} ({collections.filter((folder) => folder.group_id === section.id).length}){(() => { const accepted = collections.filter((folder) => folder.group_id === section.id && reviewState.get(folder.id)?.completed_at).length; return accepted ? <span className="ml-1 font-normal text-emerald-400" title="Accepted collections">· {accepted} ✓</span> : null; })()}</summary>
+              <summary className={`cursor-pointer text-xs font-semibold py-2 rounded ${dropTarget === section.id && dragGroup && dragGroup.id !== section.id ? 'bg-blue-900/50 text-blue-100 outline outline-1 outline-blue-500' : 'text-slate-300'}`}
+                draggable={Boolean(section.id)} title={section.id ? 'Drag onto another group to merge them' : undefined}
+                onDragStart={(event) => { if (!section.id) return; setDragGroup(section); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', `group:${section.id}`); }}
+                onDragEnd={() => { setDragGroup(null); setDropTarget(null); }}
+                onDragOver={(event) => { if (dragGroup && section.id && dragGroup.id !== section.id) { event.preventDefault(); setDropTarget(section.id); } }}
+                onDragLeave={() => setDropTarget((current) => (current === section.id ? null : current))}
+                onDrop={(event) => { event.preventDefault(); if (dragGroup && section.id && dragGroup.id !== section.id) setMerging({ source: dragGroup, target: section }); setDragGroup(null); setDropTarget(null); }}>{section.name} ({collections.filter((folder) => folder.group_id === section.id).length}){(() => { const accepted = collections.filter((folder) => folder.group_id === section.id && reviewState.get(folder.id)?.completed_at).length; return accepted ? <span className="ml-1 font-normal text-emerald-400" title="Accepted collections">· {accepted} ✓</span> : null; })()}</summary>
               {section.id && <Link to={`/groups/${section.id}`} className="block text-xs text-blue-300 mb-2">Manage / scrape group</Link>}
               <div className="space-y-1">{members.map((collection) => (
                 <Link key={collection.id} to={`/folder/${collection.id}`} className={`block px-3 py-2 rounded-lg hover:bg-[#1b2539] ${location.pathname === `/folder/${collection.id}` ? 'bg-[#1b2539] text-blue-200' : 'text-slate-400'}`}>
@@ -100,6 +111,10 @@ function Sidebar() {
       {showCreateModal && (
         <CreateCollectionModal onClose={() => setShowCreateModal(false)} />
       )}
+      {merging && <MergeGroupsModal source={merging.source} target={merging.target}
+        sourceCount={collections.filter((folder) => folder.group_id === merging.source.id).length}
+        targetCount={collections.filter((folder) => folder.group_id === merging.target.id).length}
+        onClose={() => setMerging(null)} />}
     </>
   );
 }

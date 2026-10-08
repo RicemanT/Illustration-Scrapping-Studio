@@ -12,7 +12,7 @@ import app.db as db
 from app.models import FolderCreate, SyncResult
 from app.routes import sync
 from app.services.collections import CollectionService
-from app.services.groups import create_group, import_artists, move_folder, recover_moves, parse_artists
+from app.services.groups import create_group, import_artists, merge_groups, move_folder, recover_moves, parse_artists
 from app.services.images import ImageService
 from app.services.sync_jobs import get_job, create_job
 
@@ -203,6 +203,38 @@ class ArtistGroupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(conn.execute('SELECT count(*) FROM folder_move').fetchone()[0], 0)
         self.assertEqual(conn.execute('PRAGMA foreign_key_check').fetchall(), [])
         conn.close()
+
+    def test_merge_groups_moves_collections_keeps_protection_and_removes_the_source(self):
+        pilot = create_group('Pilot danbooru', 'danbooru', self.root)
+        first = self.folder('Artist A', group=pilot['id'])
+        second = self.folder('Artist B', group=pilot['id'])
+        self.image(first)
+        self.folder('Artist C', group=self.dan['id'])
+        conn = db.get_connection()
+        conn.execute("INSERT INTO group_blocked_folder(group_id, folder_id, created_at) VALUES (?, ?, 'x')", (pilot['id'], first.id))
+        conn.commit()
+        conn.close()
+        with self.assertRaisesRegex(ValueError, 'same site'):
+            merge_groups(pilot['id'], self.e621['id'], 'Mixed', self.root)
+        result = merge_groups(pilot['id'], self.dan['id'], 'Danbooru full', self.root)
+        self.assertEqual((result['moved'], result['group']['name']), (2, 'Danbooru full'))
+        moved = self.service.get_collection(first.id)
+        self.assertEqual((moved.group_id, self.service.get_collection(second.id).group_id), (self.dan['id'], self.dan['id']))
+        self.assertTrue((self.root / 'images' / moved.slug / '1.jpg').is_file())
+        conn = db.get_connection()
+        protected = [tuple(r) for r in conn.execute('SELECT group_id, folder_id FROM group_blocked_folder')]
+        source_left = conn.execute('SELECT count(*) FROM artist_group WHERE id=?', (pilot['id'],)).fetchone()[0]
+        conn.close()
+        self.assertEqual(protected, [(self.dan['id'], first.id)])
+        self.assertEqual(source_left, 0)
+        self.assertFalse((self.root / 'images' / pilot['slug']).exists())
+
+    def test_merge_refuses_clashing_collection_names(self):
+        other = create_group('Batch danbooru', 'danbooru', self.root)
+        self.folder('Same Artist', group=other['id'])
+        self.folder('Same Artist', group=self.dan['id'])
+        with self.assertRaisesRegex(ValueError, 'Same Artist'):
+            merge_groups(other['id'], self.dan['id'], 'Danbooru', self.root)
 
     def test_move_rejects_conflicts_and_active_jobs(self):
         folder = self.folder()

@@ -267,6 +267,72 @@ def _finish_move(conn, move, library):
 
 
 @pair_write
+def merge_groups(source_id, target_id, name, library, keep_protection=True):
+    """Move every collection of one group into another of the same site, rename the result and remove the
+    emptied source group. Collections keep their images, captions and planner links; protection from Sync All
+    moves with them (or is dropped with keep_protection=False). Checked before anything moves: both groups
+    exist, share a site, and have no collection names in common."""
+    recover_moves(library)
+    name = (name or '').strip()
+    if not name or len(name) > 100 or any(ord(c) < 32 for c in name):
+        raise ValueError('Group name must be 1-100 characters without control characters')
+    conn = get_connection()
+    try:
+        assert_idle(conn)
+        source, target = validate_group(conn, source_id), validate_group(conn, target_id)
+        if source_id == target_id:
+            raise ValueError('Drop the group on a different group')
+        if source['provider'] != target['provider']:
+            raise ValueError(f"Only groups of the same site can be merged ({source['provider']} and {target['provider']})")
+        clash = conn.execute("""SELECT s.name FROM collection s JOIN collection t ON t.group_id=? AND t.name=s.name AND t.type=s.type
+                                WHERE s.group_id=? LIMIT 5""", (target_id, source_id)).fetchall()
+        if clash:
+            raise ValueError('Both groups have collections named ' + ', '.join(r['name'] for r in clash) + '; rename or remove one first')
+        taken = conn.execute('SELECT 1 FROM artist_group WHERE name=? AND id NOT IN (?, ?)', (name, source_id, target_id)).fetchone()
+        if taken:
+            raise ValueError(f'Another group is already called "{name}"')
+        members = [r['id'] for r in conn.execute('SELECT id FROM collection WHERE group_id=? ORDER BY id', (source_id,))]
+        protected = {r['folder_id'] for r in conn.execute('SELECT folder_id FROM group_blocked_folder WHERE group_id=?', (source_id,))}
+    finally:
+        conn.close()
+    moved = 0
+    for folder_id in members:
+        conn = get_connection()
+        try:
+            conn.execute('DELETE FROM group_blocked_folder WHERE folder_id=?', (folder_id,))
+            conn.commit()
+        finally:
+            conn.close()
+        try:
+            move_folder(folder_id, target_id, library)
+        except Exception as exc:
+            conn = get_connection()
+            try:  # put the protection back on the folder that could not move
+                if folder_id in protected:
+                    conn.execute('INSERT OR IGNORE INTO group_blocked_folder(group_id, folder_id, created_at) VALUES (?,?,?)', (source_id, folder_id, now()))
+                    conn.commit()
+            finally:
+                conn.close()
+            raise ValueError(f'Merge stopped after {moved} of {len(members)} collections: {exc}') from exc
+        if folder_id in protected and keep_protection:
+            conn = get_connection()
+            try:
+                conn.execute('INSERT OR IGNORE INTO group_blocked_folder(group_id, folder_id, created_at) VALUES (?,?,?)', (target_id, folder_id, now()))
+                conn.commit()
+            finally:
+                conn.close()
+        moved += 1
+    delete_group(source_id, library)
+    conn = get_connection()
+    try:
+        conn.execute('UPDATE artist_group SET name=? WHERE id=?', (name, target_id))
+        conn.commit()
+        return {'group': validate_group(conn, target_id), 'moved': moved, 'protected': len(protected) if keep_protection else 0}
+    finally:
+        conn.close()
+
+
+@pair_write
 def recover_moves(library):
     conn = get_connection()
     try:

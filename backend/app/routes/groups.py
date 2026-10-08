@@ -61,6 +61,18 @@ async def move_folder(folder_id: int, payload: FolderMove):
     return {'folder_id': folder_id, 'group_id': payload.group_id}
 
 
+class GroupMerge(BaseModel):
+    target_id: int = Field(gt=0)
+    name: str = Field(min_length=1, max_length=100)
+    keep_protection: bool = True
+
+
+@router.post('/{group_id}/merge')
+def merge_group(group_id: int, payload: GroupMerge):
+    """Move every collection of this group into the target group, rename it and remove this group."""
+    return checked(groups.merge_groups, group_id, payload.target_id, payload.name, LIBRARY_PATH, payload.keep_protection)
+
+
 @router.delete('/{group_id}')
 async def delete_group(group_id: int):
     if not checked(groups.delete_group, group_id, LIBRARY_PATH): raise HTTPException(404, 'Group not found')

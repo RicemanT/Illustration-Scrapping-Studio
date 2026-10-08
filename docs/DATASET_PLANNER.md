@@ -148,6 +148,8 @@ The planner balances content, not style: it only sees tags, favorites and sizes,
 
 **Danbooru takedowns.** When Danbooru bans an artist, its API stops giving out those posts' files (and hashes), so the plan counts them as "no file" and drops the artist. **Inputs → Limit planning → Find Danbooru takedowns** lists Danbooru artists with at least half their harvested posts hidden; **move** (or **Move all**) creates a Gelbooru entry with the same tag, in scope exactly when the Danbooru one was, and retires the Danbooru entry (a later artists CSV import keeps it retired). Then harvest Gelbooru (the new entries wait as pending), analyse and plan as usual. Artists that already have planner collections are not listed.
 
+**Merging groups.** Once the pilot and the batches no longer need to stay apart, drag a group's heading in the sidebar onto another group's heading (same site only, for example Pilot danbooru onto full danbooru). A dialog names the merged group and asks whether protected collections stay protected from Sync All; **Merge** moves every collection on disk into the group you dropped on, keeping images, captions, marks and planner links, and removes the emptied group. Collection names must not clash, and running syncs, imports and QA jobs must finish first.
+
 ### Image analysis
 
 Section **7. Image analysis** on the Planner page lets the server's GPUs look at the images, so a plan can choose by style consistency, content and aesthetics instead of metadata alone, and your work becomes skimming flagged images.

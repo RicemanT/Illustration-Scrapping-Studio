@@ -39,6 +39,7 @@ export const api = {
     enableSource: (id, folderId) => client.post(`/groups/${id}/folders/${folderId}/enable-source`),
     history: (id) => client.get('/sync/jobs/history', { params: { group_id: id, limit: 20 } }),
     delete: (id) => client.delete(`/groups/${id}`),
+    merge: (id, body) => client.post(`/groups/${id}/merge`, body),
     setProvider: (id, provider) => client.patch(`/groups/${id}/provider`, { provider }),
     blocked: (id) => client.get(`/groups/${id}/blocked`),
     block: (id, data) => client.post(`/groups/${id}/blocked`, data),
