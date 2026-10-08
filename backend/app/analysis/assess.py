@@ -139,6 +139,7 @@ class ArtistAssessment:
     career_usable: int = 0
     judged_style: bool = True
     models: list = field(default_factory=list)
+    relaxed: list = field(default_factory=list)  # rules turned into flags so the artist keeps enough images
 
 
 def _style_z(order: list[tuple], vectors: dict[str, dict], latest_count: int, era: str) -> dict[tuple, float]:
@@ -188,43 +189,63 @@ def assess_artist(posts: list, analysis: dict, vectors: dict[str, dict], scale: 
     categories = {key: [name for name, (_, test) in CONTENT.items() if test(analysis[key])] for key in analysed}
     ensemble = {key: scale.ensemble(analysis[key]) for key in analysed}
 
-    def plan_for(era: str):
+    # Near-duplicates: keep the better-scored of two nearly identical pictures. Deep features carry content;
+    # the style vectors average it away, so they are only a fallback.
+    first_model = duplicate_vectors if duplicate_vectors is not None else next(iter(vectors.values()), {})
+
+    def duplicates_among(usable: list) -> set:
+        duplicate, kept_vectors = set(), []
+        for key in sorted(usable, key=lambda k: -(ensemble[k] if ensemble[k] is not None else 0.5)):
+            vector = first_model.get(key)
+            if vector is not None:
+                vector = vector / (np.linalg.norm(vector) or 1.0)
+                if kept_vectors and float(np.max(np.stack(kept_vectors) @ vector)) >= options.near_duplicate:
+                    duplicate.add(key)
+                    continue
+                kept_vectors.append(vector)
+        return duplicate
+
+    def plan_for(era: str, relaxed: frozenset = frozenset()):
         z = _style_z(analysed, vectors, latest_count, era) if judged else {}
-        in_style = [key for key in analysed if key in eligible and (not judged or z.get(key, 0.0) <= options.keep_z)]
+        strict_style = judged and 'style' not in relaxed
+        in_style = [key for key in analysed if key in eligible and (not strict_style or z.get(key, 0.0) <= options.keep_z)]
         shares = {name: sum(name in categories[key] for key in in_style) / len(in_style) if in_style else 0.0 for name in CONTENT}
         excluded = [name for name, share in shares.items() if name in options.gates and share < options.majority]
         usable = [key for key in in_style if not set(categories[key]) & set(excluded)
-                  and (ensemble[key] is None or ensemble[key] >= options.aesthetic_floor)]
-        return z, excluded, usable
+                  and ('aesthetic' in relaxed or ensemble[key] is None or ensemble[key] >= options.aesthetic_floor)]
+        duplicate = set() if 'duplicates' in relaxed else duplicates_among(usable)
+        # What the plan can actually use: the era and the safety net below compare these final counts.
+        final = [key for key in usable if key not in duplicate]
+        return {'z': z, 'excluded': excluded, 'usable': usable, 'duplicate': duplicate, 'final': final}
 
-    z, excluded, usable = plan_for('latest')
-    result = ArtistAssessment(verdicts={}, latest_usable=len(usable), judged_style=judged,
+    chosen = plan_for('latest')
+    result = ArtistAssessment(verdicts={}, latest_usable=len(chosen['final']), judged_style=judged,
                               models=[name for name, v in vectors.items() if any(key in v for key in analysed)])
     needed = needed if needed is not None else max(1, target // 2)
-    if judged and len(usable) < needed:
+    if judged and len(chosen['final']) < needed:
         career = plan_for('career')
-        result.career_usable = len(career[2])
-        if len(career[2]) > len(usable):
-            z, excluded, usable = career
+        result.career_usable = len(career['final'])
+        if len(career['final']) > len(chosen['final']):
+            chosen = career
             result.era = 'career'
+    # Safety net: the models must never starve an artist whose posts pass the metadata filters. While fewer than
+    # `needed` posts survive, relax one rule at a time (near-duplicates, then style, then the aesthetic floor);
+    # a relaxed rule still flags its posts for review instead of dropping them.
+    relaxed = []
+    for rule in ('duplicates', 'style', 'aesthetic'):
+        if len(chosen['final']) >= needed:
+            break
+        trial = plan_for(result.era, frozenset(relaxed + [rule]))
+        if len(trial['final']) > len(chosen['final']):
+            relaxed.append(rule)
+            chosen = trial
+    result.relaxed = relaxed
+    z, excluded, usable, duplicate = chosen['z'], chosen['excluded'], chosen['usable'], chosen['duplicate']
     result.excluded = excluded
     result.kept_categories = [name for name in CONTENT if name not in excluded]
 
     usable_set = set(usable)
     ranks = dict(zip(usable, percentiles([ensemble[key] if ensemble[key] is not None else 0.5 for key in usable])))
-    # Near-duplicates: keep the better-scored of two nearly identical pictures. Deep features carry content;
-    # the style vectors average it away, so they are only a fallback.
-    duplicate = set()
-    first_model = duplicate_vectors if duplicate_vectors is not None else next(iter(vectors.values()), {})
-    kept_vectors = []
-    for key in sorted(usable, key=lambda k: -(ensemble[k] if ensemble[k] is not None else 0.5)):
-        vector = first_model.get(key)
-        if vector is not None:
-            vector = vector / (np.linalg.norm(vector) or 1.0)
-            if kept_vectors and float(np.max(np.stack(kept_vectors) @ vector)) >= options.near_duplicate:
-                duplicate.add(key)
-                continue
-            kept_vectors.append(vector)
 
     for key in order:
         verdict = Verdict(key=key)
@@ -240,11 +261,11 @@ def assess_artist(posts: list, analysis: dict, vectors: dict[str, dict], scale: 
             verdict.style = float(np.clip(1.0 - max(verdict.z, 0.0) / options.keep_z, 0.0, 1.0))
         verdict.aesthetic = ranks.get(key, 0.0)
         hit = sorted(set(verdict.categories) & set(excluded))
-        if judged and verdict.z is not None and verdict.z > options.keep_z:
+        if judged and 'style' not in relaxed and verdict.z is not None and verdict.z > options.keep_z:
             verdict.reject = 'off_style'
         elif hit:
             verdict.reject = f'content_{hit[0]}'
-        elif verdict.ensemble is not None and verdict.ensemble < options.aesthetic_floor:
+        elif 'aesthetic' not in relaxed and verdict.ensemble is not None and verdict.ensemble < options.aesthetic_floor:
             verdict.reject = 'low_aesthetic'
         elif key in duplicate:
             verdict.reject = 'near_duplicate'

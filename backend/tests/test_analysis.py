@@ -106,6 +106,36 @@ class AssessTests(unittest.TestCase):
         self.assertEqual(gated.verdicts[('danbooru', '4')].reject, 'content_ai')
         self.assertIsNone(A.assess_artist(posts, {}, {}, self.scale(), A.AssessOptions(), target=20))
 
+    def test_safety_net_keeps_artists_whose_pictures_look_alike(self):
+        # Character sprites on blank backgrounds: every deep-feature vector is nearly the same, so near-duplicate
+        # removal alone would leave one post. The artist must keep at least `needed` posts, flagged for review.
+        styles = ['A'] * 60
+        posts = posts_for(styles)
+        style = {(p['site'], p['remote_id']): styled('A') for p in posts}
+        same = STYLE['A'] / np.linalg.norm(STYLE['A'])
+        deep = {key: same + RNG.normal(scale=0.001, size=64) for key in style}
+        rows = analysis_rows(posts)
+        result = A.assess_artist(posts, rows, {'dinov2': style}, self.scale(), A.AssessOptions(), target=60, duplicate_vectors=deep, needed=30)
+        kept = [v for v in result.verdicts.values() if v.reject is None]
+        self.assertEqual(result.relaxed, ['duplicates'])
+        self.assertGreaterEqual(len(kept), 30)
+        self.assertTrue(all('near_duplicate' not in v.flags for v in kept))  # nothing left to call a duplicate
+
+    def test_safety_net_relaxes_style_only_when_still_short(self):
+        # 60 posts in style A and 10 far ones: style drops the 10 in the latest and the career style alike.
+        styles = ['A'] * 60 + ['B'] * 10
+        posts = posts_for(styles)
+        vectors = {(p['site'], p['remote_id']): styled(s) for p, s in zip(posts, styles)}
+        strict = A.assess_artist(posts, analysis_rows(posts), {'dinov2': vectors}, self.scale(), A.AssessOptions(), target=60, needed=30)
+        self.assertEqual(strict.relaxed, [])  # enough posts: rules stay strict
+        self.assertTrue(all(v.reject == 'off_style' for k, v in strict.verdicts.items() if int(k[1]) > 60))
+        # Needing 70, the style rule becomes a flag: the far posts are kept but flagged.
+        short = A.assess_artist(posts, analysis_rows(posts), {'dinov2': vectors}, self.scale(), A.AssessOptions(), target=60, needed=70)
+        self.assertEqual(short.relaxed, ['style'])
+        kept_far = [v for k, v in short.verdicts.items() if int(k[1]) > 60 and v.reject is None]
+        self.assertEqual(len(kept_far), 10)
+        self.assertTrue(all('off_style' in v.flags for v in kept_far))
+
     def test_auc(self):
         self.assertEqual(A.auc([3, 4], [1, 2]), 1.0)
         self.assertEqual(A.auc([1], [1]), 0.5)
@@ -370,6 +400,12 @@ class AnalysisLibraryTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(summary['families']['danbooru']['rejected_posts']['off_style'], 0)
         self.assertEqual(summary['families']['danbooru']['analysis']['eras'], {'latest': 1})
         self.assertIn('style', reasons)
+        # The review panel says why each post was skipped.
+        detail = store.artist_detail(1, run_id)
+        self.assertGreater(detail['skipped'].get('off_style', 0), 0)
+        self.assertGreaterEqual(detail['skipped'].get('usable', 0), 30)
+        skips = {item['remote_id']: item.get('skip') for item in detail['runners_up']}
+        self.assertTrue(any(reason == 'off_style' for reason in skips.values()))
 
     async def test_review_flags_calibration_reset_and_aesthetic_tags(self):
         folder, images = await self.delivered()

@@ -399,7 +399,8 @@ function RunSummary({ summary }) {
         <p>Characters: {number(data.characters_at_floor)} at target · {number(data.characters_partial)} partial · {number(data.characters_missing)} absent of {number(data.character_targets)}</p>
         {data.analysis && <p className="text-xs text-slate-300">Analysis: {Object.entries(data.analysis.eras || {}).map(([era, n]) => `${number(n)} by ${era === 'latest' ? 'latest style' : 'career style'}`).join(' · ') || 'no analysed artists'}
           {data.analysis.artists_without_analysis ? ` · ${number(data.analysis.artists_without_analysis)} without analysis (metadata only)` : ''}
-          {Object.keys(data.analysis.excluded_content || {}).length ? ` · content excluded: ${Object.entries(data.analysis.excluded_content).map(([k, n]) => `${k} for ${number(n)}`).join(', ')}` : ''}</p>}
+          {Object.keys(data.analysis.excluded_content || {}).length ? ` · content excluded: ${Object.entries(data.analysis.excluded_content).map(([k, n]) => `${k} for ${number(n)}`).join(', ')}` : ''}
+          {data.analysis.relaxed?.artists ? ` · rules relaxed for ${number(data.analysis.relaxed.artists)} artists who would have too few images (${['duplicates', 'style', 'aesthetic'].filter((rule) => data.analysis.relaxed[rule]).map((rule) => `${rule === 'duplicates' ? 'near-duplicates' : rule === 'style' ? 'style' : 'aesthetic floor'} ${number(data.analysis.relaxed[rule])}`).join(', ')}); their posts are flagged instead` : ''}</p>}
         <p className="text-xs text-slate-400">Posts skipped: {Object.entries(data.rejected_posts || {}).sort((a, b) => b[1] - a[1]).map(([reason, count]) => `${reason.replace(/_/g, ' ')} ${number(count)}`).join(' · ') || 'none'}</p>
         {data.unmet_characters?.length > 0 && <details><summary className="text-xs text-slate-400 cursor-pointer">Characters below target (highest priority first)</summary>
           <p className="text-xs text-slate-400 max-h-40 overflow-auto">{data.unmet_characters.map(([tag, count]) => `${tag} (${count})`).join(', ')}</p></details>}
@@ -453,10 +454,12 @@ function ArtistReview({ artistId, runId }) {
   const override = useMutation({ mutationFn: api.planner.override, onSuccess: () => client.invalidateQueries({ queryKey: ['planner-artist', artistId, runId] }) });
   if (detail.isLoading) return <p className="text-sm text-slate-400">Loading…</p>;
   if (detail.error) return <p role="alert" className="text-red-400">{errorText(detail.error)}</p>;
-  const { artist, run, selected, runners_up: runnersUp } = detail.data;
+  const { artist, run, selected, runners_up: runnersUp, skipped } = detail.data;
   const act = (item, action) => override.mutate({ artist_id: artist.id, site: item.site, remote_id: item.remote_id, action });
   return <div className="space-y-3">
     <p className="text-sm">{artist.display_name} <span className="text-slate-400">({artist.site}: {artist.tag}) · {number(artist.harvested_posts)} posts harvested{run ? ` · ${run.usable} usable · ${run.selected} selected × ${run.repeats} repeats` : ''}</span></p>
+    {skipped && Object.keys(skipped).length > 0 && <p className="text-xs text-slate-400">This run's verdicts on every harvested post: {Object.entries(skipped).map(([reason, count]) =>
+      <span key={reason} className={`mr-2 ${reason === 'usable' ? 'text-green-300' : ''}`}>{skipLabel(reason)} {number(count)}</span>)}</p>}
     {override.error && <p role="alert" className="text-red-400">{errorText(override.error)}</p>}
     <h3 className="text-sm font-semibold">Selected ({selected.length})</h3>
     <Tiles artistId={artist.id} items={selected} onAction={act} busy={override.isPending} />
@@ -465,6 +468,12 @@ function ArtistReview({ artistId, runId }) {
     <Tiles artistId={artist.id} items={runnersUp} onAction={act} busy={override.isPending} />
   </div>;
 }
+
+const SKIP_LABELS = {
+  usable: 'usable', low_resolution: 'low resolution', aspect_ratio: 'aspect ratio', no_file: 'no file', blocked_tag: 'blocked tag', banned_by_user: 'banned by you',
+  off_style: 'off-style', near_duplicate: 'near-duplicate', low_aesthetic: 'low aesthetic', not_analyzed: 'not analysed', too_many_artists: 'too many artists',
+};
+const skipLabel = (reason) => SKIP_LABELS[reason] || reason.replace(/^content_/, 'content: ').replace(/_/g, ' ');
 
 function Tiles({ artistId, items, onAction, busy }) {
   if (!items.length) return <p className="text-xs text-slate-400">None.</p>;
@@ -476,6 +485,7 @@ function Tiles({ artistId, items, onAction, busy }) {
         <a href={url} target="_blank" rel="noreferrer" title={`${item.characters || 'no character tags'}\n${item.width}×${item.height} · ${item.rating}\n${reasons}`}>
           <img src={backendAssetUrl(`/api/planner/thumbs/${artistId}/${item.site}/${item.remote_id}`)} alt="" loading="lazy" className="w-full h-28 object-contain bg-black/30" />
         </a>
+        {item.skip && !item.override && <div className="text-amber-300" title={item.style_z != null ? `Style distance z ${item.style_z.toFixed(1)}` : ''}>{skipLabel(item.skip)}{item.skip === 'off_style' && item.style_z != null ? ` (z ${item.style_z.toFixed(1)})` : ''}</div>}
         {item.style_flag && !item.override && <div className="text-amber-300" title={`Style distance ${item.style_flag.distance.toFixed(3)} from this artist's median`}>Off-style (z {item.style_flag.score.toFixed(1)})</div>}
         <div className="flex justify-between text-slate-400"><span>{item.role ? item.role.replace('_', ' ') : `♥ ${item.fav_count ?? item.score ?? 0}`}</span>{item.gain != null && <span title={reasons}>{item.gain.toFixed(2)}</span>}</div>
         <div className="flex gap-1">

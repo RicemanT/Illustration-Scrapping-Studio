@@ -560,6 +560,35 @@ def list_artists(site: str | None = None, query: str = '', run_id: int | None = 
         conn.close()
 
 
+def _skip_reasons(conn, artist, run_id: int, others: list[dict]) -> dict:
+    """Recompute, with the run's settings, why this artist's posts were skipped: a count per reason, and the
+    reason on each runner-up (written into `others`)."""
+    row = conn.execute('SELECT config FROM run WHERE id=?', (run_id,)).fetchone()
+    if not row:
+        return {}
+    config = PlannerConfig.model_validate(json.loads(row['config']))
+    blocked = config.tag_set('blocked', FAMILY[artist['site']])
+    overrides = {(r['artist_id'], r['site'], r['remote_id']): r['action'] for r in conn.execute('SELECT * FROM override WHERE artist_id=?', (artist['id'],))}
+    rows = conn.execute('SELECT * FROM post WHERE artist_id=?', (artist['id'],)).fetchall()
+    analysis = None
+    if config.use_analysis:
+        from app.analysis.planning import AnalysisContext
+        analysis = AnalysisContext(config)
+    try:
+        _, reasons, verdicts = artist_post_reasons(rows, config, blocked, overrides, bool(artist['completed_at']), analysis)
+    finally:
+        if analysis is not None:
+            analysis.close()
+    for item in others:
+        key = (item['site'], str(item['remote_id']))
+        item['skip'] = reasons.get(key)
+        verdict = verdicts.get(key) if verdicts else None
+        if verdict is not None and verdict.z is not None:
+            item['style_z'] = verdict.z
+    counts = Counter(reason or 'usable' for reason in reasons.values())
+    return dict(counts.most_common())
+
+
 def artist_detail(artist_id: int, run_id: int | None, runners_up: int = 40) -> dict:
     """Selected images for a run plus the best unselected posts, for review."""
     conn = connect()
@@ -588,10 +617,48 @@ def artist_detail(artist_id: int, run_id: int | None, runners_up: int = 40) -> d
             if (r['site'], r['remote_id']) not in chosen and len(others) < runners_up:
                 others.append({**dict(r), 'override': overrides.get((r['site'], r['remote_id']))})
         run_artist = conn.execute('SELECT * FROM run_artist WHERE run_id=? AND artist_id=?', (run_id, artist_id)).fetchone() if run_id else None
+        skipped = _skip_reasons(conn, artist, run_id, others) if run_id else {}
         return {'artist': dict(artist), 'run': dict(run_artist) if run_artist else None, 'selected': selected, 'runners_up': others,
-                'style_flags': len(flags)}
+                'style_flags': len(flags), 'skipped': skipped}
     finally:
         conn.close()
+
+
+def artist_post_reasons(rows: list, config: PlannerConfig, blocked: set, overrides: dict, completed: bool, analysis=None):
+    """Why each of one artist's posts is skipped (None = usable), as the plan decides it.
+
+    Returns (window, reasons, verdicts): the posts considered, their reasons keyed by (site, remote_id), and the
+    image-analysis verdicts (None without analysis).
+    """
+    window = rows
+    if config.newest_posts_per_artist and analysis is None:
+        # Styles drift over the years; recent work is the most consistent.
+        window = sorted(rows, key=lambda r: (sortable_time(r['created_at']), int(r['remote_id']) if str(r['remote_id']).isdigit() else 0),
+                        reverse=True)[:config.newest_posts_per_artist]
+    if completed:
+        window = [r for r in rows if overrides.get((r['artist_id'], r['site'], r['remote_id'])) == 'lock']
+    # Comic-type tags are blocked only when they are a minority of the artist's work.
+    artist_blocked = blocked
+    tagged = sum(1 for r in window if ADAPTIVE_TAGS.intersection((r['general'] or '').split() + (r['meta'] or '').split()))
+    if window and tagged / len(window) >= config.content_majority:
+        artist_blocked = blocked - ADAPTIVE_TAGS
+    verdicts = None
+    if analysis is not None and not completed:
+        eligible = {(r['site'], str(r['remote_id'])) for r in rows
+                    if rejection(r, config, artist_blocked, banned=overrides.get((r['artist_id'], r['site'], r['remote_id'])) == 'ban') is None}
+        assessed = analysis.assess(rows, eligible, config.max_images)
+        verdicts = assessed[0].verdicts if assessed else None
+    reasons = {}
+    for r in window:
+        action = overrides.get((r['artist_id'], r['site'], r['remote_id']))
+        reason = rejection(r, config, artist_blocked, banned=action == 'ban')
+        verdict = verdicts.get((r['site'], str(r['remote_id']))) if verdicts is not None else None
+        if reason is None and verdicts is not None:
+            reason = verdict.reject if verdict else 'not_analyzed'
+        if reason and action == 'lock' and reason not in {'no_file', 'banned_by_user'}:
+            reason = None  # a lock includes the post anyway
+        reasons[(r['site'], str(r['remote_id']))] = reason
+    return window, reasons, verdicts
 
 
 def _family_posts(conn, sites: tuple[str, ...]):
@@ -631,31 +698,12 @@ def _plan_family(conn, family: str, config: PlannerConfig, log):
         if current is None:
             return
         candidates, families = [], set()
-        window = rows
-        if config.newest_posts_per_artist and analysis is None:
-            # Styles drift over the years; recent work is the most consistent.
-            window = sorted(rows, key=lambda r: (sortable_time(r['created_at']), int(r['remote_id']) if str(r['remote_id']).isdigit() else 0),
-                            reverse=True)[:config.newest_posts_per_artist]
-        if current in completed:
-            window = [r for r in rows if overrides.get((r['artist_id'], r['site'], r['remote_id'])) == 'lock']
-        # Comic-type tags are blocked only when they are a minority of the artist's work.
-        artist_blocked = blocked
-        tagged = sum(1 for r in window if ADAPTIVE_TAGS.intersection((r['general'] or '').split() + (r['meta'] or '').split()))
-        if window and tagged / len(window) >= config.content_majority:
-            artist_blocked = blocked - ADAPTIVE_TAGS
-        verdicts = None
-        if analysis is not None and current not in completed:
-            eligible = {(r['site'], str(r['remote_id'])) for r in rows
-                        if rejection(r, config, artist_blocked, banned=overrides.get((r['artist_id'], r['site'], r['remote_id'])) == 'ban') is None}
-            assessed = analysis.assess(rows, eligible, config.max_images)
-            verdicts = assessed[0].verdicts if assessed else None
+        window, reasons, verdicts = artist_post_reasons(rows, config, blocked, overrides, current in completed, analysis)
         for r in window:
             action = overrides.get((r['artist_id'], r['site'], r['remote_id']))
-            reason = rejection(r, config, artist_blocked, banned=action == 'ban')
+            reason = reasons[(r['site'], str(r['remote_id']))]
             verdict = verdicts.get((r['site'], str(r['remote_id']))) if verdicts is not None else None
-            if reason is None and verdicts is not None:
-                reason = verdict.reject if verdict else 'not_analyzed'
-            if reason and not (action == 'lock' and reason not in {'no_file', 'banned_by_user'}):
+            if reason:
                 rejections[reason] += 1
                 continue
             c = candidate_from_row(r, locked=action == 'lock')

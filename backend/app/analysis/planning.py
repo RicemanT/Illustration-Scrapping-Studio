@@ -30,6 +30,7 @@ class AnalysisContext:
         self.missing = 0
         self.eras = Counter()
         self.excluded = Counter()
+        self.relaxed = Counter()
 
     def assess(self, rows: list, eligible: Optional[set], target: int, style_keys: Optional[dict] = None):
         keys = [(r['site'], str(r['remote_id'])) for r in rows]
@@ -47,10 +48,14 @@ class AnalysisContext:
         if assessment is not None:
             self.eras[assessment.era] += 1
             self.excluded.update(assessment.excluded)
+            self.relaxed.update(assessment.relaxed)
+            if assessment.relaxed:
+                self.relaxed['artists'] += 1
         return assessment, analysis
 
     def summary(self) -> dict:
-        return {'artists_without_analysis': self.missing, 'eras': dict(self.eras), 'excluded_content': dict(self.excluded)}
+        return {'artists_without_analysis': self.missing, 'eras': dict(self.eras), 'excluded_content': dict(self.excluded),
+                'relaxed': dict(self.relaxed)}
 
     def close(self) -> None:
         self.conn.close()
