@@ -298,10 +298,12 @@ FAILURE_KINDS = (
 def failure_kind(error: Optional[str]) -> str:
     """A readable category for a stored failure (the last file tried decides)."""
     last = (error or '').split('; ')[-1]
+    if last.strip() in ('HTTP 429', 'HTTP 503'):  # older runs stored the bare status
+        last = 'rate limited'
     for needle, label in FAILURE_KINDS:
         if needle in last:
             return label
-    if last.startswith(('sample:', 'original:', 'small preview:')) and 'HTTP' in last:
+    if 'HTTP' in last:
         return 'Other HTTP error (' + last.split('HTTP', 1)[1].strip().split()[0] + ')'
     return 'Model or other error'
 

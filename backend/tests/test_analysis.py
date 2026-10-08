@@ -392,6 +392,9 @@ class AnalysisLibraryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reasons[analysis_store.FAILURE_KINDS[0][1]], (2, {'danbooru': 1, 'gelbooru': 1}))
         self.assertEqual(reasons[analysis_store.FAILURE_KINDS[1][1]], (1, {'danbooru': 1}))
         self.assertEqual(len(report['examples']), 3)
+        # Older runs stored bare statuses.
+        self.assertEqual(analysis_store.failure_kind('HTTP 429'), analysis_store.FAILURE_KINDS[0][1])
+        self.assertEqual(analysis_store.failure_kind('HTTP 500'), 'Other HTTP error (500)')
 
     def test_models_on_different_gpus_run_at_the_same_time(self):
         from app.analysis.models import run_models
