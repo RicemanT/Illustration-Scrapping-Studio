@@ -23,7 +23,7 @@ export default function CaptionFactsPanel() {
       <p className="text-xs text-slate-400 max-w-3xl">
         Captioning models know popular characters but guess at rarer ones. <b>Build character facts</b> scans every harvested post and records,
         for each character tag, a clean name, its series (copyrights on at least a quarter of its posts) and its usual look (hair, eyes, ears, tails,
-        horns, halos, species … on at least 40% of the posts showing it alone). The captioning script (<code>tools/linkapi-caption.py</code>) reads
+        horns, halos, species … on at least 40% of the posts showing it alone). Your captioning script reads
         the file, finds the character tags in each image's <code>.txt</code> and passes their facts with the tags, so no web search is needed.
         Rebuild after harvesting more artists.
       </p>

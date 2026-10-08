@@ -177,7 +177,7 @@ Section **7. Image analysis** on the Planner page lets the server's GPUs look at
 
 ### Captioning
 
-Captions are written by `tools/linkapi-caption.py` (LinkAPI, OpenAI-compatible; Gemini Flash by default) as `<image>_nl.txt` next to each image, the file the caption editor shows. Set `LINKAPI_API_KEY`, point `IMAGE_ROOTS` at the folders to caption (they are walked recursively: the whole `images` folder, a batch's group folders, or the pilot groups) and `PROMPT_FILE` at your prompt, then run it on the server. It works through the images with a fixed pool of workers, appends progress to `captions_progress.tsv`, logs failures per image and resumes where it stopped.
+Captions come from a captioning script kept outside this repository (it holds API keys and prompts), written as `<image>_nl.txt` next to each image, the file the caption editor shows. The script should walk the library's group folders recursively and read each image's `.txt` sidecar.
 
 Each image's tags come from its `.txt` sidecar (the curated trainer tags), minus the quality and aesthetic marks, which are judgements rather than content. **8. Captioning → Build character facts** scans every harvested post and writes `<planner>/exports/character-facts.json`: for each character tag a clean name, its series (copyrights on at least a quarter of its posts) and its usual look (hair, eyes, ears, tails, horns, halos, e621 species and fur … on at least 40% of the posts showing that character alone). The script finds the character tags in each sidecar and adds their facts to the request, so the model names characters correctly without a web search. Rebuild the facts after harvesting more artists.
 
