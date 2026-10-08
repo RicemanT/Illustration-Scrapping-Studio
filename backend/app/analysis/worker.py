@@ -19,7 +19,7 @@ import sys
 import threading
 import time
 from collections import defaultdict, deque
-from pathlib import PurePath
+from pathlib import Path, PurePath
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 from app.analysis.store import AnalysisConfig, connect, get_config, sample_path, save_results
@@ -56,14 +56,58 @@ class SitePacer:
             self.penalty[site] = max(1.0, self.penalty.get(site, 1.0) * 0.9)
 
 
+VIDEO_EXTS = ('.mp4', '.webm', '.mkv', '.mov', '.m4v')
+MAX_VIDEO_BYTES = 100 * 1024 * 1024
+
+
 def open_sample(data_or_path):
-    """Decode a sample (bytes or a file) to RGB, at most 1024 px."""
+    """Decode a sample (bytes or a file) to RGB, at most 1024 px. Transparency goes on white, as on the sites'
+    own samples; animated GIFs give their first frame."""
     from PIL import Image
     with Image.open(io.BytesIO(data_or_path) if isinstance(data_or_path, bytes) else data_or_path) as raw:
         raw.seek(0)
-        image = raw.convert('RGB')
+        if raw.mode in ('RGBA', 'LA', 'PA') or (raw.mode == 'P' and 'transparency' in raw.info):
+            rgba = raw.convert('RGBA')
+            image = Image.new('RGB', rgba.size, (255, 255, 255))
+            image.paste(rgba, mask=rgba.getchannel('A'))
+        else:
+            image = raw.convert('RGB')
     image.thumbnail((1024, 1024))
     return image
+
+
+def is_video(url: str, response=None) -> bool:
+    content_type = (getattr(response, 'headers', None) or {}).get('content-type', '') if response is not None else ''
+    return url.lower().split('?')[0].endswith(VIDEO_EXTS) or content_type.startswith('video/')
+
+
+def video_frame(data: bytes):
+    """A frame a third of the way into a video, as RGB (OpenCV reads it from a temporary file)."""
+    import tempfile
+    import cv2
+    from PIL import Image
+    handle = tempfile.NamedTemporaryFile(suffix='.video', delete=False)
+    try:
+        handle.write(data)
+        handle.close()
+        capture = cv2.VideoCapture(handle.name)
+        try:
+            frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            if frames > 3:
+                capture.set(cv2.CAP_PROP_POS_FRAMES, frames // 3)
+            ok, frame = capture.read()
+            if not ok:
+                capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                ok, frame = capture.read()
+        finally:
+            capture.release()
+        if not ok or frame is None:
+            raise ValueError('no frame could be read')
+        image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        image.thumbnail((1024, 1024))
+        return image
+    finally:
+        Path(handle.name).unlink(missing_ok=True)
 
 
 RATE_LIMIT_TRIES = 6        # tries per URL while the site answers 429/503
@@ -72,6 +116,10 @@ RATE_LIMIT_MAX_WAIT = 60.0  # longest wait between those tries, in seconds
 
 def url_kind(url: str) -> str:
     """Which file a sample URL points at, for failure reports."""
+    if url.lower().split('?')[0].endswith(VIDEO_EXTS):
+        return 'video'
+    if '/preview/' in url or '/thumbnails/' in url or 'thumbnail_' in url:
+        return 'preview'
     if '/sample' in url or 'sample_' in url or 'sample-' in url:
         return 'sample'
     if '720x720' in url or '/180x180/' in url or '/360x360/' in url:
@@ -117,14 +165,20 @@ def fetch_image(client, pacer: SitePacer, site: str, urls: list[str], keep=None)
                 break
             pacer.succeeded(site)
             data = response.content
-            if len(data) > MAX_SAMPLE_BYTES:
+            video = is_video(url, response)
+            if len(data) > (MAX_VIDEO_BYTES if video else MAX_SAMPLE_BYTES):
                 problem = 'file too large'
                 break
             try:
-                image = open_sample(data)
+                image = video_frame(data) if video else open_sample(data)
             except Exception as exc:
-                problem = f'not an image ({type(exc).__name__})'
+                problem = f'{"video frame could not be read" if video else "not an image"} ({type(exc).__name__})'
                 break
+            if video:
+                # Keep the frame, not the whole video.
+                frame = io.BytesIO()
+                image.save(frame, format='JPEG', quality=92)
+                data = frame.getvalue()
             if keep is not None:
                 try:
                     keep.parent.mkdir(parents=True, exist_ok=True)

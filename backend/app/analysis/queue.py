@@ -16,13 +16,16 @@ from app.services.planner_store import connect as planner_connect
 from app.services.post_dates import sortable_time
 
 STATIC_EXTS = {'jpg', 'jpeg', 'png', 'webp', 'bmp', 'avif'}
+# Originals the worker can still read: GIFs (first frame) and videos (a frame a third of the way in).
+FRAME_EXTS = {'gif', 'mp4', 'webm', 'mkv', 'mov', 'm4v'}
 
 
 def sample_urls(row) -> list[str]:
-    """Medium-size image candidates for a post, best first; the original is the fallback."""
+    """Medium-size image candidates for a post, best first: the site's sample, then the original (stills, GIFs and
+    videos), then the small preview as a last resort."""
     site, md5 = row['site'], (row['md5'] or '').lower()
     ext = (row['ext'] or '').lower()
-    original = row['file_url'] if ext in STATIC_EXTS else None
+    original = row['file_url'] if ext in STATIC_EXTS | FRAME_EXTS else None
     urls = []
     if site == 'danbooru' and len(md5) == 32:
         urls += [f'https://cdn.donmai.us/sample/{md5[:2]}/{md5[2:4]}/sample-{md5}.jpg',
@@ -34,8 +37,8 @@ def sample_urls(row) -> list[str]:
         urls.append(f'{base}/samples/{md5[:2]}/{md5[2:4]}/sample_{md5}.jpg')
     if original:
         urls.append(original)
-    if row['preview_url'] and not urls:
-        urls.append(row['preview_url'])
+    if row['preview_url']:
+        urls.append(row['preview_url'])  # last resort: the small preview beats no analysis at all
     return [url for url in dict.fromkeys(urls) if url and url.startswith('https://')]
 
 

@@ -1,5 +1,6 @@
 import asyncio
 import json
+from pathlib import Path
 import threading
 import unittest
 from unittest import mock
@@ -375,6 +376,43 @@ class AnalysisLibraryTests(unittest.IsolatedAsyncioTestCase):
                                                                            'https://cdn.donmai.us/original/a/b/x.png'])
             self.assertEqual(error, f'sample: HTTP 429 rate limited after {worker.RATE_LIMIT_TRIES} tries')
             self.assertEqual(len(client.urls), worker.RATE_LIMIT_TRIES)  # the original is not tried on a rate-limited site
+
+    def test_gifs_and_videos_use_their_originals_and_the_preview_last(self):
+        md5 = 'a' * 32
+        row = {'site': 'gelbooru', 'md5': md5, 'ext': 'mp4', 'file_url': f'https://img3.gelbooru.com/images/aa/aa/{md5}.mp4',
+               'preview_url': f'https://img3.gelbooru.com/thumbnails/aa/aa/thumbnail_{md5}.jpg'}
+        urls = analysis_queue.sample_urls(row)
+        self.assertEqual(urls, [f'https://img3.gelbooru.com/samples/aa/aa/sample_{md5}.jpg', row['file_url'], row['preview_url']])
+        gif = {**row, 'ext': 'gif', 'file_url': row['file_url'].replace('.mp4', '.gif')}
+        self.assertIn(gif['file_url'], analysis_queue.sample_urls(gif))
+
+    def test_transparent_images_go_on_white_and_videos_give_a_frame(self):
+        import io as _io
+        import tempfile
+        from pathlib import Path
+        from PIL import Image
+        from app.analysis import worker
+        buffer = _io.BytesIO()
+        Image.new('RGBA', (8, 8), (0, 0, 0, 0)).save(buffer, format='PNG')
+        self.assertEqual(worker.open_sample(buffer.getvalue()).getpixel((0, 0)), (255, 255, 255))
+        try:
+            import cv2
+        except ImportError:
+            self.skipTest('OpenCV not installed')
+        from pathlib import Path
+        path = Path(tempfile.mkdtemp()) / "clip.mp4"
+        writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*'mp4v'), 10, (32, 24))
+        if not writer.isOpened():
+            self.skipTest('No mp4 encoder')
+        for _ in range(12):
+            writer.write(np.full((24, 32, 3), (0, 0, 200), dtype=np.uint8))  # BGR red
+        writer.release()
+        frame = worker.video_frame(path.read_bytes())
+        self.assertEqual(frame.size, (32, 24))
+        red, green, blue = frame.getpixel((16, 12))
+        self.assertTrue(red > 150 and green < 80 and blue < 80)
+        self.assertTrue(worker.is_video('https://x/y.webm') and not worker.is_video('https://x/y.gif'))
+        self.assertEqual(worker.url_kind('https://img3.gelbooru.com/images/aa/aa/x.mp4'), 'video')
 
     def test_failure_report_groups_reasons_by_site(self):
         conn = analysis_store.connect()
