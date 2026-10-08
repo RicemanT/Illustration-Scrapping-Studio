@@ -16,6 +16,7 @@ from app.services import planner_curation as curation
 from app.services import planner_quality as quality
 from app.services import planner_tags
 from app.services import caption_facts
+from app.services import caption_check
 from app.services.planner_select import PlannerConfig
 
 router = APIRouter()
@@ -227,6 +228,41 @@ def build_caption_facts():
         return caption_facts.start()
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc
+
+
+class CaptionCheckRequest(BaseModel):
+    min_words: int = Field(200, ge=0, le=5000)
+    max_words: int = Field(350, ge=1, le=10000)
+
+
+class SetAsideRequest(BaseModel):
+    problems: list[str] = Field(default_factory=list, max_length=50)
+
+
+@router.get('/caption-check')
+def caption_check_status():
+    return caption_check.status()
+
+
+@router.post('/caption-check')
+def start_caption_check(request: CaptionCheckRequest):
+    try:
+        return caption_check.start(request.min_words, request.max_words)
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.get('/caption-check/items')
+def caption_check_items(problem: Optional[str] = None):
+    return {'items': caption_check.flagged_items(problem)}
+
+
+@router.post('/caption-check/set-aside')
+def caption_check_set_aside(request: SetAsideRequest):
+    try:
+        return caption_check.set_aside(request.problems)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
 
 
 @router.post('/artists/enable-all')

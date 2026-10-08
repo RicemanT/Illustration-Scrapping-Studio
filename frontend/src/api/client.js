@@ -254,6 +254,10 @@ export const api = {
     applyQuality: (body) => client.post('/planner/quality/apply', body || {}),
     captionFacts: () => client.get('/planner/caption-facts'),
     buildCaptionFacts: () => client.post('/planner/caption-facts'),
+    captionCheck: () => client.get('/planner/caption-check'),
+    startCaptionCheck: (body) => client.post('/planner/caption-check', body),
+    captionCheckItems: (problem) => client.get('/planner/caption-check/items', { params: { problem: problem || undefined } }),
+    setAsideCaptions: (problems) => client.post('/planner/caption-check/set-aside', { problems }),
     qualityJob: () => client.get('/planner/quality/job'),
   },
   exports: {

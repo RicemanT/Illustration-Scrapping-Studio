@@ -131,6 +131,23 @@ class CurationTests(unittest.IsolatedAsyncioTestCase):
         finally:
             conn.close()
 
+    async def test_caption_check_flags_and_sets_aside_captions(self):
+        from app.services import caption_check
+        folder_id = await self._delivered_folder()
+        main = db.get_connection()
+        paths = [r[0] for r in main.execute('SELECT path FROM image WHERE folder_id=? ORDER BY id', (folder_id,))]
+        main.close()
+        root = db.LIBRARY_PATH / 'images'
+        refusal = (root / paths[0]).with_name(Path(paths[0]).stem + '_nl.txt')
+        refusal.write_text("I'm sorry, but I can't help with describing this image.", encoding='utf-8')
+        result = caption_check.run(min_words=0, max_words=1000)
+        self.assertTrue(result['images'] >= len(paths) and result['captioned'] == 1)
+        self.assertIn('refusal', result['counts'])
+        self.assertEqual(caption_check.flagged_items('refusal')[0]['path'], paths[0])
+        self.assertEqual(caption_check.set_aside(['refusal']), {'set_aside': 1})
+        self.assertFalse(refusal.exists())
+        self.assertTrue(refusal.with_name(refusal.name + '.flagged').exists())
+
     async def test_accept_all_and_reopen_all(self):
         from app.services import planner_curation as curation
         folder_id = await self._delivered_folder()
