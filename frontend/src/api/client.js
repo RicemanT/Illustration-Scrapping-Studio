@@ -183,6 +183,7 @@ export const api = {
   analysis: {
     status: (refresh) => client.get('/analysis/status', { params: { refresh: refresh || undefined } }),
     gpus: () => client.get('/analysis/gpus'),
+    failures: () => client.get('/analysis/failures'),
     saveConfig: (config) => client.put('/analysis/config', config),
     saveToken: (token) => client.put('/analysis/token', { token }),
     install: () => client.post('/analysis/install'),

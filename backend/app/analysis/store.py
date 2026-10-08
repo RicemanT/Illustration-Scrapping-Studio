@@ -281,6 +281,49 @@ def load_vectors(conn, keys: list[tuple[str, str]], model: str) -> dict[tuple, n
     return found
 
 
+FAILURE_KINDS = (
+    ('rate limited', 'Rate limited by the site (HTTP 429/503); retried later'),
+    ('HTTP 404', 'File not found on the site (HTTP 404; deleted or moved)'),
+    ('HTTP 403', 'Access refused (HTTP 403)'),
+    ('HTTP 410', 'File gone (HTTP 410)'),
+    ('Timeout', 'Network timeout'),
+    ('ConnectError', 'Could not connect'),
+    ('Error:', 'Network error'),
+    ('not an image', 'Download was not a readable image'),
+    ('file too large', 'File larger than 40 MB'),
+    ('no URL', 'No sample address (no file or hash in the metadata)'),
+)
+
+
+def failure_kind(error: Optional[str]) -> str:
+    """A readable category for a stored failure (the last file tried decides)."""
+    last = (error or '').split('; ')[-1]
+    for needle, label in FAILURE_KINDS:
+        if needle in last:
+            return label
+    if last.startswith(('sample:', 'original:', 'small preview:')) and 'HTTP' in last:
+        return 'Other HTTP error (' + last.split('HTTP', 1)[1].strip().split()[0] + ')'
+    return 'Model or other error'
+
+
+def failure_report(limit: int = 100) -> dict:
+    """Why posts could not be analysed: counts per reason and site, and the most recent examples."""
+    conn = connect()
+    try:
+        rows = conn.execute("SELECT site, remote_id, artist_id, error, analyzed_at, source FROM analysis_post WHERE status='failed' "
+                            'ORDER BY analyzed_at DESC').fetchall()
+    finally:
+        conn.close()
+    by_reason: dict[str, dict] = {}
+    for row in rows:
+        entry = by_reason.setdefault(failure_kind(row['error']), {'total': 0, 'sites': {}})
+        entry['total'] += 1
+        entry['sites'][row['site']] = entry['sites'].get(row['site'], 0) + 1
+    examples = [{**dict(row), 'reason': failure_kind(row['error'])} for row in rows[:limit]]
+    return {'failed': len(rows), 'reasons': sorted(({'reason': k, **v} for k, v in by_reason.items()), key=lambda r: -r['total']),
+            'examples': examples}
+
+
 def stats() -> dict:
     conn = connect()
     try:

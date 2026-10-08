@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.analysis import review, service
-from app.analysis.store import AnalysisConfig, get_config, save_config, stats
+from app.analysis.store import AnalysisConfig, failure_report, get_config, save_config, stats
 
 router = APIRouter()
 _environment: dict = {'checked': 0.0, 'info': None}
@@ -40,6 +40,12 @@ async def status(refresh: bool = False):
     return {'environment': await _environment_info(refresh), 'install': service.install_status(), 'selftest': service.self_test_status(),
             'job': await asyncio.to_thread(service.job), 'stats': await asyncio.to_thread(stats), 'config': get_config().model_dump(),
             'gpus': await asyncio.to_thread(service.gpu_status), 'hf_token_set': bool(service.hf_token())}
+
+
+@router.get('/failures')
+async def failures(limit: int = 100):
+    """Why posts could not be analysed (Start analysis queues failed posts again)."""
+    return await asyncio.to_thread(failure_report, max(1, min(limit, 1000)))
 
 
 @router.get('/gpus')

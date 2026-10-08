@@ -66,37 +66,64 @@ def open_sample(data_or_path):
     return image
 
 
+RATE_LIMIT_TRIES = 6        # tries per URL while the site answers 429/503
+RATE_LIMIT_MAX_WAIT = 60.0  # longest wait between those tries, in seconds
+
+
+def url_kind(url: str) -> str:
+    """Which file a sample URL points at, for failure reports."""
+    if '/sample' in url or 'sample_' in url or 'sample-' in url:
+        return 'sample'
+    if '720x720' in url or '/180x180/' in url or '/360x360/' in url:
+        return 'small preview'
+    return 'original'
+
+
+def _retry_after(response) -> float:
+    try:
+        return float(response.headers.get('Retry-After', 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def fetch_image(client, pacer: SitePacer, site: str, urls: list[str], keep=None):
     """First decodable image among `urls`, downscaled to at most 1024 px; (image, url) or (None, error).
-    With `keep`, the downloaded file is also written there for later runs."""
-    from PIL import Image
-    error = 'no URL'
+    With `keep`, the downloaded file is also written there for later runs. The error names every file tried
+    and why it failed ("sample: HTTP 404; original: HTTP 429 rate limited after 6 tries"). A rate-limited URL is
+    retried patiently (Retry-After, up to a minute between tries) rather than given up after a few seconds."""
+    errors = []
     for url in urls:
-        for attempt in range(3):
+        kind = url_kind(url)
+        problem = None
+        network_tries = 0
+        for attempt in range(RATE_LIMIT_TRIES):
             pacer.wait(site)
             try:
                 response = client.get(url, headers={'Referer': 'https://gelbooru.com/'} if site == 'gelbooru' else {})
             except Exception as exc:
-                error = f'{type(exc).__name__}: {exc}'
+                network_tries += 1
+                problem = f'{type(exc).__name__}: {exc}'[:160]
+                if network_tries >= 3:
+                    break
                 time.sleep(1 + attempt)
                 continue
             if response.status_code in (429, 503):
                 pacer.throttled(site)
-                time.sleep(2 ** attempt)
-                error = f'HTTP {response.status_code}'
+                problem = f'HTTP {response.status_code} rate limited after {attempt + 1} tries'
+                time.sleep(min(RATE_LIMIT_MAX_WAIT, max(_retry_after(response), 2 ** (attempt + 1))))
                 continue
             if response.status_code != 200:
-                error = f'HTTP {response.status_code}'
+                problem = f'HTTP {response.status_code}'
                 break
             pacer.succeeded(site)
             data = response.content
             if len(data) > MAX_SAMPLE_BYTES:
-                error = 'sample too large'
+                problem = 'file too large'
                 break
             try:
                 image = open_sample(data)
             except Exception as exc:
-                error = f'not an image: {exc}'
+                problem = f'not an image ({type(exc).__name__})'
                 break
             if keep is not None:
                 try:
@@ -107,7 +134,10 @@ def fetch_image(client, pacer: SitePacer, site: str, urls: list[str], keep=None)
                 except OSError as exc:
                     log.warning('could not keep sample %s: %s', keep, exc)
             return image, url
-    return None, error
+        errors.append(f'{kind}: {problem or "failed"}')
+        if problem and 'rate limited' in problem:
+            break  # the other files are on the same rate-limited site
+    return None, '; '.join(errors) or 'no URL'
 
 
 class Progress:

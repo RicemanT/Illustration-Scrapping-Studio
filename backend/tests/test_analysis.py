@@ -339,6 +339,60 @@ class AnalysisLibraryTests(unittest.IsolatedAsyncioTestCase):
         conn.close()
         self.assertEqual((models, count), ('dinov2', 0))  # the next run redoes just DINOv3
 
+    def test_downloads_wait_out_rate_limits_and_report_each_file(self):
+        import io as _io
+        from PIL import Image
+        from app.analysis import worker
+        buffer = _io.BytesIO()
+        Image.new('RGB', (8, 8)).save(buffer, format='PNG')
+
+        class Response:
+            def __init__(self, status, content=b'', retry_after=None):
+                self.status_code, self.content = status, content
+                self.headers = {'Retry-After': retry_after} if retry_after else {}
+
+        class Client:
+            def __init__(self, answers):
+                self.answers, self.urls = list(answers), []
+
+            def get(self, url, headers=None):
+                self.urls.append(url)
+                return self.answers.pop(0)
+
+        pacer = worker.SitePacer(0)
+        sleeps = []
+        with mock.patch.object(worker.time, 'sleep', sleeps.append):
+            client = Client([Response(429, retry_after='5'), Response(503), Response(200, buffer.getvalue())])
+            image, url = worker.fetch_image(client, pacer, 'danbooru', ['https://cdn.donmai.us/sample/a/b/sample-x.jpg'])
+            self.assertIsNotNone(image)
+            self.assertEqual([x for x in sleeps if x][:2], [5.0, 4])  # Retry-After first, then exponential
+            client = Client([Response(404), Response(404)])
+            image, error = worker.fetch_image(client, pacer, 'danbooru', ['https://cdn.donmai.us/sample/a/b/sample-x.jpg',
+                                                                           'https://cdn.donmai.us/original/a/b/x.png'])
+            self.assertEqual((image, error), (None, 'sample: HTTP 404; original: HTTP 404'))
+            client = Client([Response(429)] * worker.RATE_LIMIT_TRIES)
+            image, error = worker.fetch_image(client, pacer, 'danbooru', ['https://cdn.donmai.us/sample/a/b/sample-x.jpg',
+                                                                           'https://cdn.donmai.us/original/a/b/x.png'])
+            self.assertEqual(error, f'sample: HTTP 429 rate limited after {worker.RATE_LIMIT_TRIES} tries')
+            self.assertEqual(len(client.urls), worker.RATE_LIMIT_TRIES)  # the original is not tried on a rate-limited site
+
+    def test_failure_report_groups_reasons_by_site(self):
+        conn = analysis_store.connect()
+        analysis_store.save_results(conn, [
+            {'site': 'danbooru', 'remote_id': '1', 'status': 'failed', 'error': 'sample: HTTP 429 rate limited after 6 tries'},
+            {'site': 'gelbooru', 'remote_id': '2', 'status': 'failed', 'error': 'sample: HTTP 429 rate limited after 6 tries'},
+            {'site': 'danbooru', 'remote_id': '3', 'status': 'failed', 'error': 'sample: HTTP 404; original: HTTP 404'},
+            {'site': 'danbooru', 'remote_id': '4', 'status': 'done', 'scores': {'ws3': 5.0}},
+        ])
+        conn.commit()
+        conn.close()
+        report = analysis_store.failure_report()
+        self.assertEqual(report['failed'], 3)
+        reasons = {r['reason']: (r['total'], r['sites']) for r in report['reasons']}
+        self.assertEqual(reasons[analysis_store.FAILURE_KINDS[0][1]], (2, {'danbooru': 1, 'gelbooru': 1}))
+        self.assertEqual(reasons[analysis_store.FAILURE_KINDS[1][1]], (1, {'danbooru': 1}))
+        self.assertEqual(len(report['examples']), 3)
+
     def test_models_on_different_gpus_run_at_the_same_time(self):
         from app.analysis.models import run_models
         barrier = threading.Barrier(2)

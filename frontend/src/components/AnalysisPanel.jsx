@@ -26,6 +26,34 @@ const bytes = (value) => (value >= 2 ** 30 ? `${(value / 2 ** 30).toFixed(1)} GB
 const ACTIVE = ['queued', 'running', 'stopping'];
 const auc = (value) => (value == null ? '—' : value.toFixed(3));
 
+const postUrl = (site, id) => (site === 'e621' ? `https://e621.net/posts/${id}` : site === 'gelbooru'
+  ? `https://gelbooru.com/index.php?page=post&s=view&id=${id}` : `https://danbooru.donmai.us/posts/${id}`);
+
+// Why posts could not be analysed: reasons per site and the latest examples (loaded when opened).
+function FailureReport({ count }) {
+  const [open, setOpen] = useState(false);
+  const report = useQuery({ queryKey: ['analysis-failures', count], enabled: open, queryFn: async () => (await api.analysis.failures()).data });
+  return (
+    <details className="text-xs" onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary className="cursor-pointer text-amber-300">Why {number(count)} posts could not be analysed</summary>
+      <div className="mt-2 space-y-2">
+        <p className="text-slate-400">Start analysis (without Analyse again) queues failed posts again, so rate-limit failures usually clear on a later run.
+          Downloads now wait out rate limits (the site's Retry-After, up to a minute between six tries) before giving up.</p>
+        {report.isLoading && <p className="text-slate-400">Loading…</p>}
+        {report.data && <table><thead><tr className="text-left text-slate-400"><th className="pr-4">Reason</th><th className="pr-4">Posts</th><th>By site</th></tr></thead>
+          <tbody>{report.data.reasons.map((r) => <tr key={r.reason}><td className="pr-4 text-slate-300">{r.reason}</td><td className="pr-4 tabular-nums">{number(r.total)}</td>
+            <td className="text-slate-400">{Object.entries(r.sites).map(([site, n]) => `${site} ${number(n)}`).join(' · ')}</td></tr>)}</tbody></table>}
+        {report.data?.examples?.length > 0 && <div className="max-h-60 overflow-auto rounded border border-slate-800">
+          <table className="w-full"><thead><tr className="text-left text-slate-400"><th className="px-2">Post</th><th className="px-2">What failed</th><th className="px-2">When</th></tr></thead>
+            <tbody>{report.data.examples.map((e) => <tr key={`${e.site}-${e.remote_id}`} className="border-t border-slate-800 align-top">
+              <td className="px-2"><a className="text-blue-300 underline" href={postUrl(e.site, e.remote_id)} target="_blank" rel="noreferrer">{e.site} {e.remote_id}</a></td>
+              <td className="px-2 text-slate-300">{e.error}</td>
+              <td className="px-2 text-slate-500 whitespace-nowrap">{e.analyzed_at ? new Date(e.analyzed_at).toLocaleString() : ''}</td></tr>)}</tbody></table></div>}
+      </div>
+    </details>
+  );
+}
+
 function GpuTable({ gpus, allowed }) {
   if (!gpus?.length) return <p className="text-xs text-slate-500">No NVIDIA GPU visible to the backend (nvidia-smi not found).</p>;
   return (
@@ -203,6 +231,7 @@ export default function AnalysisPanel() {
             {job.error && <p className="text-red-300">{job.error}</p>}
             {(job.status === 'failed' || job.status === 'interrupted') && job.log && <pre className="max-h-40 overflow-auto rounded bg-black/40 p-2 text-[11px] text-slate-400">{job.log}</pre>}
           </div>}
+          {data.stats?.posts?.failed > 0 && <FailureReport count={data.stats.posts.failed} />}
           {data.stats && <p className="text-xs text-slate-500">Analysed so far: {number(data.stats.posts?.done)} posts{data.stats.posts?.failed ? `, ${number(data.stats.posts.failed)} failed` : ''}
             {Object.keys(data.stats.vectors || {}).length > 0 && ` · style vectors: ${Object.entries(data.stats.vectors).map(([k, v]) => `${k} ${number(v)}`).join(', ')}`}
             {data.stats.samples?.count > 0 && <> · kept samples: {number(data.stats.samples.count)} ({bytes(data.stats.samples.bytes)}){' '}
