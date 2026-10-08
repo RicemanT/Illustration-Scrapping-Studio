@@ -213,14 +213,18 @@ class Candidate:
 
 
 def candidate_from_row(row, locked: bool = False) -> Candidate:
-    """Parent/child sets share a family key so only one variant can be chosen."""
+    """Parent/child variants of the same characters share a family key so only one of them can be chosen.
+
+    Artists often hang a whole cast under one parent post (character sprites, a set of portraits); children
+    showing other characters are different pictures, so the characters are part of the key.
+    """
     parent = row['parent_id'] if row['parent_id'] not in (None, '', '0') else None
     characters = split(row['characters'])
     general = split(row['general']) + split(row['species'])
     popularity = row['fav_count'] if row['fav_count'] is not None else (row['score'] or 0)
     return Candidate(
         site=row['site'], remote_id=str(row['remote_id']), artist_id=row['artist_id'], md5=row['md5'],
-        family=f"{row['site']}:{parent or row['remote_id']}", short_side=min(row['width'] or 0, row['height'] or 0),
+        family=f"{row['site']}:{parent or row['remote_id']}:{' '.join(sorted(characters))}", short_side=min(row['width'] or 0, row['height'] or 0),
         popularity=float(popularity), characters=characters, content=general + characters + split(row['copyrights']),
         general=general, locked=locked,
     )

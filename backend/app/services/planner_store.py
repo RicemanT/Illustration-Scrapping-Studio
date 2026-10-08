@@ -258,6 +258,12 @@ def connect() -> sqlite3.Connection:
         # Set when the artist's collection is accepted as complete by hand.
         conn.execute('ALTER TABLE artist ADD COLUMN completed_at TEXT')
         conn.commit()
+    if 'moved_to' not in columns:
+        # A Danbooru artist whose posts Danbooru took down is planned from Gelbooru instead:
+        # moved_to on the retired Danbooru entry, moved_from (its id) on the Gelbooru stand-in.
+        conn.execute('ALTER TABLE artist ADD COLUMN moved_to TEXT')
+        conn.execute('ALTER TABLE artist ADD COLUMN moved_from INTEGER')
+        conn.commit()
     return conn
 
 
@@ -306,10 +312,12 @@ def import_artists(text: str, disable_missing: bool = True) -> dict:
     conn = connect()
     try:
         existing = {(r['site'], r['tag']): r['id'] for r in conn.execute('SELECT id, site, tag FROM artist')}
+        stand_ins = {r[0] for r in conn.execute('SELECT id FROM artist WHERE moved_from IS NOT NULL')}
         added = updated = 0
         for (site, tag), (name, tag_id, count) in parsed.items():
             if (site, tag) in existing:
-                conn.execute('UPDATE artist SET display_name=?, tag_id=?, listed_post_count=?, enabled=1, in_list=1 WHERE id=?',
+                # Artists moved to Gelbooru stay retired on Danbooru.
+                conn.execute('UPDATE artist SET display_name=?, tag_id=?, listed_post_count=?, enabled=(moved_to IS NULL), in_list=(moved_to IS NULL) WHERE id=?',
                              (name, tag_id, count, existing[(site, tag)]))
                 updated += 1
             else:
@@ -318,7 +326,7 @@ def import_artists(text: str, disable_missing: bool = True) -> dict:
                 added += 1
         disabled = 0
         if disable_missing:
-            missing = [artist_id for key, artist_id in existing.items() if key not in parsed]
+            missing = [artist_id for key, artist_id in existing.items() if key not in parsed and artist_id not in stand_ins]
             for artist_id in missing:
                 disabled += conn.execute('UPDATE artist SET enabled=0, in_list=0 WHERE id=? AND in_list=1', (artist_id,)).rowcount
         conn.commit()
@@ -390,6 +398,50 @@ def enable_batch(sites: list[str], add: int = 0, keep_collections: bool = True) 
         conn.commit()
         return {'enabled': len(enabled), 'added': len(new), 'with_collections': len(with_collection & enabled),
                 'remaining': len(waiting) - len(new), 'disabled': len(artists) - len(enabled)}
+    finally:
+        conn.close()
+
+
+def hidden_danbooru_artists(min_share: float = 0.5) -> list[dict]:
+    """Danbooru artists most of whose harvested posts have no file: Danbooru took them down (banned artist), but
+    Gelbooru usually still has them. Artists with planner collections are left out (their images are in hand)."""
+    conn = connect()
+    try:
+        rows = conn.execute("""SELECT a.id, a.tag, a.display_name, a.enabled, count(p.remote_id) AS posts,
+                                       sum(CASE WHEN p.file_url IS NULL OR p.file_url='' THEN 1 ELSE 0 END) AS hidden
+                                FROM artist a JOIN post p ON p.artist_id=a.id
+                                WHERE a.site='danbooru' AND a.in_list=1 AND a.moved_to IS NULL
+                                  AND a.id NOT IN (SELECT DISTINCT artist_id FROM delivery_item)
+                                GROUP BY a.id HAVING posts > 0 ORDER BY a.id""").fetchall()
+        taken = {r[0] for r in conn.execute("SELECT tag FROM artist WHERE site='gelbooru'")}
+        return [{**dict(r), 'gelbooru_listed': r['tag'] in taken} for r in rows if r['hidden'] >= min_share * r['posts']]
+    finally:
+        conn.close()
+
+
+def move_to_gelbooru(artist_ids: list[int]) -> dict:
+    """Plan these Danbooru artists from Gelbooru: a Gelbooru entry with the same tag takes over (enabled as the
+    Danbooru one was, waiting for a Gelbooru harvest), and the Danbooru entry is retired."""
+    conn = connect()
+    try:
+        moved, skipped = [], []
+        for artist_id in sorted(set(artist_ids)):
+            artist = conn.execute("SELECT * FROM artist WHERE id=? AND site='danbooru' AND moved_to IS NULL", (artist_id,)).fetchone()
+            if not artist:
+                skipped.append(artist_id)
+                continue
+            existing = conn.execute("SELECT id FROM artist WHERE site='gelbooru' AND tag=?", (artist['tag'],)).fetchone()
+            if existing:
+                conn.execute('UPDATE artist SET enabled=?, in_list=1, moved_from=? WHERE id=?', (artist['enabled'], artist_id, existing['id']))
+                stand_in = existing['id']
+            else:
+                stand_in = conn.execute("""INSERT INTO artist (site, tag, display_name, tag_id, listed_post_count, enabled, in_list, moved_from)
+                                           VALUES ('gelbooru', ?, ?, NULL, NULL, ?, 1, ?)""",
+                                        (artist['tag'], artist['display_name'], artist['enabled'], artist_id)).lastrowid
+            conn.execute("UPDATE artist SET enabled=0, in_list=0, moved_to='gelbooru' WHERE id=?", (artist_id,))
+            moved.append({'danbooru_id': artist_id, 'gelbooru_id': stand_in, 'tag': artist['tag']})
+        conn.commit()
+        return {'moved': moved, 'skipped': skipped}
     finally:
         conn.close()
 

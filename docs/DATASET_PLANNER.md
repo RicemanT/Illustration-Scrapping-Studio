@@ -67,7 +67,7 @@ Gelbooru needs a User ID and API key in Settings. Some posts have no downloadabl
    - optionally, excluded ratings, posts before a chosen year, or all motion posts.
 
    Videos, animations and ugoira are included by default; when imported, each produces up to three frames.
-2. **Drop small artists:** artists with fewer usable images than the minimum (default 20) are dropped. Parent/child variants count once.
+2. **Drop small artists:** artists with fewer usable images than the minimum (default 20) are dropped. Parent/child variants of the same characters count once; children showing other characters (a cast of sprites under one parent) count separately.
 3. **Pick images in turns.** Each artist picks one image per round until it reaches the per-artist maximum (default 60). Each pick goes to the image that adds the most:
    - **Quality:** favorites (or score) ranked within the artist, so a small artist's best images rank as highly as a popular artist's.
    - **Novelty:** content the artist's selection does not cover yet. This keeps an artist tag from being tied to one character.
@@ -145,6 +145,8 @@ The planner balances content, not style: it only sees tags, favorites and sizes,
 ### Batches
 
 **Inputs → Limit planning → Plan in batches** grows the dataset a chunk at a time: tick the sites to plan (for example Danbooru and Gelbooru), set **Add the next** (say 500) and press **Enable batch**. Artists of those sites already in scope stay, the next ones in list order join, and every artist that already has a planner collection stays in too, on any site, so the pilot and earlier batches (frozen once accepted) keep counting towards the shared character and tag goals. Everyone else is left out of analysis, plans and downloads. Then analyse the enabled artists (7. Image analysis, scope "enabled artists"; only new posts are analysed), run the plan, and download it under a new group name prefix (for example `batch1`): artists who already have a folder keep it, so only new artists get folders in the new groups. Remove images no longer selected, tag, curate, accept, and press **Enable batch** again for the next chunk.
+
+**Danbooru takedowns.** When Danbooru bans an artist, its API stops giving out those posts' files (and hashes), so the plan counts them as "no file" and drops the artist. **Inputs → Limit planning → Find Danbooru takedowns** lists Danbooru artists with at least half their harvested posts hidden; **move** (or **Move all**) creates a Gelbooru entry with the same tag, in scope exactly when the Danbooru one was, and retires the Danbooru entry (a later artists CSV import keeps it retired). Then harvest Gelbooru (the new entries wait as pending), analyse and plan as usual. Artists that already have planner collections are not listed.
 
 ### Image analysis
 

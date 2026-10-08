@@ -78,6 +78,16 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(len(chosen & {'4', '5'}), 1)
         self.assertEqual(len(chosen), 4)
 
+    def test_family_children_of_other_characters_are_separate_pictures(self):
+        # A cast of sprites under one parent: each character can be chosen, its variants only once.
+        rows = [post(1, characters='alice bob'), post(2, parent_id='1', characters='alice'), post(3, parent_id='1', characters='alice'),
+                post(4, parent_id='1', characters='bob'), post(5, parent_id='1', characters='carol')]
+        result = plan({1: rows}, PlannerConfig(min_images=1, max_images=10, character_floor=0))
+        chosen = {p['remote_id'] for p in result.picks}
+        self.assertEqual(len(chosen & {'2', '3'}), 1)
+        self.assertTrue({'1', '4', '5'} <= chosen)
+        self.assertEqual(len(chosen), 4)
+
     def test_character_share_cap_spreads_content(self):
         rows = [post(i, characters='hero') for i in range(1, 31)] + [post(i, general=f'unique_{i}') for i in range(31, 41)]
         config = PlannerConfig(min_images=5, max_images=10, character_floor=0, character_share_cap=0.3)
@@ -185,6 +195,30 @@ class PlannerStoreTests(unittest.TestCase):
         self.assertEqual(second['remaining'], 0)
         with self.assertRaises(ValueError):
             store.enable_batch(['pixiv'])
+
+    def test_danbooru_takedowns_move_to_gelbooru_and_stay_retired(self):
+        AKNI_CSV = 'site,display_name,query_tag\ndanbooru,akni,akni\ndanbooru,fine,fine_artist\n'
+        store.import_artists(AKNI_CSV)
+        self.insert_posts(1, [post(i, file_url=None if i > 2 else f'https://example/{i}.jpg') for i in range(1, 11)])
+        self.insert_posts(2, [post(i + 100, artist_id=2) for i in range(1, 11)])
+        hidden = store.hidden_danbooru_artists()
+        self.assertEqual([(a['tag'], a['hidden'], a['posts']) for a in hidden], [('akni', 8, 10)])
+        result = store.move_to_gelbooru([hidden[0]['id'], 2_000])
+        self.assertEqual((len(result['moved']), result['skipped']), (1, [2_000]))
+        conn = store.connect()
+        rows = {(r['site'], r['tag']): dict(r) for r in conn.execute('SELECT * FROM artist')}
+        conn.close()
+        stand_in = rows[('gelbooru', 'akni')]
+        self.assertEqual((stand_in['enabled'], stand_in['in_list'], stand_in['harvest_status'], stand_in['moved_from']), (1, 1, 'pending', 1))
+        self.assertEqual((rows[('danbooru', 'akni')]['enabled'], rows[('danbooru', 'akni')]['moved_to']), (0, 'gelbooru'))
+        self.assertEqual(store.hidden_danbooru_artists(), [])
+        # Importing the artists CSV again keeps the Danbooru entry retired and the Gelbooru stand-in listed.
+        store.import_artists(AKNI_CSV)
+        conn = store.connect()
+        rows = {(r['site'], r['tag']): (r['enabled'], r['in_list']) for r in conn.execute('SELECT * FROM artist')}
+        conn.close()
+        self.assertEqual(rows[('danbooru', 'akni')], (0, 0))
+        self.assertEqual(rows[('gelbooru', 'akni')], (1, 1))
 
     def test_character_import_merges_danbooru_and_gelbooru_family(self):
         result = store.import_characters('site,tag,post_count\ndanbooru,hatsune miku,10\ngelbooru,hatsune_miku,5\ne621,judy_hopps,3\n')

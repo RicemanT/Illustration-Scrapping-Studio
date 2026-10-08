@@ -200,6 +200,21 @@ def enable_batch(request: EnableBatch):
         raise HTTPException(422, str(exc)) from exc
 
 
+class MoveRequest(BaseModel):
+    artist_ids: list[int] = Field(min_length=1, max_length=100_000)
+
+
+@router.get('/artists/danbooru-takedowns')
+def danbooru_takedowns(min_share: float = Query(0.5, ge=0.05, le=1.0)):
+    """Danbooru artists whose posts are mostly hidden by Danbooru (taken down); Gelbooru usually has them."""
+    return {'artists': store.hidden_danbooru_artists(min_share)}
+
+
+@router.post('/artists/move-to-gelbooru')
+def move_to_gelbooru(request: MoveRequest):
+    return store.move_to_gelbooru(request.artist_ids)
+
+
 @router.post('/artists/enable-all')
 def enable_all():
     return {'enabled': store.enable_all()}

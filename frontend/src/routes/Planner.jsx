@@ -70,6 +70,9 @@ export default function Planner() {
   const [batchSites, setBatchSites] = usePersisted('batchSites', ['danbooru', 'gelbooru']);
   const [batchAdd, setBatchAdd] = usePersisted('batchAdd', 500);
   const [batchKeep, setBatchKeep] = usePersisted('batchKeep', true);
+  const takedowns = useMutation({ mutationFn: api.planner.danbooruTakedowns });
+  const moveToGelbooru = useMutation({ mutationFn: (ids) => api.planner.moveToGelbooru(ids),
+    onSuccess: ({ data }) => { setNotice(`${number(data.moved.length)} artists now come from Gelbooru. Harvest Gelbooru to fetch them (they wait as pending), then analyse and plan.`); takedowns.reset(); refresh(); } });
   const enableBatch = useMutation({ mutationFn: () => api.planner.enableBatch({ sites: batchSites, add: Number(batchAdd) || 0, keep_collections: batchKeep }),
     onSuccess: ({ data }) => { setNotice(`${number(data.enabled)} artists in scope: ${number(data.added)} added, ${number(data.with_collections)} with collections kept; ${number(data.remaining)} more waiting on ${batchSites.join(' and ')}.`); refresh(); } });
   const clearPriority = useMutation({ mutationFn: api.planner.clearPriority, onSuccess: ({ data }) => { setNotice(`Priority cleared; ${number(data.removed)} series-only targets removed.`); refresh(); } });
@@ -142,6 +145,20 @@ export default function Planner() {
               <label className="flex items-center gap-1 text-xs text-slate-300"><input type="checkbox" checked={batchKeep} onChange={(event) => setBatchKeep(event.target.checked)} />Keep artists with collections</label>
               <button className={quiet} disabled={enableBatch.isPending || batchSites.length === 0} onClick={() => { setNotice(''); enableBatch.mutate(); }}>Enable batch</button>
             </div>
+          </div>
+          <div className="mt-3 space-y-2 rounded border border-slate-800 p-2">
+            <p className="text-xs text-slate-400"><b>Danbooru takedowns.</b> When Danbooru bans an artist, its API stops giving out their posts' files, so the plan sees "no file" and drops them; Gelbooru usually still has the posts. This lists Danbooru artists with at least half their harvested posts hidden. Moving one makes a Gelbooru entry with the same tag (in or out of scope as the Danbooru one was) and retires the Danbooru entry; then harvest Gelbooru, analyse and plan as usual.</p>
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <button className={quiet} disabled={takedowns.isPending} onClick={() => takedowns.mutate()}>{takedowns.isPending ? 'Looking…' : 'Find Danbooru takedowns'}</button>
+              {takedowns.data && takedowns.data.data.artists.length > 0 && <button className={quiet} disabled={moveToGelbooru.isPending}
+                onClick={() => moveToGelbooru.mutate(takedowns.data.data.artists.map((artist) => artist.id))}>Move all {number(takedowns.data.data.artists.length)} to Gelbooru</button>}
+            </div>
+            {takedowns.data && (takedowns.data.data.artists.length === 0 ? <p className="text-xs text-green-300">No Danbooru artist has most of their posts hidden.</p>
+              : <div className="max-h-48 overflow-auto"><table className="text-xs"><thead><tr className="text-left text-slate-400"><th className="pr-4">Artist</th><th className="pr-4">Hidden on Danbooru</th><th className="pr-4">In scope</th><th /></tr></thead>
+                <tbody>{takedowns.data.data.artists.map((artist) => <tr key={artist.id}><td className="pr-4">{artist.display_name} <span className="text-slate-500">{artist.tag}</span></td>
+                  <td className="pr-4 tabular-nums">{number(artist.hidden)} of {number(artist.posts)}</td><td className="pr-4">{artist.enabled ? 'yes' : 'later batch'}</td>
+                  <td><button className="text-blue-300 underline disabled:opacity-40" disabled={moveToGelbooru.isPending} onClick={() => moveToGelbooru.mutate([artist.id])}>move</button></td></tr>)}</tbody></table></div>)}
+            {[takedowns.error, moveToGelbooru.error].filter(Boolean).map((error, index) => <p role="alert" className="text-red-400" key={index}>{errorText(error)}</p>)}
           </div>
         </div>
       </details>
