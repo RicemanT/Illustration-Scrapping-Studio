@@ -252,6 +252,8 @@ export const api = {
     saveQualityConfig: (config) => client.put('/planner/quality/config', config),
     qualityThresholds: () => client.get('/planner/quality/thresholds'),
     applyQuality: (body) => client.post('/planner/quality/apply', body || {}),
+    captionFacts: () => client.get('/planner/caption-facts'),
+    buildCaptionFacts: () => client.post('/planner/caption-facts'),
     qualityJob: () => client.get('/planner/quality/job'),
   },
   exports: {

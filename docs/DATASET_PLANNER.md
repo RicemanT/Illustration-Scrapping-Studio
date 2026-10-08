@@ -175,6 +175,12 @@ Section **7. Image analysis** on the Planner page lets the server's GPUs look at
 
 **Bulk accept.** Section 5 has **Accept all collections** and **Reopen all**, which accept or reopen every planner collection at once (the same as each folder's Accept button). The quality and aesthetic tag pass skips accepted collections unless **Include accepted collections** is ticked, for example after pulling wildcards into folders you had already accepted; hand-set marks are never replaced either way.
 
+### Captioning
+
+Captions are written by `tools/linkapi-caption.py` (LinkAPI, OpenAI-compatible; Gemini Flash by default) as `<image>_nl.txt` next to each image, the file the caption editor shows. Set `LINKAPI_API_KEY`, point `IMAGE_ROOTS` at the folders to caption (they are walked recursively: the whole `images` folder, a batch's group folders, or the pilot groups) and `PROMPT_FILE` at your prompt, then run it on the server. It works through the images with a fixed pool of workers, appends progress to `captions_progress.tsv`, logs failures per image and resumes where it stopped.
+
+Each image's tags come from its `.txt` sidecar (the curated trainer tags), minus the quality and aesthetic marks, which are judgements rather than content. **8. Captioning → Build character facts** scans every harvested post and writes `<planner>/exports/character-facts.json`: for each character tag a clean name, its series (copyrights on at least a quarter of its posts) and its usual look (hair, eyes, ears, tails, horns, halos, e621 species and fur … on at least 40% of the posts showing that character alone). The script finds the character tags in each sidecar and adds their facts to the request, so the model names characters correctly without a web search. Rebuild the facts after harvesting more artists.
+
 ### Tracker
 
 **Tracker** (top bar) follows characters and general tags across every planner collection as one growing dataset: the pilot, then each batch of artists you plan and download into the same groups. Planner collections show a ✓ in the sidebar once accepted, each group shows how many are accepted, and **Hide accepted** leaves only the collections still to review; the Tracker's **Collections** card lists them too, with each one's images against the target.

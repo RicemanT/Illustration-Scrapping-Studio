@@ -137,6 +137,9 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(first, second)
 
 
+FACTS_CSV = 'site,display_name,query_tag' + chr(10) + 'danbooru,a,artist_a' + chr(10) + 'e621,b,artist_b' + chr(10)
+
+
 class PlannerStoreTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -219,6 +222,29 @@ class PlannerStoreTests(unittest.TestCase):
         conn.close()
         self.assertEqual(rows[('danbooru', 'akni')], (0, 0))
         self.assertEqual(rows[('gelbooru', 'akni')], (1, 1))
+
+    def test_character_facts_name_series_and_usual_look(self):
+        import json
+        from app.services import caption_facts
+        store.import_artists(FACTS_CSV)
+        hoshino = [post(i, characters='takanashi_hoshino_(blue_archive)', copyrights='blue_archive',
+                        general=f'1girl solo pink_hair ahoge halo heterochromia hair_between_eyes pose_{i}') for i in range(1, 7)]
+        duo = [post(i, characters='takanashi_hoshino_(blue_archive) shiroko_(blue_archive)', copyrights='blue_archive',
+                    general='2girls grey_hair animal_ears') for i in range(7, 12)]
+        fox = [post(i, site='e621', characters='nick_wilde', copyrights='zootopia', species='canine fox mammal',
+                    general='anthro male green_eyes orange_body clothed') for i in range(20, 26)]
+        self.insert_posts(1, hoshino + duo)
+        self.insert_posts(2, fox)
+        summary = caption_facts.build()
+        self.assertEqual(summary['characters'], {'danbooru': 2, 'e621': 1})
+        facts = json.loads(Path(summary['path']).read_text(encoding='utf-8'))['characters']
+        entry = facts['danbooru']['takanashi hoshino (blue archive)']
+        self.assertEqual((entry['name'], entry['series'], entry['qualifiers']), ('Takanashi Hoshino', ['blue archive'], ['blue archive']))
+        # The usual look comes from solo posts only: the duo posts' grey hair and animal ears belong to someone else.
+        self.assertEqual(set(entry['appearance']), {'pink hair', 'ahoge', 'halo', 'heterochromia'})
+        self.assertNotIn('appearance', facts['danbooru']['shiroko (blue archive)'])  # no solo posts
+        self.assertTrue({'fox', 'canine', 'green eyes', 'orange body'} <= set(facts['e621']['nick wilde']['appearance']))
+        self.assertEqual(caption_facts.status()['result']['characters'], {'danbooru': 2, 'e621': 1})
 
     def test_character_import_merges_danbooru_and_gelbooru_family(self):
         result = store.import_characters('site,tag,post_count\ndanbooru,hatsune miku,10\ngelbooru,hatsune_miku,5\ne621,judy_hopps,3\n')

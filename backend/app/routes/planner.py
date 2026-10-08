@@ -15,6 +15,7 @@ from app.services import planner_store as store
 from app.services import planner_curation as curation
 from app.services import planner_quality as quality
 from app.services import planner_tags
+from app.services import caption_facts
 from app.services.planner_select import PlannerConfig
 
 router = APIRouter()
@@ -213,6 +214,19 @@ def danbooru_takedowns(min_share: float = Query(0.5, ge=0.05, le=1.0)):
 @router.post('/artists/move-to-gelbooru')
 def move_to_gelbooru(request: MoveRequest):
     return store.move_to_gelbooru(request.artist_ids)
+
+
+@router.get('/caption-facts')
+def caption_facts_status():
+    return caption_facts.status()
+
+
+@router.post('/caption-facts')
+def build_caption_facts():
+    try:
+        return caption_facts.start()
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.post('/artists/enable-all')

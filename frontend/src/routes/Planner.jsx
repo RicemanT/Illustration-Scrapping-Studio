@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import api, { backendAssetUrl } from '../api/client';
 import QualityTagsPanel from '../components/QualityTagsPanel';
+import CaptionFactsPanel from '../components/CaptionFactsPanel';
 import AnalysisPanel from '../components/AnalysisPanel';
 
 const field = 'rounded border border-slate-700 bg-[#090d12] px-3 py-2 text-sm';
@@ -178,6 +179,7 @@ export default function Planner() {
     <DeliveryPanel status={status.data} runId={runId} onChange={refresh} />
     <QualityTagsPanel />
     <AnalysisPanel />
+    <CaptionFactsPanel />
   </div>;
 }
 
