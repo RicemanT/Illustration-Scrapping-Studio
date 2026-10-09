@@ -11,6 +11,8 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -69,6 +71,46 @@ def caption_relative(relative: str, suffix: str) -> str:
 
 def caption_file(image_path: Path, suffix: str) -> Path:
     return image_path.with_name(image_path.stem + suffix)
+
+
+_counts_lock = threading.Lock()
+_counts_cache: dict = {'at': 0.0, 'value': None}
+COUNTS_TTL = 20.0
+
+
+def caption_counts() -> dict:
+    """How many images of each folder have a caption file: {"suffix", "folders": {folder_id: captioned}}.
+
+    Lists each image directory once (no per-image stat), so the whole library takes well under a second; the
+    result is reused for COUNTS_TTL seconds because the sidebar asks often while a captioning script runs."""
+    with _counts_lock:
+        if _counts_cache['value'] is not None and time.monotonic() - _counts_cache['at'] < COUNTS_TTL:
+            return _counts_cache['value']
+        conn = db.get_connection()
+        try:
+            suffix = get_suffix(conn)
+            rows = conn.execute('SELECT folder_id, path FROM image WHERE folder_id IS NOT NULL').fetchall()
+        finally:
+            conn.close()
+        root = db.LIBRARY_PATH / 'images'
+        listings: dict[str, set] = {}
+        folders: dict[int, int] = {}
+        for folder_id, path in rows:
+            relative = PurePosixPath(str(path).replace('\\', '/'))
+            directory = str(relative.parent)
+            names = listings.get(directory)
+            if names is None:
+                try:
+                    names = {entry.name for entry in os.scandir(root / directory)}
+                except OSError:
+                    names = set()
+                listings[directory] = names
+            folders.setdefault(folder_id, 0)
+            if relative.stem + suffix in names:
+                folders[folder_id] += 1
+        value = {'suffix': suffix, 'folders': folders}
+        _counts_cache.update(at=time.monotonic(), value=value)
+        return value
 
 
 def _version(path: Path) -> Optional[str]:

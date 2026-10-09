@@ -62,6 +62,7 @@ export const api = {
   // Folders
   folders: {
     list: () => client.get('/folders'),
+    captionCounts: () => client.get('/folders/caption-counts'),
     get: (id) => client.get(`/folders/${id}`),
     create: (data) => client.post('/folders', data),
     update: (id, data) => client.patch(`/folders/${id}`, data),

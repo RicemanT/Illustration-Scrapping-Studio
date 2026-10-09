@@ -33,6 +33,9 @@ function Sidebar({ variant = 'column' }) {
   });
 
   const groups = useQuery({ queryKey: ['groups'], queryFn: async () => (await api.groups.list()).data, refetchInterval: FOLDER_COUNT_REFRESH_MS });
+  // Caption files beside the images, counted on the server; refreshed while a captioning script is writing them.
+  const captionCounts = useQuery({ queryKey: ['caption-counts'], queryFn: async () => (await api.folders.captionCounts()).data, refetchInterval: 30000 });
+  const captioned = (folderId) => captionCounts.data?.folders?.[folderId] ?? null;
   const collections = collectionsData || [];
   const sections = [...(groups.data || []), { id: null, name: 'Ungrouped' }];
   const filteredCollections = collections.filter((c) =>
@@ -90,12 +93,18 @@ function Sidebar({ variant = 'column' }) {
                 onDragEnd={() => { setDragGroup(null); setDropTarget(null); }}
                 onDragOver={(event) => { if (dragGroup && section.id && dragGroup.id !== section.id) { event.preventDefault(); setDropTarget(section.id); } }}
                 onDragLeave={() => setDropTarget((current) => (current === section.id ? null : current))}
-                onDrop={(event) => { event.preventDefault(); if (dragGroup && section.id && dragGroup.id !== section.id) setMerging({ source: dragGroup, target: section }); setDragGroup(null); setDropTarget(null); }}>{section.name} ({collections.filter((folder) => folder.group_id === section.id).length}){(() => { const accepted = collections.filter((folder) => folder.group_id === section.id && reviewState.get(folder.id)?.completed_at).length; return accepted ? <span className="ml-1 font-normal text-emerald-400" title="Accepted collections">· {accepted} ✓</span> : null; })()}</summary>
+                onDrop={(event) => { event.preventDefault(); if (dragGroup && section.id && dragGroup.id !== section.id) setMerging({ source: dragGroup, target: section }); setDragGroup(null); setDropTarget(null); }}>{section.name} ({collections.filter((folder) => folder.group_id === section.id).length}){(() => { const accepted = collections.filter((folder) => folder.group_id === section.id && reviewState.get(folder.id)?.completed_at).length; return accepted ? <span className="ml-1 font-normal text-emerald-400" title="Accepted collections">· {accepted} ✓</span> : null; })()}{(() => {
+                  const inGroup = collections.filter((folder) => folder.group_id === section.id);
+                  const done = inGroup.reduce((sum, folder) => sum + (captioned(folder.id) || 0), 0);
+                  const total = inGroup.reduce((sum, folder) => sum + folder.image_count, 0);
+                  return done ? <div className="ml-4 text-[11px] font-normal text-sky-300" title={`Images with a ${captionCounts.data?.suffix || 'caption'} file`}>{done.toLocaleString()} / {total.toLocaleString()} captioned</div> : null; })()}</summary>
               {section.id && <Link to={`/groups/${section.id}`} className="block text-xs text-blue-300 mb-2">Manage / scrape group</Link>}
               <div className="space-y-1">{members.map((collection) => (
                 <Link key={collection.id} to={`/folder/${collection.id}`} className={`block px-3 py-2 rounded-lg hover:bg-[#1b2539] ${location.pathname === `/folder/${collection.id}` ? 'bg-[#1b2539] text-blue-200' : 'text-slate-400'}`}>
                   <div className="flex items-center gap-1 font-medium"><span className="truncate">{collection.name}</span>{reviewState.get(collection.id)?.completed_at && <span className="text-emerald-400" title="Accepted">✓</span>}</div>
-                  <div className="text-xs text-slate-400">{collection.image_count} images / {collection.type === 'tag' ? 'query' : collection.type}</div>
+                  <div className="text-xs text-slate-400">{collection.image_count} images / {collection.type === 'tag' ? 'query' : collection.type}
+                    {captioned(collection.id) > 0 && <span className={captioned(collection.id) >= collection.image_count ? 'text-emerald-400' : 'text-sky-300'}
+                      title={`Images with a ${captionCounts.data?.suffix || 'caption'} file`}> · {captioned(collection.id)} captioned</span>}</div>
                 </Link>
               ))}</div>
             </details>;

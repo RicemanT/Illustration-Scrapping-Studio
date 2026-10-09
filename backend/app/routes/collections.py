@@ -37,6 +37,13 @@ async def list_collections():
     return collection_service.list_collections()
 
 
+@router.get("/caption-counts")
+def caption_counts():
+    """Captioned images per folder (caption files beside the images), for the sidebar."""
+    from app.services.captions import caption_counts as count
+    return count()
+
+
 @router.get("/{folder_id}", response_model=CollectionWithStats)
 async def get_collection(folder_id: int):
     """Get a folder by ID."""
