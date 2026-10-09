@@ -8,30 +8,26 @@ import { markFor } from '../components/qualityMarks';
 import TouchViewer from './TouchViewer';
 import TouchWildcards from './TouchWildcards';
 import TouchCaptions from './TouchCaptions';
+import useTouchSelection from './useTouchSelection';
 
 const PAGE = 60;
-const LONG_PRESS_MS = 420;
 const errorText = (error) => error?.response?.data?.detail || error?.message || 'Request failed';
 
-// A collection on a phone or tablet: thumbnail grid (flags first), long-press to select and slide to add more,
+// A collection on a phone or tablet: thumbnail grid (flags first), long-press to select and slide to add more
+// (the page scrolls by itself near the edges),
 // a bottom bar for removing and accepting, a full-screen viewer and quick sort.
 export default function TouchFolder() {
   const { id } = useParams();
   const queryClient = useQueryClient();
   const [tab, setTab] = useState('images');
   const [flaggedOnly, setFlaggedOnly] = useState(false);
-  const [selecting, setSelecting] = useState(false);
-  const [selected, setSelected] = useState(() => new Set());
   const [viewer, setViewer] = useState(null); // { index, mode }
   const [undo, setUndo] = useState(null); // { token, count }
   const gridRef = useRef(null);
   const sentinel = useRef(null);
-  const press = useRef(null);
-  const suppressClick = useRef(false);
-  const selectingRef = useRef(false);
-  selectingRef.current = selecting;
 
   const collection = useQuery({ queryKey: ['collection', id], queryFn: async () => (await api.folders.get(id)).data });
+  const { selecting, selected, setSelected, toggle, consumeClick, clear, selectingRef } = useTouchSelection(gridRef, [tab, collection.data?.id]);
   const plannerFolder = useQuery({
     queryKey: ['planner-folder', id], retry: false,
     queryFn: async () => { try { return (await api.planner.folder(id)).data; } catch (error) { if (error.response?.status === 404) return null; throw error; } },
@@ -58,7 +54,7 @@ export default function TouchFolder() {
     observer.observe(node);
     return () => observer.disconnect();
   }, [pages.hasNextPage, pages.isFetchingNextPage, images.length, tab]);
-  useEffect(() => { setSelected(new Set()); setSelecting(false); setViewer(null); setUndo(null); }, [id]);
+  useEffect(() => { clear(); setViewer(null); setUndo(null); }, [id]);
 
   const refresh = () => {
     refreshFolderViews(queryClient, id);
@@ -68,7 +64,7 @@ export default function TouchFolder() {
   };
   const remove = useMutation({
     mutationFn: (ids) => api.folders.bulkRemoveImages(id, ids),
-    onSuccess: (response, ids) => { setUndo({ token: response.data.undo_token, count: ids.length }); setSelected(new Set()); setSelecting(false); refresh(); },
+    onSuccess: (response, ids) => { setUndo({ token: response.data.undo_token, count: ids.length }); clear(); refresh(); },
   });
   const restore = useMutation({ mutationFn: () => api.folders.undoBulkRemove(id, undo.token), onSuccess: () => { setUndo(null); refresh(); } });
   const complete = useMutation({
@@ -77,67 +73,9 @@ export default function TouchFolder() {
   });
   useEffect(() => { if (!undo) return undefined; const timer = setTimeout(() => setUndo(null), 10000); return () => clearTimeout(timer); }, [undo]);
 
-  const toggle = (imageId, on) => setSelected((current) => {
-    const next = new Set(current);
-    if (on ?? !next.has(imageId)) next.add(imageId); else next.delete(imageId);
-    return next;
-  });
-
-  // Long-press starts selecting; keep the finger down and slide to add more tiles.
-  useEffect(() => {
-    const grid = gridRef.current;
-    if (!grid) return undefined;
-    const tileAt = (x, y) => document.elementFromPoint(x, y)?.closest?.('[data-image-id]');
-    const start = (event) => {
-      const tile = event.target.closest?.('[data-image-id]');
-      if (!tile || event.touches.length > 1) return;
-      const touch = event.touches[0];
-      const imageId = Number(tile.dataset.imageId);
-      press.current = { x: touch.clientX, y: touch.clientY, active: false };
-      press.current.timer = setTimeout(() => {
-        if (!press.current) return;
-        press.current.active = true;
-        suppressClick.current = true;
-        setSelecting(true);
-        toggle(imageId, true);
-        navigator.vibrate?.(15);
-      }, LONG_PRESS_MS);
-    };
-    const move = (event) => {
-      const current = press.current;
-      if (!current) return;
-      const touch = event.touches[0];
-      if (!current.active) {
-        if (Math.hypot(touch.clientX - current.x, touch.clientY - current.y) > 10) { clearTimeout(current.timer); press.current = null; }
-        return;
-      }
-      event.preventDefault(); // the finger is selecting, not scrolling
-      const tile = tileAt(touch.clientX, touch.clientY);
-      if (tile) toggle(Number(tile.dataset.imageId), true);
-    };
-    const end = () => {
-      if (press.current) {
-        clearTimeout(press.current.timer);
-        // Some phones send a click after a long-press and some do not: ignore only one that comes right away.
-        if (press.current.active) setTimeout(() => { suppressClick.current = false; }, 350);
-      }
-      press.current = null;
-    };
-    grid.addEventListener('touchstart', start, { passive: true });
-    grid.addEventListener('touchmove', move, { passive: false });
-    grid.addEventListener('touchend', end);
-    grid.addEventListener('touchcancel', end);
-    return () => {
-      grid.removeEventListener('touchstart', start);
-      grid.removeEventListener('touchmove', move);
-      grid.removeEventListener('touchend', end);
-      grid.removeEventListener('touchcancel', end);
-    };
-  }, [tab, collection.data?.id]);
-
   const tap = (image, index) => {
-    if (suppressClick.current) { suppressClick.current = false; return; }
-    if (selectingRef.current) toggle(image.id);
+    if (consumeClick()) return;
+    if (selectingRef.current) toggle(String(image.id));
     else setViewer({ index, mode: 'view' });
   };
 
@@ -182,8 +120,8 @@ export default function TouchFolder() {
           {images.map((image, index) => {
             const flags = parseFlags(image.analysis_flags);
             const mark = (image.quality_mark && markFor(image.quality_mark)) || (image.aesthetic_mark && markFor(image.aesthetic_mark));
-            const isSelected = selected.has(image.id);
-            return <button key={image.id} type="button" data-image-id={image.id} onClick={() => tap(image, index)} onContextMenu={(event) => event.preventDefault()}
+            const isSelected = selected.has(String(image.id));
+            return <button key={image.id} type="button" data-image-id={image.id} data-select-key={image.id} onClick={() => tap(image, index)} onContextMenu={(event) => event.preventDefault()}
               className={`relative aspect-square overflow-hidden bg-[#0d1219] [-webkit-touch-callout:none] ${isSelected ? 'ring-4 ring-inset ring-blue-500' : ''}`}
               aria-label={`Image ${image.id}${isSelected ? ', selected' : ''}`} aria-pressed={selecting ? isSelected : undefined}>
               {image.thumb_path && <img src={backendAssetUrl(`/static/thumbnails/${image.thumb_path}`)} alt="" loading="lazy" draggable={false}
@@ -205,10 +143,10 @@ export default function TouchFolder() {
         style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 8px)' }}>
         {selecting ? <div className="flex items-center gap-2 text-sm">
           <span className="flex-1 text-slate-300">{selected.size} selected</span>
-          <button type="button" onClick={() => setSelected(new Set(images.map((image) => image.id)))} className="rounded border border-slate-700 px-3 py-2">All</button>
-          <button type="button" disabled={!selected.size || remove.isPending} onClick={() => remove.mutate([...selected])}
+          <button type="button" onClick={() => setSelected(new Set(images.map((image) => String(image.id))))} className="rounded border border-slate-700 px-3 py-2">All</button>
+          <button type="button" disabled={!selected.size || remove.isPending} onClick={() => remove.mutate([...selected].map(Number))}
             className="rounded bg-red-800 px-3 py-2 text-white disabled:opacity-40">Remove</button>
-          <button type="button" onClick={() => { setSelecting(false); setSelected(new Set()); }} className="rounded border border-slate-700 px-3 py-2">Done</button>
+          <button type="button" onClick={clear} className="rounded border border-slate-700 px-3 py-2">Done</button>
         </div> : <div className="flex items-center gap-2 text-sm">
           <span className="flex-1 text-slate-300">{undo.count} removed</span>
           <button type="button" disabled={restore.isPending} onClick={() => restore.mutate()} className="rounded bg-blue-700 px-4 py-2 text-white">Undo</button>
