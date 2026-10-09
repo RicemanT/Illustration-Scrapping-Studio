@@ -1,6 +1,6 @@
 import unittest
 
-from app.services.caption_check import check_caption
+from app.services.caption_check import check_caption, explain_caption
 
 FACTS = {'air groove (umamusume)': {'name': 'Air Groove', 'qualifiers': ['umamusume'], 'series': ['umamusume']}}
 TAGS = ['Drawn by vent arbre', 'air groove (umamusume)', 'umamusume', '1girl', 'animal ears', 'horse ears']
@@ -31,6 +31,17 @@ class CaptionCheckTests(unittest.TestCase):
         self.assertNotIn('hedging', self.check(caption('Drawn by vent arbre. Air Groove holds a sign reading "now or never".')))
         self.assertIn('markup', self.check(caption('Drawn by vent arbre. **Air Groove** stands.')))
         self.assertIn('meta_phrase', self.check(caption('Drawn by vent arbre. Air Groove stands. In this image she smiles.')))
+
+    def test_possessives_and_short_names_count_and_details_say_what_was_found(self):
+        facts = {**FACTS, 'io (granblue fantasy)': {'name': 'Io', 'qualifiers': ['granblue fantasy'], 'series': ['granblue fantasy']}}
+        tags = TAGS + ['io (granblue fantasy)']
+        good = caption("Drawn by vent arbre. Air Groove's coat flutters while Io waves.")
+        self.assertEqual(check_caption(good, tags, facts, 200, 350), [])
+        details = explain_caption(caption('Drawn by vent arbre. A horse girl waves.'), tags, facts, 200, 350)
+        self.assertEqual(details['missing_character'], 'not named: Air Groove (air groove (umamusume)); Io (io (granblue fantasy))')
+        details = explain_caption(caption('Drawn by vent arbre. Air Groove wears shorts or leggings.'), TAGS + ['signature'], FACTS, 200, 350)
+        self.assertIn('shorts or leggings', details['hedging'])
+        self.assertEqual(details['missing_text'], 'tags: signature · no quoted text in the caption')
 
     def test_characters_must_be_named_without_raw_tag_spelling(self):
         self.assertIn('missing_character', self.check(caption('Drawn by vent arbre. A horse girl in a brown coat stands.')))

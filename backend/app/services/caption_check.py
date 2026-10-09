@@ -68,49 +68,64 @@ def _facts() -> dict:
 
 
 def _name_words(name: str) -> list[str]:
-    return [word.lower() for word in re.findall(r"[\w'-]+", name) if len(word) >= 3]
+    words = [word.lower() for word in re.findall(r"[\w'-]+", name)]
+    long_words = [word for word in words if len(word) >= 3]
+    return long_words or words   # "Io", "Ui": a short name is still a name
+
+
+def _snippet(text: str, match: re.Match, width: int = 30) -> str:
+    start, end = max(0, match.start() - width), min(len(text), match.end() + width)
+    return ('…' if start else '') + text[start:end].strip() + ('…' if end < len(text) else '')
+
+
+def explain_caption(caption: str, tags: list[str], facts: dict, min_words: int, max_words: int) -> dict[str, str]:
+    """The problems of one caption: {code from CHECKS: what exactly was found}."""
+    problems: dict[str, str] = {}
+    text = caption.strip()
+    unquoted = QUOTED.sub(' ', text)
+    lowered = text.lower()
+    if match := REFUSAL.search(unquoted):
+        problems['refusal'] = f'"{_snippet(unquoted, match)}"'
+    if markers := [m for m in ('<tags>', '</tags>', '<characters>') if m in lowered]:
+        problems['echo'] = 'contains ' + ', '.join(markers)
+    first = tags[0] if tags else ''
+    if first.lower().startswith('drawn by') and not lowered.startswith(first.lower()):
+        problems['artist_start'] = f'should start with "{first}"'
+    if re.match(r'\s*drawn by\s+drawn by\b', lowered) or lowered.count('drawn by') > 1:
+        problems['double_drawn_by'] = f'"Drawn by" appears {lowered.count("drawn by")} times'
+    words = len(text.split())
+    if words < min_words:
+        problems['too_short'] = f'{words} words, at least {min_words} wanted'
+    if words > max_words:
+        problems['too_long'] = f'{words} words, at most {max_words} wanted'
+    if '\n' in text:
+        problems['line_break'] = f'{len([part for part in text.splitlines() if part.strip()])} paragraphs'
+    if match := HEDGE.search(unquoted):
+        problems['hedging'] = f'"{_snippet(unquoted, match)}"'
+    if match := re.search(r'[*\[\]]', unquoted):
+        problems['markup'] = f'"{_snippet(unquoted, match, 20)}"'
+    if match := META.search(unquoted):
+        problems['meta_phrase'] = f'"{_snippet(unquoted, match)}"'
+    flat = lowered.replace('\u2019', "'")
+    caption_words = set(re.findall(r"[\w'-]+", flat))
+    caption_words |= {re.sub(r"'s$", '', word) for word in caption_words}   # "Gotland's" names Gotland
+    missing = [f"{fact['name']} ({tag})" for tag in tags[1:] if (fact := facts.get(tag.lower()))
+               and not any(word in caption_words for word in _name_words(fact['name']))]
+    if missing:
+        problems['missing_character'] = 'not named: ' + '; '.join(missing)
+    raw = [m.group(0) for m in re.finditer(r'\S*_\S*', unquoted)][:3]
+    raw += [f'({q})' for tag in tags if (fact := facts.get(tag.lower())) for q in fact.get('qualifiers', []) if f'({q.lower()})' in lowered][:3]
+    if raw:
+        problems['raw_tag'] = 'found ' + ', '.join(dict.fromkeys(raw))
+    text_tags = [t for t in tags if t.lower() in TEXT_TAGS]
+    if text_tags and not QUOTED.search(text):
+        problems['missing_text'] = 'tags: ' + ', '.join(text_tags) + ' · no quoted text in the caption'
+    return problems
 
 
 def check_caption(caption: str, tags: list[str], facts: dict, min_words: int, max_words: int) -> list[str]:
     """The problems of one caption (codes from CHECKS)."""
-    problems = []
-    text = caption.strip()
-    unquoted = QUOTED.sub(' ', text)
-    lowered = text.lower()
-    if REFUSAL.search(unquoted):
-        problems.append('refusal')
-    if '<tags>' in lowered or '</tags>' in lowered or '<characters>' in lowered:
-        problems.append('echo')
-    first = tags[0] if tags else ''
-    if first.lower().startswith('drawn by'):
-        if not lowered.startswith(first.lower()):
-            problems.append('artist_start')
-    if re.match(r'\s*drawn by\s+drawn by\b', lowered) or lowered.count('drawn by') > 1:
-        problems.append('double_drawn_by')
-    words = len(text.split())
-    if words < min_words:
-        problems.append('too_short')
-    if words > max_words:
-        problems.append('too_long')
-    if '\n' in text:
-        problems.append('line_break')
-    if HEDGE.search(unquoted):
-        problems.append('hedging')
-    if re.search(r'[*\[\]]', unquoted):
-        problems.append('markup')
-    if META.search(unquoted):
-        problems.append('meta_phrase')
-    caption_words = set(re.findall(r"[\w'-]+", lowered))
-    for tag in tags[1:]:
-        fact = facts.get(tag.lower())
-        if fact and not any(word in caption_words for word in _name_words(fact['name'])):
-            problems.append('missing_character')
-            break
-    if '_' in unquoted or any(f'({q.lower()})' in lowered for tag in tags if (fact := facts.get(tag.lower())) for q in fact.get('qualifiers', [])):
-        problems.append('raw_tag')
-    if TEXT_TAGS.intersection(t.lower() for t in tags) and not QUOTED.search(text):
-        problems.append('missing_text')
-    return problems
+    return list(explain_caption(caption, tags, facts, min_words, max_words))
 
 
 def _planner_images() -> list[dict]:
@@ -152,11 +167,12 @@ def run(min_words: int = 200, max_words: int = 350, progress=lambda **_: None) -
             tags = [t.strip() for t in sidecar.read_text(encoding='utf-8').split(',') if t.strip()] if sidecar.exists() else []
         except OSError:
             continue
-        problems = check_caption(caption, tags, facts, min_words, max_words)
-        if problems:
-            counts.update(problems)
+        details = explain_caption(caption, tags, facts, min_words, max_words)
+        if details:
+            counts.update(list(details))
             flagged.append({'image_id': image['id'], 'folder_id': image['folder_id'], 'folder': image['folder'], 'path': image['path'],
-                            'problems': problems, 'words': len(caption.split()), 'start': caption.strip()[:120]})
+                            'problems': list(details), 'details': details, 'words': len(caption.split()),
+                            'start': caption.strip()[:120]})
     result = {'checked_at': now(), 'images': len(images), 'captioned': captioned, 'flagged': len(flagged),
               'counts': dict(counts.most_common()), 'labels': CHECKS, 'facts': bool(facts), 'suffix': suffix,
               'min_words': min_words, 'max_words': max_words}
