@@ -6,8 +6,8 @@ paragraph, avoids "or" hedging, markup and "This image shows" phrasing, names ev
 name (using the character facts' clean names), never leaks a raw tag qualifier, quotes some text when the
 tags say the image has text, and is not a refusal or an echo of the prompt.
 
-Flagged captions can be set aside (renamed to `<caption>.flagged`) so the captioning script, which skips
-images that already have a caption, writes them again on its next run.
+Flagged captions can be set aside (renamed to `<caption>.flagged`) or deleted; either way the captioning
+script, which skips images that already have a caption, writes them again on its next run.
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from app.services.captions import caption_file, get_suffix
 from app.services.planner_store import connect as planner_connect, now, planner_dir
 
 CHECKS = {
-    'refusal': 'Refusal or safety message',
+    'refusal': 'Refusal, safety or provider block message',
     'echo': 'Repeats the prompt (<tags>, <characters>)',
     'artist_start': "Does not start with the artist trigger",
     'double_drawn_by': '"Drawn by" twice',
@@ -45,7 +45,9 @@ META = re.compile(r'^\s*(?:this|the)\s+(?:image|picture|illustration|artwork)\s+
                   r'|\byou are looking at\b|\bin this (?:image|picture|illustration)\b', re.IGNORECASE)
 HEDGE = re.compile(r'\bor\b', re.IGNORECASE)
 REFUSAL = re.compile(r"\bi(?:'?m|\s+am)?\s+(?:unable|sorry)\b|\bi\s+(?:can'?t|cannot|won'?t|will not)\s+(?:help|assist|describe|provide|create|caption)"
-                     r"|\bas an ai\b|\bcontent policy\b|\bsafety guidelines\b|\bi must decline\b|\bi apologi[sz]e\b", re.IGNORECASE)
+                     r"|\bas an ai\b|\bcontent policy\b|\bsafety guidelines\b|\bi must decline\b|\bi apologi[sz]e\b"
+                     # the provider rejected the prompt and its error message was saved as the caption
+                     r"|prompt could not be submitted|contains sensitive words|prohibited use policy|request was blocked", re.IGNORECASE)
 
 _lock = threading.Lock()
 _state: dict = {'status': 'idle'}
@@ -176,8 +178,8 @@ def flagged_items(problem: Optional[str] = None, limit: int = 300, folder_id: Op
     return items[:limit]
 
 
-def set_aside(problems: list[str]) -> dict:
-    """Rename the flagged captions with any of `problems` to `<caption>.flagged`, so they get captioned again."""
+def _take_flagged(problems: list[str], delete: bool) -> int:
+    """Set aside or delete the flagged captions with any of `problems`, and drop them from the saved report."""
     path = report_path()
     if not path.exists():
         raise LookupError('Run the caption check first')
@@ -185,15 +187,39 @@ def set_aside(problems: list[str]) -> dict:
     root = (db.LIBRARY_PATH / 'images').resolve()
     suffix = report.get('suffix') or get_suffix()
     wanted = set(problems) or set(CHECKS)
-    moved = 0
+    done, kept = 0, []
     for item in report.get('items', []):
-        if not wanted.intersection(item['problems']):
-            continue
         caption = caption_file(root / item['path'], suffix)
-        if caption.exists() and root in caption.resolve().parents:
-            caption.replace(caption.with_name(caption.name + '.flagged'))
-            moved += 1
-    return {'set_aside': moved}
+        if not wanted.intersection(item['problems']) or root not in caption.resolve().parents:
+            kept.append(item)
+            continue
+        set_aside_copy = caption.with_name(caption.name + '.flagged')
+        if delete:
+            removed = False
+            for file in (caption, set_aside_copy):   # an earlier set-aside copy is the same junk
+                if file.exists():
+                    file.unlink()
+                    removed = True
+            done += removed
+        elif caption.exists():
+            caption.replace(set_aside_copy)
+            done += 1
+    if done:
+        counts = Counter(problem for item in kept for problem in item['problems'])
+        report.update(items=kept, flagged=len(kept), counts=dict(counts.most_common()),
+                      captioned=max(0, report.get('captioned', 0) - done))
+        path.write_text(json.dumps(report, ensure_ascii=False), encoding='utf-8')
+    return done
+
+
+def set_aside(problems: list[str]) -> dict:
+    """Rename the flagged captions with any of `problems` to `<caption>.flagged`, so they get captioned again."""
+    return {'set_aside': _take_flagged(problems, delete=False)}
+
+
+def delete_flagged(problems: list[str]) -> dict:
+    """Delete the flagged captions with any of `problems` (and earlier set-aside copies), so they get captioned again."""
+    return {'deleted': _take_flagged(problems, delete=True)}
 
 
 def status() -> dict:

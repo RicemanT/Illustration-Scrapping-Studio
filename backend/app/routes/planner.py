@@ -265,6 +265,14 @@ def caption_check_set_aside(request: SetAsideRequest):
         raise HTTPException(404, str(exc)) from exc
 
 
+@router.post('/caption-check/delete')
+def caption_check_delete(request: SetAsideRequest):
+    try:
+        return caption_check.delete_flagged(request.problems)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
 @router.post('/artists/enable-all')
 def enable_all():
     return {'enabled': store.enable_all()}

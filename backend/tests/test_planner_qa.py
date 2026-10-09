@@ -147,6 +147,25 @@ class CurationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(caption_check.set_aside(['refusal']), {'set_aside': 1})
         self.assertFalse(refusal.exists())
         self.assertTrue(refusal.with_name(refusal.name + '.flagged').exists())
+        self.assertEqual(caption_check.flagged_items('refusal'), [])  # the report forgets what was taken out
+
+    async def test_caption_check_deletes_provider_block_captions(self):
+        from app.services import caption_check
+        folder_id = await self._delivered_folder()
+        main = db.get_connection()
+        paths = [r[0] for r in main.execute('SELECT path FROM image WHERE folder_id=? ORDER BY id', (folder_id,))]
+        main.close()
+        root = db.LIBRARY_PATH / 'images'
+        blocked = (root / paths[0]).with_name(Path(paths[0]).stem + '_nl.txt')
+        blocked.write_text("The prompt could not be submitted. The prompt contains sensitive words that violate Google's "
+                           "[Generative AI Prohibited Use policy](https://policies.google.com/terms/generative-ai/use-policy).", encoding='utf-8')
+        old_copy = blocked.with_name(blocked.name + '.flagged')
+        old_copy.write_text('earlier junk', encoding='utf-8')
+        result = caption_check.run(min_words=0, max_words=1000)
+        self.assertIn('refusal', result['counts'])
+        self.assertEqual(caption_check.delete_flagged(['refusal']), {'deleted': 1})
+        self.assertFalse(blocked.exists() or old_copy.exists())
+        self.assertEqual(caption_check.status()['result']['flagged'], 0)
 
     async def test_accept_all_and_reopen_all(self):
         from app.services import planner_curation as curation
