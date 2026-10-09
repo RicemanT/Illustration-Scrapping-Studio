@@ -17,6 +17,7 @@ from app.services import planner_quality as quality
 from app.services import planner_tags
 from app.services import caption_facts
 from app.services import caption_check
+from app.services import machine_tags
 from app.services.planner_select import PlannerConfig
 
 router = APIRouter()
@@ -271,6 +272,27 @@ def caption_check_delete(request: SetAsideRequest):
         return caption_check.delete_flagged(request.problems)
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
+
+
+class MachineTagRequest(BaseModel):
+    action: str = Field('import', pattern='^(import|clear)$')
+    everything: bool = False
+    model: Optional[str] = Field(None, max_length=200)
+
+
+@router.get('/machine-tags')
+def machine_tags_status():
+    return machine_tags.status()
+
+
+@router.post('/machine-tags')
+def start_machine_tags(request: MachineTagRequest):
+    if request.action == 'clear' and not request.model:
+        raise HTTPException(422, 'Name the model to clear')
+    try:
+        return machine_tags.start(request.action, request.everything, request.model)
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.post('/artists/enable-all')

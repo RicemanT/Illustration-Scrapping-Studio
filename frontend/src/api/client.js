@@ -261,6 +261,8 @@ export const api = {
     captionCheckItems: (problem, folderId) => client.get('/planner/caption-check/items', { params: { problem: problem || undefined, folder_id: folderId || undefined } }),
     setAsideCaptions: (problems) => client.post('/planner/caption-check/set-aside', { problems }),
     deleteFlaggedCaptions: (problems) => client.post('/planner/caption-check/delete', { problems }),
+    machineTags: () => client.get('/planner/machine-tags'),
+    startMachineTags: (body) => client.post('/planner/machine-tags', body),
     qualityJob: () => client.get('/planner/quality/job'),
   },
   exports: {

@@ -28,6 +28,7 @@ export default function CaptionFactsPanel() {
         the file, finds the character tags in each image's <code>.txt</code> and passes their facts with the tags, so no web search is needed.
         Rebuild after harvesting more artists.
       </p>
+      <MachineTags />
       <div className="flex flex-wrap items-center gap-3 text-sm">
         <button className={quiet} disabled={running || start.isPending} onClick={() => start.mutate()}>
           {running ? 'Building…' : result ? 'Rebuild character facts' : 'Build character facts'}</button>
@@ -42,6 +43,48 @@ export default function CaptionFactsPanel() {
       </p>}
       <CaptionCheck />
     </section>
+  );
+}
+
+// Tagger notebook results (DBv4 for Danbooru/Gelbooru, Hydra for e621) imported as extra general tags.
+function MachineTags() {
+  const queryClient = useQueryClient();
+  const status = useQuery({ queryKey: ['machine-tags'], queryFn: async () => (await api.planner.machineTags()).data,
+    refetchInterval: (query) => (query.state.data?.status === 'running' ? 2000 : false) });
+  const start = useMutation({ mutationFn: (body) => api.planner.startMachineTags(body),
+    onSuccess: () => { status.refetch(); queryClient.invalidateQueries({ queryKey: ['image'] }); } });
+  const data = status.data;
+  const running = data?.status === 'running';
+  const summary = data?.summary;
+  const models = Object.entries(summary?.models || {});
+  const waiting = (summary?.files || []).filter((file) => file.new);
+  const result = data?.result;
+  return (
+    <div className="space-y-2 border-t border-slate-800 pt-3">
+      <h3 className="text-sm font-semibold text-slate-200">Tagger tags</h3>
+      <p className="text-xs text-slate-400 max-w-3xl">
+        The tagger notebooks (DBv4 for Danbooru/Gelbooru, Hydra for e621) write their results to <code className="select-all">{summary?.folder || 'planner/tagger'}</code>.
+        <b> Import</b> adds the predicted general tags after each image's own booru tags in its <code>.txt</code> (tags the post already has are not
+        repeated; a tag you remove in the tag editor stays removed). Import before captioning so the captions see them.
+      </p>
+      <div className="flex flex-wrap items-center gap-3 text-sm">
+        <button className={quiet} disabled={running || start.isPending} onClick={() => start.mutate({ action: 'import' })}>
+          {running && data?.action === 'import' ? 'Importing…' : `Import tagger results${waiting.length ? ` (${waiting.length} new file${waiting.length > 1 ? 's' : ''})` : ''}`}</button>
+        {running && <span className="text-xs text-blue-200">{data.stage}{data.done ? `: ${number(data.done)}${data.total ? ` of ${number(data.total)}` : ''}` : '…'}</span>}
+      </div>
+      {start.isError && <p role="alert" className="text-sm text-red-400">{errorText(start.error)}</p>}
+      {data?.status === 'failed' && <p role="alert" className="text-sm text-red-400">{data.error}</p>}
+      {data?.status === 'completed' && result && <p className="text-xs text-green-300">
+        {result.model ? `Cleared ${result.model}: ${number(result.images)} images` : `${number(result.files)} files, ${number(result.lines)} images read · ${number(result.images_updated)} updated · ${number(result.unchanged)} unchanged`}
+        {result.unknown_images ? ` · ${number(result.unknown_images)} not in the library` : ''}{result.bad_lines ? ` · ${number(result.bad_lines)} unreadable lines` : ''}
+        {' '}· {number(result.sidecars_rewritten)} .txt rewritten{result.warnings?.length ? ` · ${result.warnings.length} warnings: ${result.warnings[0]}` : ''}</p>}
+      {models.length > 0 && <table className="text-xs"><tbody>{models.map(([model, entry]) => <tr key={model}>
+        <td className="pr-4 text-slate-300">{model}</td>
+        <td className="pr-4 tabular-nums text-slate-400">{number(entry.images)} images · {number(entry.tags)} tags</td>
+        <td><button className="underline text-red-300 disabled:opacity-40" disabled={running}
+          onClick={() => { if (window.confirm(`Remove every ${model} tag and rewrite those .txt files? Its result file can be imported again later.`)) start.mutate({ action: 'clear', model }); }}>Remove</button></td>
+      </tr>)}</tbody></table>}
+    </div>
   );
 }
 

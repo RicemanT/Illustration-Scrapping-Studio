@@ -631,6 +631,18 @@ def init_db():
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_tag_override_image ON image_tag_override(image_id)")
     _ensure_column(cursor, "image_tag_override", "position", "INTEGER")
+    # General tags from the tagger notebooks (services/machine_tags.py), kept apart from the provider tag rows.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS image_machine_tag (
+            image_id INTEGER NOT NULL,
+            model TEXT NOT NULL,
+            tag TEXT NOT NULL COLLATE NOCASE,
+            confidence REAL,
+            added_at TEXT NOT NULL,
+            PRIMARY KEY (image_id, model, tag),
+            FOREIGN KEY (image_id) REFERENCES image(id) ON DELETE CASCADE
+        )
+    """)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS tag_edit_operation (
             id INTEGER PRIMARY KEY,

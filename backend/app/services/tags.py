@@ -463,6 +463,14 @@ class TagService:
                     WHEN 'species' THEN 3 WHEN 'general' THEN 4 WHEN 'meta' THEN 5 ELSE 6 END, it.rowid""",
             params,
         ).fetchall()
+        if "general" in source_categories:
+            # Tagger additions (machine_tags.py) follow the post's own general tags; booru tags win duplicates.
+            machine = conn.execute(
+                "SELECT tag FROM image_machine_tag WHERE image_id = ? ORDER BY model, confidence DESC, tag", (image_id,)
+            ).fetchall()
+            if machine:
+                rows = sorted([(row[0], row[1]) for row in rows] + [("general", row[0]) for row in machine],
+                              key=lambda row: TAG_CATEGORY_ORDER.get(row[0], len(TAG_CATEGORY_ORDER)))
         for row in rows:
             tags.append(normalize_tag(row[1]))
         return normalize_tags(tags)
