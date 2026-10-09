@@ -1,6 +1,6 @@
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 from app.db import LIBRARY_PATH
 from app.services.images import ImageService
@@ -15,6 +15,18 @@ image_service = ImageService(LIBRARY_PATH)
 @router.get("/media/decoder-status")
 async def get_media_decoder_status():
     return media_decoder_status()
+
+
+@router.get("/{image_id}/screen")
+def screen_image(image_id: int, size: int = Query(1080, ge=200, le=4096)):
+    """A screen-sized JPEG of the image for phones and tablets (cached; GIFs as they are)."""
+    from fastapi.responses import FileResponse
+    from app.services.screen_images import screen_file
+    found = screen_file(image_id, size)
+    if not found:
+        raise HTTPException(status_code=404, detail="Image not found")
+    path, media_type = found
+    return FileResponse(path, media_type=media_type, headers={"Cache-Control": "private, max-age=604800"})
 
 
 @router.get("/{image_id}")

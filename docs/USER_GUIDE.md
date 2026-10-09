@@ -55,6 +55,19 @@ Open an image for fit/actual-size viewing, source history, tags and file locatio
 
 The **duplicates** tab shows folder-local candidates. Inspect before resolving near matches. See [Deduplication](DEDUPLICATION.md) for exact and perceptual behavior.
 
+## Phones and tablets
+
+Open the same address on a phone or tablet (for example the JupyterHub link) and the app switches to its touch interface automatically; **☰ → View** forces Touch or Desktop, and the desktop top bar has **Touch view** for trying it on a computer. The Planner, Settings and other admin pages stay usable on a phone but are designed for a computer.
+
+- **Review queue** (the home screen): the planner collections still to review, how many are accepted, and **Review next**. The menu (☰) holds every collection and page.
+- **A collection**: a thumbnail grid, flagged images first (**Flagged first** switches to only the flagged ones). Tap an image to open it. **Long-press** an image to start selecting, and keep your finger down and slide to add more; the bar at the bottom removes them (**Undo** stays for ten seconds) or selects all. **Accept** (top right) accepts or reopens the collection.
+- **The viewer**: swipe sideways for the next or previous image, swipe down to close, pinch or double-tap to zoom. The row of buttons sets the quality and aesthetic marks (Master, Best, Low, V.aesth, Aesth, Normal); **Info** shows the tags, the caption editor and the image analysis.
+- **Quick sort**: one image at a time; swipe up to remove, sideways to keep and move on. After the last image the app offers to accept the collection.
+- **Wildcards**: tap one to see it large and **Add to folder**, or **Select several**; added posts are downloaded into the collection.
+- **Captions**: go through the captions flagged by Check captions, the images without a caption, or all of them, with the picture on top and the caption editor below.
+
+Phones get screen-sized copies of the images (about 1080 pixels wide, a few hundred kilobytes, cached in `<library>/.cache/screen`) instead of the originals. **Add to Home screen** in the browser menu installs the app like an app, full screen.
+
 ## Tags and sidecars
 
 Each image has a `.txt` sidecar derived from curated tags and configured category policy. Global category switches can be overridden per collection. Source metadata remains recorded separately. Artist-format triggers apply only to artist collections; character/tag collection names are not inserted as artist credits.

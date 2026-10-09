@@ -6,7 +6,8 @@ import { FOLDER_COUNT_REFRESH_MS } from '../api/folderCache';
 import CreateCollectionModal from './CreateCollectionModal';
 import MergeGroupsModal from './MergeGroupsModal';
 
-function Sidebar() {
+function Sidebar({ variant = 'column' }) {
+  const drawer = variant === 'drawer';
   const location = useLocation();
   const [showCreateModal, setShowCreateModal] = useState(false);
   // Drag a group heading onto another to merge them.
@@ -42,7 +43,7 @@ function Sidebar() {
 
   return (
     <>
-      <div className="artist-sidebar w-52 shrink-0 border-r border-[#202a34] flex flex-col">
+      <div className={drawer ? 'artist-sidebar flex h-full w-full flex-col' : 'artist-sidebar w-52 shrink-0 border-r border-[#202a34] flex flex-col'}>
         {/* Logo/Title */}
         <div className="p-4 border-b border-[#202a34]">
           <h2 className="text-sm font-bold tracking-widest text-slate-200 uppercase">Collections</h2>

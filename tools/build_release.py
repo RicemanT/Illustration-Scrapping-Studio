@@ -10,7 +10,7 @@ def build(destination):
     for directory in ('backend/app', 'tools', 'docs', 'frontend/dist'):
         folder = ROOT / directory
         if folder.is_symlink() or (hasattr(folder, 'is_junction') and folder.is_junction()): raise RuntimeError('Release directories must not be links')
-        extensions = ({'.md'} if directory == 'docs' else {'.py'}) if directory != 'frontend/dist' else {'.html','.js','.css','.svg','.png','.ico','.woff','.woff2','.ttf','.webp','.jpg','.jpeg'}
+        extensions = ({'.md'} if directory == 'docs' else {'.py'}) if directory != 'frontend/dist' else {'.html','.js','.css','.svg','.png','.ico','.woff','.woff2','.ttf','.webp','.jpg','.jpeg','.json'}
         sources.extend(path for path in folder.rglob('*') if path.is_file() and '__pycache__' not in path.parts and path.suffix in extensions)
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)

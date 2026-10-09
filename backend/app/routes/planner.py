@@ -253,8 +253,8 @@ def start_caption_check(request: CaptionCheckRequest):
 
 
 @router.get('/caption-check/items')
-def caption_check_items(problem: Optional[str] = None):
-    return {'items': caption_check.flagged_items(problem)}
+def caption_check_items(problem: Optional[str] = None, folder_id: Optional[int] = None):
+    return {'items': caption_check.flagged_items(problem, folder_id=folder_id)}
 
 
 @router.post('/caption-check/set-aside')

@@ -7,9 +7,11 @@ import SyncAllModal from './SyncAllModal';
 import api from '../api/client';
 import { reportUI } from '../api/telemetry';
 import { refreshFolderViews } from '../api/folderCache';
+import { useTouchMode } from '../mobile/touchMode';
 
 function Layout() {
   const location = useLocation();
+  const { setMode } = useTouchMode();
   useEffect(() => { reportUI('navigation', 'Opened ' + location.pathname); }, [location.pathname]);
   const queryClient = useQueryClient();
   const [syncAllJobId, setSyncAllJobId] = useState(null);
@@ -74,6 +76,7 @@ function Layout() {
               <Link to="/settings" className="px-3 py-1 text-xs border border-[#202a34] rounded hover:bg-[#0c1219]">
                 Settings
               </Link>
+              <button type="button" onClick={() => setMode('touch')} title="The phone and tablet interface (switch back from its menu)" className="text-xs text-slate-400 hover:text-slate-200">Touch view</button>
             </div>
           </div>
         </header>

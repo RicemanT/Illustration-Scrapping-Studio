@@ -164,13 +164,15 @@ def run(min_words: int = 200, max_words: int = 350, progress=lambda **_: None) -
     return result
 
 
-def flagged_items(problem: Optional[str] = None, limit: int = 300) -> list[dict]:
+def flagged_items(problem: Optional[str] = None, limit: int = 300, folder_id: Optional[int] = None) -> list[dict]:
     path = report_path()
     if not path.exists():
         return []
     items = json.loads(path.read_text(encoding='utf-8')).get('items', [])
     if problem:
         items = [item for item in items if problem in item['problems']]
+    if folder_id is not None:
+        items = [item for item in items if item['folder_id'] == folder_id]
     return items[:limit]
 
 

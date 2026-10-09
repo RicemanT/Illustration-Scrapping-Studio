@@ -258,7 +258,7 @@ export const api = {
     buildCaptionFacts: () => client.post('/planner/caption-facts'),
     captionCheck: () => client.get('/planner/caption-check'),
     startCaptionCheck: (body) => client.post('/planner/caption-check', body),
-    captionCheckItems: (problem) => client.get('/planner/caption-check/items', { params: { problem: problem || undefined } }),
+    captionCheckItems: (problem, folderId) => client.get('/planner/caption-check/items', { params: { problem: problem || undefined, folder_id: folderId || undefined } }),
     setAsideCaptions: (problems) => client.post('/planner/caption-check/set-aside', { problems }),
     qualityJob: () => client.get('/planner/quality/job'),
   },
