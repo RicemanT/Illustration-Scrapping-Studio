@@ -538,8 +538,10 @@ def _mageflow_config(run_id: int, stage: dict, prompts: list[str]) -> str:
 kind = "none"
 
 [train]
-model_path = "@MODEL_PATH@"            # Mage-Flow repository folder: text_encoder/, tokenizer/, vae/
+model_path = "@MODEL_PATH@"            # Mage-Flow repository folder: text_encoder/ (tokenizer inside)
 transformer_path = "{transformer}"
+vae_path = "@VAE_PATH@"                # FLUX.2 VAE, diffusers format (a vae/ folder or a diffusers-layout .safetensors)
+flux2_vae = true                       # latents are FLUX.2 32c/8x packed to Mage-Flow's 128c/16x layout
 output_dir = "@OUTPUT_DIR@"
 run_name = "{run_name}"
 epochs = {stage['epochs']}

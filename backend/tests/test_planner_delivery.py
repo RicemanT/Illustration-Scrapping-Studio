@@ -129,6 +129,7 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
             config = tomllib.loads((layout / f'mageflow-{stage}.toml').read_text(encoding='utf-8'))
             self.assertEqual(config['dataset']['subsets_file'], '@DATA_DIR@/folders.csv')
             self.assertEqual(config['dataset']['resolution'], int(stage))
+            self.assertEqual((config['train']['flux2_vae'], config['train']['vae_path']), (True, '@VAE_PATH@'))
             self.assertEqual(config['dataset']['caption']['attribution_patterns'], ['^drawn by\\s'])
             self.assertTrue(config['sampling']['prompts'][0].lower().startswith('drawn by'))
 
