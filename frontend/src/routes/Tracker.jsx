@@ -104,6 +104,23 @@ function SnapshotsCard({ compare, setCompare }) {
     onSuccess: (_, id) => { if (compare === id) setCompare(null); queryClient.invalidateQueries({ queryKey: ['tracker-snapshots'] }); },
   });
   const items = snapshots.data?.items || [];
+  // Release lists: characters / artists of chosen groups (e.g. the three pilot groups), for a model card.
+  const folders = useQuery({ queryKey: ['tracker-folders'], queryFn: async () => (await api.tracker.folders()).data });
+  const groups = useMemo(() => {
+    const byId = new Map();
+    for (const item of folders.data?.items || []) {
+      if (item.group_id == null) continue;
+      const entry = byId.get(item.group_id) || { id: item.group_id, name: item.group || 'Ungrouped', folders: 0, images: 0 };
+      entry.folders += 1;
+      entry.images += item.images;
+      byId.set(item.group_id, entry);
+    }
+    return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }, [folders.data]);
+  const [releaseGroups, setReleaseGroups] = usePersisted('releaseGroups', []);
+  const picked = releaseGroups.filter((id) => groups.some((group) => group.id === id));
+  const releaseUrl = (kind) => backendAssetUrl(`/api/tracker/release.csv?kind=${kind}${picked.map((id) => `&group_ids=${id}`).join('')}`);
+  const pickedGroups = groups.filter((group) => picked.includes(group.id));
   return (
     <section className="rounded border border-[#202a34] bg-[#0c1219] p-4 space-y-3">
       <div>
@@ -129,6 +146,23 @@ function SnapshotsCard({ compare, setCompare }) {
             </span>
           </div>
         ))}
+      </div>
+      <div className="space-y-2 border-t border-[#1d2731] pt-3">
+        <h3 className="text-sm font-semibold text-slate-200">Release lists</h3>
+        <p className="text-xs text-slate-400">The characters and artists of the groups you tick (none ticked = every planner group), as CSV for a release's model card. Characters count the collections' current images.</p>
+        <div className="flex flex-wrap gap-x-4 gap-y-1">
+          {groups.map((group) => <label key={group.id} className="flex items-center gap-1.5 text-xs text-slate-300">
+            <input type="checkbox" checked={picked.includes(group.id)}
+              onChange={(event) => setReleaseGroups(event.target.checked ? [...picked, group.id] : picked.filter((id) => id !== group.id))} />
+            {group.name} <span className="text-slate-500">({number(group.folders)})</span></label>)}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <a className={quiet} href={releaseUrl('characters')}>Characters CSV</a>
+          <a className={quiet} href={releaseUrl('artists')}>Artists CSV</a>
+          <span className="text-xs text-slate-500">{pickedGroups.length
+            ? `${number(pickedGroups.reduce((sum, group) => sum + group.folders, 0))} artists · ${number(pickedGroups.reduce((sum, group) => sum + group.images, 0))} images`
+            : 'all planner groups'}</span>
+        </div>
       </div>
     </section>
   );

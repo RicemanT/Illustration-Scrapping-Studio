@@ -106,5 +106,21 @@ class TrackerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(tracker.delete_snapshot(snapshot['id']))
 
 
+    async def test_release_lists_for_chosen_groups(self):
+        tracker.refresh_all()
+        main = db.get_connection()
+        group_x = main.execute('SELECT group_id FROM collection WHERE id=?', (self.folder,)).fetchone()[0]
+        main.close()
+        characters = list(csv.DictReader(io.StringIO(tracker.release_csv('characters', [group_x]))))
+        self.assertEqual({row['character']: (row['images'], row['artists'], row['series']) for row in characters},
+                         {'alice': ('2', '1', 'wonderland'), 'bob': ('2', '1', 'wonderland'), 'dave': ('1', '1', 'wonderland')})
+        artists = list(csv.DictReader(io.StringIO(tracker.release_csv('artists', [group_x]))))
+        self.assertEqual([row['artist'] for row in artists], ['Artist X'])
+        self.assertIn('artist x', artists[0]['trigger'].lower())
+        self.assertEqual((artists[0]['characters'], artists[0]['accepted']), ('3', 'no'))
+        everyone = list(csv.DictReader(io.StringIO(tracker.release_csv('artists'))))
+        self.assertEqual(len(everyone), 2)   # no group chosen: every planner collection
+
+
 if __name__ == '__main__':
     unittest.main()

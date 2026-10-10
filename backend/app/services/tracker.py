@@ -587,6 +587,59 @@ def export_csv(kind: str, snapshot_id: Optional[int] = None) -> str:
     return out.getvalue()
 
 
+RELEASE_KINDS = ('characters', 'artists')
+
+
+def release_csv(kind: str, group_ids: Optional[list[int]] = None) -> str:
+    """What a release contains, for its model card: the characters (images and artists each) or the artists
+    (trigger, images, captions, characters) of the planner collections in `group_ids` (every group when empty).
+    Character counts are the collections' current images, as the Characters table counts them."""
+    from app.services.captions import caption_counts
+    from app.services.planner_delivery import _trigger
+    chosen = [item for item in folders()['items'] if not group_ids or item['group_id'] in group_ids]
+    ids = [item['folder_id'] for item in chosen]
+    out = io.StringIO()
+    planner = connect()
+    try:
+        per_folder = defaultdict(Counter)
+        for r in planner.execute('SELECT folder_id, family, tag, now FROM tracker_folder_char WHERE now > 0 AND folder_id IN '
+                                 '(SELECT value FROM json_each(?))', (json.dumps(ids),)):
+            per_folder[r['folder_id']][(r['family'], r['tag'])] += r['now']
+        series = {(r['family'], r['tag']): r['series'] for r in planner.execute('SELECT family, tag, series FROM tracker_series')}
+    finally:
+        planner.close()
+    if kind == 'characters':
+        images, artists = Counter(), Counter()
+        for counts in per_folder.values():
+            for key, n in counts.items():
+                images[key] += n
+                artists[key] += 1
+        writer = csv.writer(out, lineterminator='\n')
+        writer.writerow(['character', 'series', 'images', 'artists', 'family', 'tag'])
+        for key, n in sorted(images.items(), key=lambda item: (-item[1], item[0][1])):
+            writer.writerow([label_of(key[1]), label_of(series.get(key, '')), n, artists[key], key[0], key[1]])
+        return out.getvalue()
+    captioned = caption_counts()['folders']
+    main = db.get_connection()
+    try:
+        writer = csv.writer(out, lineterminator='\n')
+        writer.writerow(['artist', 'trigger', 'site', 'group', 'collection', 'images', 'captioned', 'accepted',
+                         'characters', 'top_characters'])
+        for item in sorted(chosen, key=lambda item: ((item['group'] or '').casefold(), item['artist'].casefold())):
+            counts = per_folder.get(item['folder_id'], Counter())
+            top = '; '.join(f"{label_of(tag)} ({n})" for (_, tag), n in counts.most_common(5))
+            writer.writerow([item['artist'], _trigger(main, item['folder_id']), item['site'], item['group'] or '', item['name'],
+                             item['images'], captioned.get(item['folder_id'], 0), 'yes' if item['completed_at'] else 'no',
+                             len(counts), top])
+    finally:
+        main.close()
+    return out.getvalue()
+
+
+def label_of(tag: str) -> str:
+    return str(tag or '').replace('_', ' ')
+
+
 def export_snapshot_csv(snapshot_id: int) -> tuple[str, str]:
     conn = connect()
     try:

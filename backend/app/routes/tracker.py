@@ -145,6 +145,12 @@ def export(kind: Literal['character', 'general'] = 'character', snapshot_id: Opt
     return _csv(tracker.export_csv(kind, snapshot_id), f'tracker-{kind}s.csv')
 
 
+@router.get('/release.csv')
+def release(kind: Literal['characters', 'artists'] = 'characters', group_ids: list[int] = Query(default_factory=list)):
+    """The characters or artists of the planner collections in these groups (all when none are given)."""
+    return _csv(tracker.release_csv(kind, group_ids), f'release-{kind}.csv')
+
+
 @router.get('/snapshots/{snapshot_id}/export.csv')
 def export_snapshot(snapshot_id: int):
     try:
