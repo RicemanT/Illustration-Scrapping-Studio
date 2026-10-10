@@ -387,7 +387,7 @@ function DeliveryPanel({ status, runId, onChange }) {
         <pre className="whitespace-pre-wrap text-slate-300">python tools/planner_style_check.py --library "{status?.library || '<library folder>'}"{status?.custom_path ? ` --planner "${status.path}"` : ''} --pause 0.1</pre>
         <p>Add <code>--device cuda:1</code> to pick a GPU, <code>--ban</code> to ban everything flagged, or <code>--threshold 4</code> to flag fewer images. After banning, run the plan again, download it and remove images no longer selected.</p></div>
     </details>
-    {layout.data && <p className="text-sm text-green-300">Training layout written to {layout.data.data.path}: {layout.data.data.files.join(', ')}. dataset.toml has diffusion-pipe [[directory]] blocks; repeats follow the images left in each folder, so artists you trimmed by hand keep their share of training.</p>}
+    {layout.data && <p className="text-sm text-green-300">Training layout written to {layout.data.data.path}: {layout.data.data.files.join(', ')}. For the Mage-Flow trainer: folders.csv is the dataset.subsets_file (paths relative to it, so this folder is the dataset root when uploaded), and mageflow-512.toml / mageflow-1024.toml are starting configs. Repeats follow the images left in each folder, so artists you trimmed by hand keep their share of training.</p>}
     {data && <div className="text-sm space-y-1">
       <p>Download #{data.id} of run #{data.run_id}: {data.status}{data.error ? ` — ${data.error}` : ''}</p>
       {sites.map((site) => { const total = data.progress.sites[site].total || 0; const left = data.counts?.[`${site}:pending`] || 0; const state = data.progress.sites[site];

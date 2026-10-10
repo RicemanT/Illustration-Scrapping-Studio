@@ -507,22 +507,125 @@ def prune_delivery(delivery_id: int, apply: bool, library: Path | None = None) -
     return result
 
 
-def export_training_layout(delivery_id: int) -> Path:
-    """Write each delivered folder's path, image count and repeats for trainers.
+MAGEFLOW_STAGES = (  # the pilot plan: most epochs at 512 px, then a short 1024 px stage (Bluvoll's 16-4 style split)
+    {'name': '512', 'resolution': 512, 'epochs': 22, 'batch_size': 16, 'sample_size': 768},
+    {'name': '1024', 'resolution': 1024, 'epochs': 6, 'batch_size': 4, 'sample_size': 1024},
+)
 
-    `dataset.toml` uses diffusion-pipe's [[directory]] blocks; folders.json and
-    folders.csv carry the same data for other trainers.
+
+def _trigger(conn, folder_id: int) -> str:
+    from app.services.tags import normalize_tag
+    row = conn.execute('SELECT name, artist_tag_template FROM collection WHERE id=?', (folder_id,)).fetchone()
+    if not row or not row['artist_tag_template']:
+        return ''
+    return normalize_tag(str(row['artist_tag_template']).replace('{artist}', normalize_tag(row['name']).casefold()))
+
+
+def _mageflow_config(run_id: int, stage: dict, prompts: list[str]) -> str:
+    """A starting Mage-Flow trainer config (RicemanT/mage-flow-trainer) for one resolution stage.
+
+    Paths are @PLACEHOLDERS@: the trainer notebook's "write the configs" cell fills them in for the
+    machine it runs on (or edit them in the GUI)."""
+    run_name = f"magetrail-run{run_id}-{stage['name']}"
+    first = stage is MAGEFLOW_STAGES[0]
+    transformer = '@TRANSFORMER_PATH@' if first else '@STAGE_512_CHECKPOINT@'
+    prompt_lines = '\n'.join(f'  {json.dumps(prompt, ensure_ascii=False)},' for prompt in prompts)
+    return f"""# Mage-Flow trainer config written by Illustration Scrapping Studio for planner run {run_id},
+# stage {stage['name']} px. Starting values from configs/mageflow-magetrail-finetune.toml; tune them in the GUI.
+# @...@ placeholders are filled in by the trainer notebook's "write the configs" cell.
+{'' if first else '# Stage 2: continue from the final checkpoint of the 512 stage (set @STAGE_512_CHECKPOINT@ to it).'}
+[adapter]
+kind = "none"
+
+[train]
+model_path = "@MODEL_PATH@"            # Mage-Flow repository folder: text_encoder/, tokenizer/, vae/
+transformer_path = "{transformer}"
+output_dir = "@OUTPUT_DIR@"
+run_name = "{run_name}"
+epochs = {stage['epochs']}
+batch_size = {stage['batch_size']}
+gradient_accumulation_steps = 1
+dtype = "bfloat16"
+pack_resolutions = true
+attention_backend = "torch_varlen"
+compile = "default"
+cache_text_embeddings = true
+caption_variations = 8                 # augmented captions per image, encoded once into SQLite
+caption_cache_path = "@DATA_DIR@/caption_variations.sqlite"   # shared by both stages; upload it with the latents
+num_workers = 4
+save_every_epochs = 2
+keep_last_n = 3
+save_optimizer_state = true
+log_every = 10
+progress = "plain"
+
+[dataset]
+subsets_file = "@DATA_DIR@/folders.csv"   # one row per artist folder with its repeats; paths relative to the file
+source = "auto"                        # trains from the cached latents once the images are gone
+resolution = {stage['resolution']}
+latent_dtype = "float16"
+
+[dataset.caption]
+caption_mode = "mixed"                 # tags (.txt) and natural language (_nl.txt)
+shuffle_tags = true
+tag_dropout_percent = 0.1
+caption_dropout_percent = 0.05
+nl_shuffle_sentences = true
+attribution_patterns = ['^drawn by\\s']
+attribution_position = "fixed"
+attribution_dropout_immune = true
+attribution_dedupe_on_combine = true
+
+[optimizer]
+kind = "adamw8bit"
+lr = 1e-7
+use_kahan = true
+quantize_state = true
+
+[schedule]
+kind = "stage"
+stages = [
+  {{ type = "linear",   end_lr = 7e-6, percent = 0.05 }},
+  {{ type = "constant", lr = 7e-6,     percent = 0.55 }},
+  {{ type = "rex",      max_val = 7e-6, min_val = 0.0, percent = 0.40 }},
+]
+
+[tracking]
+backends = ["tensorboard", "wandb"]    # wandb needs WANDB_API_KEY or `wandb login`; never a key here
+project = "magetrail"
+wandb_tags = ["v0.4", "run{run_id}", "{stage['name']}"]
+
+[sampling]
+prompts = [
+{prompt_lines}
+]
+every_n_steps = 1000
+at_start = true
+width = {stage['sample_size']}
+height = {stage['sample_size']}
+"""
+
+
+def export_training_layout(delivery_id: int) -> Path:
+    """Write the delivery's training layout for the Mage-Flow trainer (RicemanT/mage-flow-trainer).
+
+    The folder is meant to sit at the root of the dataset as uploaded (Hugging Face) or copied:
+    `folders.csv` / `subsets.toml` list every artist folder by its path relative to that root
+    (`<group>/<artist>`), so the trainer finds them wherever the dataset is downloaded. Also written:
+    `folders.json` (the same data with more detail), `mageflow-512.toml` and `mageflow-1024.toml` (starting
+    configs for the two resolution stages) and `README.txt`.
     """
     delivery = get_delivery(delivery_id)
     if not delivery:
         raise LookupError('Delivery not found')
+    run_id = delivery['run_id']
     conn = connect()
     try:
         rows = conn.execute("""SELECT DISTINCT d.site, d.artist_id, d.folder_id, a.display_name, a.tag, ra.selected
                                FROM delivery_item d JOIN artist a ON a.id=d.artist_id
                                LEFT JOIN run_artist ra ON ra.run_id=? AND ra.artist_id=d.artist_id
-                               WHERE d.delivery_id=? ORDER BY d.site, a.display_name""", (delivery['run_id'], delivery_id)).fetchall()
-        config = json.loads(conn.execute('SELECT config FROM run WHERE id=?', (delivery['run_id'],)).fetchone()[0])
+                               WHERE d.delivery_id=? ORDER BY d.site, a.display_name""", (run_id, delivery_id)).fetchall()
+        config = json.loads(conn.execute('SELECT config FROM run WHERE id=?', (run_id,)).fetchone()[0])
     finally:
         conn.close()
     exposures = int(config.get('exposures_per_artist', 200))
@@ -538,24 +641,53 @@ def export_training_layout(delivery_id: int) -> Path:
             # Repeats follow the images left after hand curation, so every
             # artist keeps about the same number of training samples.
             repeats = min(max_repeats, max(1, round(exposures / images))) if images else 0
-            folders.append({'site': row['site'], 'artist': row['display_name'], 'tag': row['tag'], 'folder': folder['name'],
-                            'path': str((db.LIBRARY_PATH / 'images' / folder['slug']).resolve()), 'images': images,
-                            'planned_images': row['selected'], 'repeats': repeats})
+            relative = str(folder['slug']).replace('\\', '/').strip('/')
+            folders.append({'path': relative, 'num_repeats': repeats, 'repeats': repeats, 'images': images,
+                            'site': row['site'], 'artist': row['display_name'], 'tag': row['tag'], 'folder': folder['name'],
+                            'trigger': _trigger(main, row['folder_id']), 'planned_images': row['selected'],
+                            'library_path': str((db.LIBRARY_PATH / 'images' / relative).resolve())})
     finally:
         main.close()
-    target = planner_dir() / 'exports' / f"run-{delivery['run_id']}" / 'training'
+    target = planner_dir() / 'exports' / f"run-{run_id}" / 'training'
     target.mkdir(parents=True, exist_ok=True)
+    (target / 'dataset.toml').unlink(missing_ok=True)   # the old diffusion-pipe [[directory]] file
     (target / 'folders.json').write_text(json.dumps(folders, indent=2, ensure_ascii=False), encoding='utf-8')
+    import csv
     with open(target / 'folders.csv', 'w', encoding='utf-8', newline='') as handle:
-        import csv
-        writer = csv.DictWriter(handle, ['site', 'artist', 'tag', 'folder', 'path', 'images', 'planned_images', 'repeats'], lineterminator='\n')
+        writer = csv.DictWriter(handle, ['path', 'num_repeats', 'images', 'site', 'artist', 'tag', 'folder', 'trigger', 'planned_images'],
+                                extrasaction='ignore', lineterminator='\n')
         writer.writeheader()
         writer.writerows(folders)
-    blocks = [f"# Generated by Illustration Scrapping Studio from planner run {delivery['run_id']}.",
-              '# Add these [[directory]] blocks to a diffusion-pipe dataset config (resolutions, buckets, etc. go there too).', '']
+    blocks = [f"# Generated by Illustration Scrapping Studio from planner run {run_id}: Mage-Flow trainer subsets.",
+              '# Paths are relative to this file. Use as dataset.subsets_file (folders.csv lists the same folders).', '']
     for folder in folders:
         if folder['images']:
-            blocks += [f"# {folder['site']}: {folder['artist']} ({folder['images']} images)", '[[directory]]',
-                       f"path = {json.dumps(folder['path'])}", f"num_repeats = {folder['repeats']}", '']
-    (target / 'dataset.toml').write_text('\n'.join(blocks), encoding='utf-8')
+            blocks += [f"# {folder['site']}: {folder['artist']} ({folder['images']} images)", '[[subsets]]',
+                       f"path = {json.dumps(folder['path'], ensure_ascii=False)}", f"num_repeats = {folder['num_repeats']}", '']
+    (target / 'subsets.toml').write_text('\n'.join(blocks), encoding='utf-8')
+    # Sample prompts: the three largest artists' triggers, so samples show whether their styles land.
+    leaders = sorted((f for f in folders if f['images'] and f['trigger']), key=lambda f: (-f['images'], f['artist']))[:3]
+    prompts = [f"{f['trigger']}, 1girl, solo, looking at viewer, upper body, simple background" for f in leaders] \
+        or ['1girl, solo, looking at viewer, upper body, simple background']
+    prompts.append('1boy, armor, castle, dramatic lighting, wide shot')
+    for stage in MAGEFLOW_STAGES:
+        (target / f"mageflow-{stage['name']}.toml").write_text(_mageflow_config(run_id, stage, prompts), encoding='utf-8')
+    used = [f for f in folders if f['images']]
+    samples = sum(f['images'] * f['num_repeats'] for f in used)
+    (target / 'README.txt').write_text(f"""Training layout for planner run {run_id} (Illustration Scrapping Studio)
+
+{len(used)} artist folders, {sum(f['images'] for f in used)} images, {samples} samples per epoch with repeats.
+
+This folder is the root of the dataset as it goes to Hugging Face: the trainer notebook
+(mage-flow-trainer/notebooks/mageflow-remote.ipynb) uploads these files plus every listed
+<group>/<artist> folder from the library, and later the latent cache.
+
+  folders.csv        dataset.subsets_file for the Mage-Flow trainer (path relative to this file, num_repeats)
+  subsets.toml       the same folders as [[subsets]] tables
+  folders.json       the same, with artist names, triggers and library paths
+  mageflow-512.toml  stage 1 config ({MAGEFLOW_STAGES[0]['epochs']} epochs at 512 px)
+  mageflow-1024.toml stage 2 config ({MAGEFLOW_STAGES[1]['epochs']} epochs at 1024 px, from the 512 stage's checkpoint)
+
+The configs carry @PLACEHOLDER@ paths; the notebook's "write the configs" cell fills them in for the machine.
+""", encoding='utf-8')
     return target

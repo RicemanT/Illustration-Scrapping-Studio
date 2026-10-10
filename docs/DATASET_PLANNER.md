@@ -254,14 +254,23 @@ Treat flags as suggestions. These statistics are dominated by colour, so an arti
 
 ### Training layout
 
-**Export training layout** writes `<planner data>/exports/run-<id>/training/`:
+**Export training layout** writes `<planner data>/exports/run-<id>/training/` for the
+[Mage-Flow trainer](https://github.com/RicemanT/mage-flow-trainer). The folder is meant to be the root of the
+dataset when it is uploaded or copied: every collection is listed by its path relative to it (`<group>/<artist>`),
+so the trainer finds the folders wherever the dataset is downloaded.
 
 | File | Contents |
 | --- | --- |
-| `dataset.toml` | One `[[directory]]` block per collection with its path and `num_repeats`, for a diffusion-pipe dataset config; add your resolution and bucket settings there. Repeats are `Training samples per artist ÷ images in the folder now` (at most **Repeats at most**), so they follow hand curation |
-| `folders.json`, `folders.csv` | Site, artist, tag, collection, path, image count and repeats, for other trainers |
+| `folders.csv` | `dataset.subsets_file` for the trainer: `path` (relative), `num_repeats`, image count, site, artist, tag, collection, artist trigger. Repeats are `Training samples per artist ÷ images in the folder now` (at most **Repeats at most**), so they follow hand curation; emptied folders get 0 and are skipped |
+| `subsets.toml` | The same folders as `[[subsets]]` tables |
+| `folders.json` | The same, plus each folder's path in this library |
+| `mageflow-512.toml`, `mageflow-1024.toml` | Starting configs for the two resolution stages (22 epochs at 512 px, then 6 at 1024 px from the 512 stage's checkpoint): StageLR, artist attribution for the `Drawn by` trigger, mixed tags/NL captions, caption cache, validation prompts from the three largest artists. Paths are `@MODEL_PATH@`, `@TRANSFORMER_PATH@`, `@DATA_DIR@`, `@OUTPUT_DIR@` placeholders |
+| `README.txt` | What the files are, with the folder, image and sample counts |
 
-Paths are on the machine running the backend. A video post can contribute up to three images, so image counts can exceed the planned post counts.
+The trainer's notebook (`notebooks/mageflow-remote.ipynb`) uploads this folder and the listed collections to a
+private Hugging Face dataset, fills the placeholders on each machine, caches latents and caption embeddings where GPU
+time is cheap, uploads that cache, and trains from the cache alone. A video post can contribute up to three images,
+so image counts can exceed the planned post counts.
 
 ## Saving disk space
 

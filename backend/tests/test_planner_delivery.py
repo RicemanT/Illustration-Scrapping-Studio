@@ -115,9 +115,22 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         layout = delivery.export_training_layout(job['id'])
         folders_json = json.loads((layout / 'folders.json').read_text(encoding='utf-8'))
         self.assertEqual({f['artist']: f['repeats'] for f in folders_json}, {'Artist X': 10, 'beast maker': 10})
-        toml = (layout / 'dataset.toml').read_text(encoding='utf-8')
-        self.assertEqual(toml.splitlines().count('[[directory]]'), 2)
+        toml = (layout / 'subsets.toml').read_text(encoding='utf-8')
+        self.assertEqual(toml.splitlines().count('[[subsets]]'), 2)
         self.assertIn('num_repeats = 10', toml)
+        self.assertFalse((layout / 'dataset.toml').exists())
+        # paths are relative to the layout folder (the dataset root), as <group>/<artist>
+        import csv, tomllib
+        with (layout / 'folders.csv').open(encoding='utf-8') as handle:
+            rows = list(csv.DictReader(handle))
+        self.assertEqual(list(rows[0])[:2], ['path', 'num_repeats'])
+        self.assertTrue(all(row['path'].count('/') == 1 and not row['path'].startswith('/') for row in rows))
+        for stage in ('512', '1024'):
+            config = tomllib.loads((layout / f'mageflow-{stage}.toml').read_text(encoding='utf-8'))
+            self.assertEqual(config['dataset']['subsets_file'], '@DATA_DIR@/folders.csv')
+            self.assertEqual(config['dataset']['resolution'], int(stage))
+            self.assertEqual(config['dataset']['caption']['attribution_patterns'], ['^drawn by\\s'])
+            self.assertTrue(config['sampling']['prompts'][0].lower().startswith('drawn by'))
 
         # A second delivery of the same run reuses the folders and downloads nothing new.
         again = delivery.create_delivery(self.run_id, 'Planner', self.root)
