@@ -563,9 +563,15 @@ def status() -> dict:
         job = conn.execute('SELECT * FROM harvest_job ORDER BY id DESC LIMIT 1').fetchone()
         delivery = conn.execute('SELECT id FROM delivery ORDER BY id DESC LIMIT 1').fetchone()
         runs = [run_row(r) for r in conn.execute('SELECT * FROM run ORDER BY id DESC LIMIT 10')]
+        # Every run that was downloaded, with its latest download: what "Export training layout" can export.
+        delivered_runs = [dict(r) for r in conn.execute(
+            """SELECT d.run_id, d.id AS delivery_id, d.group_prefix, d.status,
+                      (SELECT count(*) FROM delivery x WHERE x.run_id = d.run_id) AS deliveries
+               FROM delivery d WHERE d.id = (SELECT max(id) FROM delivery WHERE run_id = d.run_id)
+               ORDER BY d.run_id DESC""")]
         return {'artists': dict(artists), 'posts': posts, 'characters': characters, 'priority_characters': priority_characters,
                 'overrides': overrides, 'style_flags': style_flags, 'listed_artists': listed,
-                'delivery_id': delivery['id'] if delivery else None,
+                'delivery_id': delivery['id'] if delivery else None, 'delivered_runs': delivered_runs,
                 'harvest_job': harvest_row(job) if job else None, 'runs': runs, 'path': str(planner_dir()),
                 'library': str(db.LIBRARY_PATH), 'custom_path': planner_dir() != db.LIBRARY_PATH / 'planner'}
     finally:

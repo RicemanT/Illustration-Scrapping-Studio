@@ -349,7 +349,11 @@ function DeliveryPanel({ status, runId, onChange }) {
   const [showProblems, setShowProblems] = useState(false);
   const problems = useQuery({ queryKey: ['planner-problems', deliveryId, data?.status, problemCount], enabled: Boolean(deliveryId) && showProblems, queryFn: async () => (await api.planner.deliveryProblems(deliveryId)).data });
   const cancel = useMutation({ mutationFn: api.planner.cancelDelivery, onSuccess: after });
-  const layout = useMutation({ mutationFn: () => api.planner.trainingLayout(deliveryId) });
+  // Export any downloaded run, not only the latest download (e.g. the pilot after batch 1 was downloaded).
+  const deliveredRuns = status?.delivered_runs || [];
+  const [exportDelivery, setExportDelivery] = useState(null);
+  const exportId = exportDelivery ?? deliveredRuns[0]?.delivery_id ?? deliveryId;
+  const layout = useMutation({ mutationFn: () => api.planner.trainingLayout(exportId) });
   const prunePreview = useMutation({ mutationFn: () => api.planner.prunePreview(deliveryId) });
   const pruneApply = useMutation({ mutationFn: () => api.planner.pruneApply(deliveryId), onSuccess: () => prunePreview.reset() });
   const queryClient = useQueryClient();
@@ -363,7 +367,13 @@ function DeliveryPanel({ status, runId, onChange }) {
       <button className={button} disabled={!run || run.status !== 'completed' || active || harvesting || start.isPending || !prefix.trim()} onClick={() => start.mutate()}>Download run #{runId || '—'}</button>
       {active && <button className={quiet} disabled={cancel.isPending || data.status === 'cancelling'} onClick={() => cancel.mutate()}>Stop</button>}
       {data && !active && (data.status !== 'completed' || errorCount > 0) && <button className={quiet} disabled={resume.isPending || harvesting} onClick={() => resume.mutate()}>{data.status === 'completed' ? `Retry ${number(errorCount)} failed` : `Resume download #${data.id}`}</button>}
-      {data && !active && <button className={quiet} disabled={layout.isPending} onClick={() => layout.mutate()}>Export training layout</button>}
+      {deliveredRuns.length > 0 && !active && <span className="flex items-end gap-1">
+        <label className="text-xs text-slate-400">Export run<select className={`${field} block`} value={exportId || ''} aria-label="Run to export"
+          onChange={(event) => { setExportDelivery(Number(event.target.value)); layout.reset(); }}>
+          {deliveredRuns.map((item) => <option key={item.run_id} value={item.delivery_id}>
+            #{item.run_id} · {item.group_prefix}{item.deliveries > 1 ? ` · ${item.deliveries} downloads` : ''}</option>)}
+        </select></label>
+        <button className={quiet} disabled={layout.isPending || !exportId} onClick={() => layout.mutate()}>Export training layout</button></span>}
       {data && !active && <button className={quiet} disabled={prunePreview.isPending || pruneApply.isPending} onClick={() => { pruneApply.reset(); prunePreview.mutate(); }}>Remove images no longer selected…</button>}
       <button className={quiet} disabled={completeAll.isPending || active} title="Accept every planner collection: its images become the artist's selection and are locked"
         onClick={() => { if (window.confirm('Accept every planner collection?')) completeAll.mutate(true); }}>Accept all collections</button>

@@ -138,6 +138,10 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         again = delivery.get_delivery(again['id'])
         self.assertNotIn('danbooru:done', again['counts'])
         self.assertEqual(again['counts']['danbooru:skipped'], selected['danbooru'] - 1)
+        # Export training layout can pick any downloaded run; each is listed with its latest download.
+        runs = store.status()['delivered_runs']
+        self.assertEqual([(r['run_id'], r['delivery_id'], r['deliveries'], r['group_prefix']) for r in runs],
+                         [(self.run_id, again['id'], 2, 'Planner')])
         main = db.get_connection()
         self.assertEqual(main.execute('SELECT count(*) FROM collection').fetchone()[0], 2)
         main.close()
