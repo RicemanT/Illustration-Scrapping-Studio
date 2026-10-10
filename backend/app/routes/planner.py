@@ -254,8 +254,18 @@ def start_caption_check(request: CaptionCheckRequest):
 
 
 @router.get('/caption-check/items')
-def caption_check_items(problem: Optional[str] = None, folder_id: Optional[int] = None):
-    return {'items': caption_check.flagged_items(problem, folder_id=folder_id)}
+def caption_check_items(problem: Optional[str] = None, folder_id: Optional[int] = None, include_reviewed: bool = False):
+    return {'items': caption_check.flagged_items(problem, folder_id=folder_id, include_reviewed=include_reviewed)}
+
+
+class ReviewedRequest(BaseModel):
+    image_ids: list[int] = Field(..., min_length=1, max_length=5000)
+    reviewed: bool = True
+
+
+@router.post('/caption-check/reviewed')
+def caption_check_reviewed(request: ReviewedRequest):
+    return caption_check.mark_reviewed(request.image_ids, request.reviewed)
 
 
 @router.post('/caption-check/set-aside')

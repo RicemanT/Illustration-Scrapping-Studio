@@ -43,6 +43,14 @@ class CaptionCheckTests(unittest.TestCase):
         self.assertIn('shorts or leggings', details['hedging'])
         self.assertEqual(details['missing_text'], 'tags: signature · no quoted text in the caption')
 
+    def test_a_voice_actor_named_by_voice_actor_connection_is_not_required(self):
+        facts = {**FACTS, 'uesaka sumire': {'name': 'Uesaka Sumire', 'series': ['real life']}}
+        tags = TAGS + ['uesaka sumire', 'voice actor connection']
+        text = caption('Drawn by vent arbre. Air Groove from Umamusume stands in her coat.')
+        self.assertEqual(check_caption(text, tags, facts, 200, 350), [])
+        # without the voice actor tag the name is still expected
+        self.assertIn('missing_character', check_caption(text, TAGS + ['uesaka sumire'], facts, 200, 350))
+
     def test_characters_must_be_named_without_raw_tag_spelling(self):
         self.assertIn('missing_character', self.check(caption('Drawn by vent arbre. A horse girl in a brown coat stands.')))
         self.assertIn('raw_tag', self.check(caption('Drawn by vent arbre. Air Groove (umamusume) stands.')))

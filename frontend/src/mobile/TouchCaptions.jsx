@@ -44,7 +44,11 @@ export default function TouchCaptions({ folderId, folder }) {
         {problems.get(current.id) && <span className="truncate text-xs text-amber-300">{problems.get(current.id).join(' · ').replaceAll('_', ' ')}</span>}
       </div>
       <img src={screenUrl(current)} alt={`Image ${current.id}`} className="max-h-[45dvh] w-full bg-black object-contain" />
-      <div className="p-2"><CaptionEditor key={current.id} imageId={current.id} dirtyRef={dirty} onSavedNext={() => move(1)} /></div>
+      <div className="p-2"><CaptionEditor key={current.id} imageId={current.id} dirtyRef={dirty} onSavedNext={() => {
+        // A flagged caption kept with Save & next is reviewed: it leaves the flagged list until the file changes.
+        if (problems.has(current.id)) api.planner.markCaptionsReviewed([current.id]).catch(() => {});
+        move(1);
+      }} /></div>
       <div className="grid grid-cols-2 gap-2 p-2 text-sm" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 8px)' }}>
         <button type="button" disabled={index === 0} onClick={() => move(-1)} className="rounded border border-slate-700 py-3 disabled:opacity-30">◀ Previous</button>
         <button type="button" disabled={index >= images.length - 1} onClick={() => move(1)} className="rounded border border-slate-700 py-3 disabled:opacity-30">Next ▶</button>

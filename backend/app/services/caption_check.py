@@ -8,9 +8,14 @@ tags say the image has text, and is not a refusal or an echo of the prompt.
 
 Flagged captions can be set aside (renamed to `<caption>.flagged`) or deleted; either way the captioning
 script, which skips images that already have a caption, writes them again on its next run.
+
+A flagged caption you looked at and kept (Save & next in the review) is remembered as reviewed, by the hash of its
+text: it leaves the flagged list and stays out of later checks until the caption file changes. Captions deleted
+since the check leave the list too.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import threading
@@ -55,6 +60,60 @@ _state: dict = {'status': 'idle'}
 
 def report_path() -> Path:
     return planner_dir() / 'exports' / 'caption-check.json'
+
+
+def review_path() -> Path:
+    return planner_dir() / 'exports' / 'caption-review.json'
+
+
+def _reviews() -> dict:
+    try:
+        return json.loads(review_path().read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+
+
+def _caption_digest(relative_path: str, suffix: str) -> Optional[str]:
+    root = (db.LIBRARY_PATH / 'images').resolve()
+    try:
+        return hashlib.sha1(caption_file(root / relative_path, suffix).read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _with_state(items: list[dict], suffix: str, reviews: dict):
+    """Each item with its current state: 'open', 'reviewed' (kept, caption unchanged since) or 'gone' (deleted)."""
+    for item in items:
+        digest = _caption_digest(item['path'], suffix)
+        state = 'gone' if digest is None else 'reviewed' if reviews.get(str(item['image_id'])) == digest else 'open'
+        yield {**item, 'state': state, 'reviewed': state == 'reviewed'}
+
+
+def mark_reviewed(image_ids: list[int], reviewed: bool = True) -> dict:
+    """Remember (or forget) that these flagged captions were looked at and kept as they are now."""
+    report = json.loads(report_path().read_text(encoding='utf-8')) if report_path().exists() else {}
+    suffix = report.get('suffix') or get_suffix()
+    paths = {item['image_id']: item['path'] for item in report.get('items', [])}
+    missing = [image_id for image_id in image_ids if image_id not in paths]
+    if missing:
+        main = db.get_connection()
+        try:
+            marks = ','.join('?' * len(missing))
+            paths.update({row[0]: row[1] for row in main.execute(f'SELECT id, path FROM image WHERE id IN ({marks})', missing)})
+        finally:
+            main.close()
+    reviews = _reviews()
+    changed = 0
+    for image_id in image_ids:
+        digest = _caption_digest(paths[image_id], suffix) if image_id in paths else None
+        if reviewed and digest:
+            reviews[str(image_id)] = digest
+            changed += 1
+        elif not reviewed and reviews.pop(str(image_id), None):
+            changed += 1
+    review_path().parent.mkdir(parents=True, exist_ok=True)
+    review_path().write_text(json.dumps(reviews), encoding='utf-8')
+    return {'changed': changed}
 
 
 def _facts() -> dict:
@@ -109,7 +168,16 @@ def explain_caption(caption: str, tags: list[str], facts: dict, min_words: int, 
     flat = lowered.replace('\u2019', "'")
     caption_words = set(re.findall(r"[\w'-]+", flat))
     caption_words |= {re.sub(r"'s$", '', word) for word in caption_words}   # "Gotland's" names Gotland
-    missing = [f"{fact['name']} ({tag})" for tag in tags[1:] if (fact := facts.get(tag.lower()))
+    tag_keys = {t.lower() for t in tags}
+    voice_actors = 'voice actor connection' in tag_keys
+
+    def excused(fact) -> bool:
+        # With "voice actor connection" a tagged voice actor is no character of the picture: their series (often
+        # "real life") is not among the image's tags, unlike the characters actually drawn.
+        series = [s.lower() for s in fact.get('series', [])]
+        return voice_actors and ('real life' in series or not tag_keys.intersection(series))
+
+    missing = [f"{fact['name']} ({tag})" for tag in tags[1:] if (fact := facts.get(tag.lower())) and not excused(fact)
                and not any(word in caption_words for word in _name_words(fact['name']))]
     if missing:
         problems['missing_character'] = 'not named: ' + '; '.join(missing)
@@ -182,16 +250,25 @@ def run(min_words: int = 200, max_words: int = 350, progress=lambda **_: None) -
     return result
 
 
-def flagged_items(problem: Optional[str] = None, limit: int = 300, folder_id: Optional[int] = None) -> list[dict]:
+def flagged_items(problem: Optional[str] = None, limit: int = 300, folder_id: Optional[int] = None,
+                  include_reviewed: bool = False) -> list[dict]:
+    """Flagged captions still waiting for review (plus the reviewed ones when asked); deleted ones are left out."""
     path = report_path()
     if not path.exists():
         return []
-    items = json.loads(path.read_text(encoding='utf-8')).get('items', [])
+    report = json.loads(path.read_text(encoding='utf-8'))
+    items = report.get('items', [])
     if problem:
         items = [item for item in items if problem in item['problems']]
     if folder_id is not None:
         items = [item for item in items if item['folder_id'] == folder_id]
-    return items[:limit]
+    result = []
+    for item in _with_state(items, report.get('suffix') or get_suffix(), _reviews()):
+        if item['state'] == 'open' or (include_reviewed and item['state'] == 'reviewed'):
+            result.append(item)
+            if len(result) >= limit:
+                break
+    return result
 
 
 def _take_flagged(problems: list[str], delete: bool) -> int:
@@ -204,9 +281,10 @@ def _take_flagged(problems: list[str], delete: bool) -> int:
     suffix = report.get('suffix') or get_suffix()
     wanted = set(problems) or set(CHECKS)
     done, kept = 0, []
+    reviewed = {item['image_id'] for item in _with_state(report.get('items', []), suffix, _reviews()) if item['state'] == 'reviewed'}
     for item in report.get('items', []):
         caption = caption_file(root / item['path'], suffix)
-        if not wanted.intersection(item['problems']) or root not in caption.resolve().parents:
+        if not wanted.intersection(item['problems']) or item['image_id'] in reviewed or root not in caption.resolve().parents:
             kept.append(item)
             continue
         set_aside_copy = caption.with_name(caption.name + '.flagged')
@@ -241,10 +319,14 @@ def delete_flagged(problems: list[str]) -> dict:
 def status() -> dict:
     with _lock:
         state = dict(_state)
-    if state.get('status') == 'idle' and report_path().exists():
+    if state.get('status') != 'running' and report_path().exists():   # counts follow reviews and deletions
         try:
             report = json.loads(report_path().read_text(encoding='utf-8'))
-            report.pop('items', None)
+            states = list(_with_state(report.pop('items', []), report.get('suffix') or get_suffix(), _reviews()))
+            open_items = [item for item in states if item['state'] == 'open']
+            report.update(flagged=len(open_items), reviewed=sum(item['state'] == 'reviewed' for item in states),
+                          gone=sum(item['state'] == 'gone' for item in states),
+                          counts=dict(Counter(code for item in open_items for code in item['problems']).most_common()))
             state['result'] = report
         except (OSError, ValueError):
             pass

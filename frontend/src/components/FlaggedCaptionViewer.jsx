@@ -1,14 +1,32 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import api, { backendAssetUrl } from '../api/client';
 import CaptionEditor from './CaptionEditor';
 
 // One flagged caption next to its image: what the check found, the image's tags, and the caption editor.
-// ← / → step through the flagged list (Ctrl+Enter saves and moves on), Esc closes.
+// ← / → step through the flagged list, Esc closes. Save & next (Ctrl+Enter) saves any edit and marks the caption
+// reviewed, so it leaves the flagged list until the caption file changes.
 export default function FlaggedCaptionViewer({ items, index, setIndex, onClose, labels }) {
   const item = items[index];
   const dirty = useRef(false);
+  const [reviewed, setReviewed] = useState(() => new Set(items.filter((entry) => entry.reviewed).map((entry) => entry.image_id)));
+  const [reviewError, setReviewError] = useState(null);
+  const markReviewed = async (imageId, value = true) => {
+    try {
+      await api.planner.markCaptionsReviewed([imageId], value);
+      setReviewed((current) => { const next = new Set(current); if (value) next.add(imageId); else next.delete(imageId); return next; });
+      setReviewError(null);
+      return true;
+    } catch (error) {
+      setReviewError(error?.response?.data?.detail || error?.message || 'Could not mark it reviewed');
+      return false;
+    }
+  };
+  const keepAndNext = async () => {
+    if (!(await markReviewed(item.image_id))) return;
+    if (index < items.length - 1) setIndex(index + 1); else onClose();
+  };
   const image = useQuery({ queryKey: ['image', item?.image_id], enabled: Boolean(item), queryFn: async () => (await api.images.get(item.image_id)).data });
 
   const leave = (action) => {
@@ -44,6 +62,7 @@ export default function FlaggedCaptionViewer({ items, index, setIndex, onClose, 
         <div className="flex items-center gap-2">
           <button type="button" className="rounded border border-slate-700 px-3 py-1.5 disabled:opacity-30" disabled={index === 0} onClick={() => go(-1)} aria-label="Previous flagged caption">◀</button>
           <span className="tabular-nums text-slate-300">{index + 1} / {items.length}</span>
+          <span className="text-xs text-emerald-400">{reviewed.size ? `${reviewed.size} reviewed` : ''}</span>
           <button type="button" className="rounded border border-slate-700 px-3 py-1.5 disabled:opacity-30" disabled={index >= items.length - 1} onClick={() => go(1)} aria-label="Next flagged caption">▶</button>
           <button type="button" className="ml-auto rounded border border-slate-700 px-3 py-1.5" onClick={() => leave(onClose)} aria-label="Close">✕</button>
         </div>
@@ -59,13 +78,17 @@ export default function FlaggedCaptionViewer({ items, index, setIndex, onClose, 
             {details[code] && <div className="break-words text-slate-300">{details[code]}</div>}
           </li>)}</ul>
           {!item.details && <p className="mt-1 text-xs text-slate-500">Run the check again to see exactly what was found.</p>}
+          {reviewed.has(item.image_id)
+            ? <p className="mt-2 text-xs text-emerald-400">✓ Reviewed and kept <button type="button" className="ml-2 text-slate-400 underline" onClick={() => markReviewed(item.image_id, false)}>Undo</button></p>
+            : <p className="mt-2 text-xs text-slate-500">Save &amp; next marks it reviewed (kept as it is, or with your edit).</p>}
+          {reviewError && <p role="alert" className="mt-1 text-xs text-red-400">{reviewError}</p>}
         </div>
         <div>
           <h4 className="mb-1 text-xs font-semibold text-slate-400">Tags</h4>
           <p className="text-xs leading-relaxed text-slate-300">{image.isLoading ? 'Loading…' : tags.join(', ') || 'No tags'}</p>
         </div>
         <div className="[overflow-wrap:anywhere]">
-          <CaptionEditor key={item.image_id} imageId={item.image_id} dirtyRef={dirty} shortcutsEverywhere onSavedNext={index < items.length - 1 ? () => setIndex(index + 1) : undefined} />
+          <CaptionEditor key={item.image_id} imageId={item.image_id} dirtyRef={dirty} shortcutsEverywhere onSavedNext={keepAndNext} />
         </div>
       </div>
     </div>

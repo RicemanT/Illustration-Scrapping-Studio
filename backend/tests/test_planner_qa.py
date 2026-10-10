@@ -149,6 +149,34 @@ class CurationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(refusal.with_name(refusal.name + '.flagged').exists())
         self.assertEqual(caption_check.flagged_items('refusal'), [])  # the report forgets what was taken out
 
+    async def test_reviewed_captions_leave_the_list_until_they_change(self):
+        from app.services import caption_check
+        folder_id = await self._delivered_folder()
+        main = db.get_connection()
+        paths = [r[0] for r in main.execute('SELECT path FROM image WHERE folder_id=? ORDER BY id', (folder_id,))][:2]
+        ids = [r[0] for r in main.execute('SELECT id FROM image WHERE folder_id=? ORDER BY id', (folder_id,))][:2]
+        main.close()
+        root = db.LIBRARY_PATH / 'images'
+        files = [(root / path).with_name(Path(path).stem + '_nl.txt') for path in paths]
+        for file in files:
+            file.write_text('Short caption, kept on purpose.', encoding='utf-8')
+        caption_check.run(min_words=50, max_words=1000)
+        self.assertEqual({item['image_id'] for item in caption_check.flagged_items()}, set(ids))
+
+        caption_check.mark_reviewed([ids[0]])
+        self.assertEqual([item['image_id'] for item in caption_check.flagged_items()], [ids[1]])
+        self.assertTrue(caption_check.flagged_items(include_reviewed=True)[0]['reviewed'])
+        status = caption_check.status()['result']
+        self.assertEqual((status['flagged'], status['reviewed']), (1, 1))
+        # a new check keeps the review; "Delete flagged" leaves reviewed captions alone
+        caption_check.run(min_words=50, max_words=1000)
+        self.assertEqual(caption_check.delete_flagged(['too_short']), {'deleted': 1})
+        self.assertTrue(files[0].exists() and not files[1].exists())
+        self.assertEqual(caption_check.status()['result']['gone'], 0)
+        # once the caption file changes it is back for review
+        files[0].write_text('Rewritten by the captioning script.', encoding='utf-8')
+        self.assertEqual([item['image_id'] for item in caption_check.flagged_items()], [ids[0]])
+
     async def test_caption_check_deletes_provider_block_captions(self):
         from app.services import caption_check
         folder_id = await self._delivered_folder()
