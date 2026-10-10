@@ -644,8 +644,35 @@ def export_training_layout(delivery_id: int) -> Path:
             relative = str(folder['slug']).replace('\\', '/').strip('/')
             folders.append({'path': relative, 'num_repeats': repeats, 'repeats': repeats, 'images': images,
                             'site': row['site'], 'artist': row['display_name'], 'tag': row['tag'], 'folder': folder['name'],
-                            'trigger': _trigger(main, row['folder_id']), 'planned_images': row['selected'],
+                            'trigger': _trigger(main, row['folder_id']), 'planned_images': row['selected'], 'in_run': True,
                             'library_path': str((db.LIBRARY_PATH / 'images' / relative).resolve())})
+        # The run's groups are the curated dataset: their other artist collections (artists a later plan of the
+        # same groups dropped, or folders added by hand) train too, and the README names them.
+        listed = [row['folder_id'] for row in rows]
+        if listed:
+            groups = [r[0] for r in main.execute(
+                f"SELECT DISTINCT group_id FROM collection WHERE group_id IS NOT NULL AND id IN ({','.join('?' * len(listed))})", listed)]
+            extras = main.execute(
+                f"""SELECT id, name, slug FROM collection WHERE type='artist' AND group_id IN ({','.join('?' * len(groups))})
+                    AND id NOT IN ({','.join('?' * len(listed))}) ORDER BY name""", [*groups, *listed]).fetchall() if groups else []
+            if extras:
+                planner = connect()
+                try:
+                    known = {r['folder_id']: dict(r) for r in planner.execute(
+                        """SELECT d.folder_id, d.site, a.display_name, a.tag FROM delivery_item d JOIN artist a ON a.id=d.artist_id
+                           GROUP BY d.folder_id""")}
+                finally:
+                    planner.close()
+                for extra in extras:
+                    info = known.get(extra['id'], {})
+                    images = main.execute('SELECT count(*) FROM image WHERE folder_id=?', (extra['id'],)).fetchone()[0]
+                    repeats = min(max_repeats, max(1, round(exposures / images))) if images else 0
+                    relative = str(extra['slug']).replace('\\', '/').strip('/')
+                    folders.append({'path': relative, 'num_repeats': repeats, 'repeats': repeats, 'images': images,
+                                    'site': info.get('site', ''), 'artist': info.get('display_name') or extra['name'],
+                                    'tag': info.get('tag', ''), 'folder': extra['name'], 'trigger': _trigger(main, extra['id']),
+                                    'planned_images': None, 'in_run': False,
+                                    'library_path': str((db.LIBRARY_PATH / 'images' / relative).resolve())})
     finally:
         main.close()
     target = planner_dir() / 'exports' / f"run-{run_id}" / 'training'
@@ -674,10 +701,15 @@ def export_training_layout(delivery_id: int) -> Path:
         (target / f"mageflow-{stage['name']}.toml").write_text(_mageflow_config(run_id, stage, prompts), encoding='utf-8')
     used = [f for f in folders if f['images']]
     samples = sum(f['images'] * f['num_repeats'] for f in used)
+    outside = [f for f in used if not f['in_run']]
+    outside_note = ('\n'.join([f"{len(outside)} of these folders are in the run's groups but not in run {run_id}'s plan (for example artists",
+                                "a later plan dropped); they are included because they are part of the curated groups:"]
+                               + [f"  {f['path']} ({f['images']} images)" for f in outside]) + '\n') if outside else ''
+
     (target / 'README.txt').write_text(f"""Training layout for planner run {run_id} (Illustration Scrapping Studio)
 
 {len(used)} artist folders, {sum(f['images'] for f in used)} images, {samples} samples per epoch with repeats.
-
+{outside_note}
 This folder is the root of the dataset as it goes to Hugging Face: the trainer notebook
 (mage-flow-trainer/notebooks/mageflow-remote.ipynb) uploads these files plus every listed
 <group>/<artist> folder from the library, and later the latent cache.

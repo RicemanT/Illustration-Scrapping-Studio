@@ -102,6 +102,24 @@ class PruneTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(artist_x['images'], len(rows) - 1)
         self.assertEqual(artist_x['repeats'], min(10, round(200 / (len(rows) - 1))))
 
+        # A collection in the same group that the run did not plan (an artist a later plan dropped) trains too.
+        main = db.get_connection()
+        group_id, slug = main.execute('SELECT group_id, slug FROM collection WHERE id=?', (folder_id,)).fetchone()
+        now_ = '2026-10-10T00:00:00+00:00'
+        main.execute("""INSERT INTO collection (name, slug, type, query, caption_template, filters, created_at, updated_at, enabled, group_id)
+                        VALUES ('Dropped Artist', ?, 'artist', 'dropped', '{}', '{}', ?, ?, 1, ?)""",
+                     (slug.rsplit('/', 1)[0] + '/dropped-artist', now_, now_, group_id))
+        dropped = main.execute("SELECT id FROM collection WHERE name='Dropped Artist'").fetchone()[0]
+        main.execute("""INSERT INTO image (sha256, width, height, format, file_size, path, added_at, folder_id)
+                        VALUES ('d1', 1, 1, 'png', 1, ?, ?, ?)""", (slug.rsplit('/', 1)[0] + '/dropped-artist/a.png', now_, dropped))
+        main.commit()
+        main.close()
+        layout = delivery.export_training_layout(job['id'])
+        entries = json.loads((layout / 'folders.json').read_text(encoding='utf-8'))
+        extra = next(f for f in entries if f['folder'] == 'Dropped Artist')
+        self.assertEqual((extra['in_run'], extra['images'], extra['num_repeats']), (False, 1, 10))
+        self.assertIn('dropped-artist (1 images)', (layout / 'README.txt').read_text(encoding='utf-8'))
+
         self.assertEqual(delivery.ban_removed_images(), 1)
         self.assertEqual(delivery.ban_removed_images(), 0)  # already banned
         second_run = store.run_plan(PlannerConfig(min_images=3, max_images=5, character_floor=0))
