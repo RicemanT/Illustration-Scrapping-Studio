@@ -19,6 +19,7 @@ import hashlib
 import json
 import re
 import threading
+import unicodedata
 from collections import Counter
 from pathlib import Path
 from typing import Optional
@@ -126,8 +127,21 @@ def _facts() -> dict:
     return merged
 
 
+def _fold(text: str) -> str:
+    """Lower case without accents, so "Scáthach" in a caption matches the tag's "scathach"."""
+    text = unicodedata.normalize('NFKD', text.replace('\u2019', "'"))
+    return ''.join(char for char in text if not unicodedata.combining(char)).lower()
+
+
+def _words(text: str) -> set[str]:
+    """The words of a text, also split at hyphens ("Scathach-Skadi" gives scathach, skadi and the whole)."""
+    whole = re.findall(r"[\w'-]+", _fold(text))
+    words = set(whole) | {part for word in whole for part in word.split('-') if part}
+    return words | {re.sub(r"'s$", '', word) for word in words}   # "Gotland's" names Gotland
+
+
 def _name_words(name: str) -> list[str]:
-    words = [word.lower() for word in re.findall(r"[\w'-]+", name)]
+    words = [part for word in re.findall(r"[\w'-]+", _fold(name)) for part in word.split('-') if part]
     long_words = [word for word in words if len(word) >= 3]
     return long_words or words   # "Io", "Ui": a short name is still a name
 
@@ -165,9 +179,7 @@ def explain_caption(caption: str, tags: list[str], facts: dict, min_words: int, 
         problems['markup'] = f'"{_snippet(unquoted, match, 20)}"'
     if match := META.search(unquoted):
         problems['meta_phrase'] = f'"{_snippet(unquoted, match)}"'
-    flat = lowered.replace('\u2019', "'")
-    caption_words = set(re.findall(r"[\w'-]+", flat))
-    caption_words |= {re.sub(r"'s$", '', word) for word in caption_words}   # "Gotland's" names Gotland
+    caption_words = _words(text)
     tag_keys = {t.lower() for t in tags}
     voice_actors = 'voice actor connection' in tag_keys
 

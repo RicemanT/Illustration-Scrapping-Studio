@@ -43,6 +43,15 @@ class CaptionCheckTests(unittest.TestCase):
         self.assertIn('shorts or leggings', details['hedging'])
         self.assertEqual(details['missing_text'], 'tags: signature · no quoted text in the caption')
 
+    def test_accents_and_hyphenated_names_count(self):
+        facts = {'scathach (fate)': {'name': 'Scathach', 'qualifiers': ['fate'], 'series': ['fate/grand order']},
+                 'scathach-skadi (fate)': {'name': 'Scathach-skadi', 'qualifiers': ['fate'], 'series': ['fate/grand order']},
+                 'scathach (piercing bunny) (fate)': {'name': 'Scathach', 'qualifiers': ['piercing bunny', 'fate']}}
+        tags = ['Drawn by chan co', 'scathach (fate)', 'scathach-skadi (fate)', 'scathach (piercing bunny) (fate)']
+        text = caption('Drawn by chan co. Medb and Scáthach from Fate/Grand Order pose as playboy bunnies.')
+        self.assertNotIn('missing_character', check_caption(text, tags, facts, 200, 350))
+        self.assertIn('missing_character', check_caption(caption('Drawn by chan co. Medb poses alone.'), tags, facts, 200, 350))
+
     def test_a_voice_actor_named_by_voice_actor_connection_is_not_required(self):
         facts = {**FACTS, 'uesaka sumire': {'name': 'Uesaka Sumire', 'series': ['real life']}}
         tags = TAGS + ['uesaka sumire', 'voice actor connection']
