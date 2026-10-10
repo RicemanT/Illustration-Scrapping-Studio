@@ -65,7 +65,7 @@ export default function FlaggedCaptionViewer({ items, index, setIndex, onClose, 
           <p className="text-xs leading-relaxed text-slate-300">{image.isLoading ? 'Loading…' : tags.join(', ') || 'No tags'}</p>
         </div>
         <div className="[overflow-wrap:anywhere]">
-          <CaptionEditor key={item.image_id} imageId={item.image_id} dirtyRef={dirty} onSavedNext={index < items.length - 1 ? () => setIndex(index + 1) : undefined} />
+          <CaptionEditor key={item.image_id} imageId={item.image_id} dirtyRef={dirty} shortcutsEverywhere onSavedNext={index < items.length - 1 ? () => setIndex(index + 1) : undefined} />
         </div>
       </div>
     </div>

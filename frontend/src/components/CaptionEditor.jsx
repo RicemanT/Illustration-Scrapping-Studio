@@ -6,8 +6,9 @@ const detailOf = (error) => error?.response?.data?.detail || error?.message;
 
 // The natural-language caption file beside an image (for example <name>_nl.txt),
 // written by an external captioning script and reviewed/edited here.
-// dirtyRef lets the viewer ask before leaving with unsaved edits.
-export default function CaptionEditor({ imageId, dirtyRef, onSavedNext }) {
+// dirtyRef lets the viewer ask before leaving with unsaved edits. shortcutsEverywhere: Ctrl+S / Ctrl+Enter work
+// wherever the focus is (outside other text fields), for a viewer that is only about this caption.
+export default function CaptionEditor({ imageId, dirtyRef, onSavedNext, shortcutsEverywhere = false }) {
   const queryClient = useQueryClient();
   const query = useQuery({
     queryKey: ['caption', imageId],
@@ -57,6 +58,19 @@ export default function CaptionEditor({ imageId, dirtyRef, onSavedNext }) {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); saveNow(false); }
     if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); saveNow(true); }
   };
+  const latestKeyDown = useRef(onKeyDown);
+  latestKeyDown.current = onKeyDown;
+  useEffect(() => {
+    if (!shortcutsEverywhere) return undefined;
+    const onWindowKey = (event) => {
+      const target = event.target;
+      if (target === area.current) return;   // the textarea handles its own keys
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(target?.tagName) || target?.isContentEditable) return;
+      latestKeyDown.current(event);
+    };
+    window.addEventListener('keydown', onWindowKey);
+    return () => window.removeEventListener('keydown', onWindowKey);
+  }, [shortcutsEverywhere]);
 
   return (
     <div className="border-t border-[#202a34] pt-4">
