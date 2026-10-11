@@ -112,7 +112,21 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(sidecars)
         self.assertIn('artist x', sidecars[0].read_text(encoding='utf-8').lower())
 
+        # Character and copyright tags go to protected_tags.txt, with hand edits applied.
+        main = db.get_connection()
+        image_id, source_id = main.execute(
+            "SELECT it.image_id, it.source_id FROM image_tag it ORDER BY it.image_id LIMIT 1").fetchone()
+        main.executemany("INSERT INTO image_tag (image_id, source_id, category, tag) VALUES (?, ?, ?, ?)",
+                         [(image_id, source_id, 'character', 'hatsune_miku'), (image_id, source_id, 'copyright', 'vocaloid'),
+                          (image_id, source_id, 'character', 'wrong_character')])
+        main.executemany("INSERT INTO image_tag_override (image_id, tag, action, category, updated_at) VALUES (?, ?, ?, ?, '2026-01-01')",
+                         [(image_id, 'wrong character', 'remove', 'general'), (image_id, 'Kagamine Rin', 'add', 'character')])
+        main.commit()
+        main.close()
+
         layout = delivery.export_training_layout(job['id'])
+        protected = [line.split('#', 1)[0].strip() for line in (layout / 'protected_tags.txt').read_text(encoding='utf-8').splitlines()]
+        self.assertEqual([tag for tag in protected if tag], ['hatsune miku', 'kagamine rin', 'vocaloid'])
         folders_json = json.loads((layout / 'folders.json').read_text(encoding='utf-8'))
         self.assertEqual({f['artist']: f['repeats'] for f in folders_json}, {'Artist X': 10, 'beast maker': 10})
         toml = (layout / 'subsets.toml').read_text(encoding='utf-8')
@@ -131,6 +145,7 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(config['dataset']['resolution'], int(stage))
             self.assertEqual((config['train']['flux2_vae'], config['train']['vae_path']), (True, '@VAE_PATH@'))
             self.assertEqual(config['dataset']['caption']['attribution_patterns'], ['^drawn by\\s'])
+            self.assertEqual(config['dataset']['caption']['protected_tags_file'], '@DATA_DIR@/protected_tags.txt')
             self.assertTrue(config['sampling']['prompts'][0].lower().startswith('drawn by'))
 
         # A second delivery of the same run reuses the folders and downloads nothing new.
