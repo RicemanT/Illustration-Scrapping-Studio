@@ -89,8 +89,9 @@ async def startup_event():
         recover()
         from app.services import planner_store
         planner_store.recover()
-        from app.services.planner_curation import sync_frozen
+        from app.services.planner_curation import mark_failed_imports_unavailable, sync_frozen
         sync_frozen()   # folders accepted before the curation guard existed are frozen too
+        mark_failed_imports_unavailable()   # earlier Gelbooru 404 imports: unlock and ban those posts
         image_service = ImageService(LIBRARY_PATH)
         migrated = image_service.migrate_to_collection_folders()
         recovered = image_service.reconcile_filesystem()

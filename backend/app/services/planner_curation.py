@@ -169,6 +169,54 @@ def accept_posts(folder_id: int, posts: list[tuple[str, str]]) -> dict:
         conn.close()
 
 
+def mark_unavailable(folder_id: int, posts: list[tuple[str, str]]) -> int:
+    """Posts whose file this server cannot download: banned for the folder's artist (hidden from wildcards, never
+    planned again) and no longer counted as accepted."""
+    if not posts:
+        return 0
+    conn = connect()
+    try:
+        artist = folder_artist(conn, folder_id)
+        if not artist:
+            return 0
+        stamp = now()
+        conn.executemany("INSERT OR REPLACE INTO override (artist_id, site, remote_id, action, created_at) VALUES (?,?,?,'ban',?)",
+                         [(artist['id'], site, str(remote_id), stamp) for site, remote_id in posts])
+        conn.executemany('DELETE FROM accepted_post WHERE folder_id=? AND site=? AND remote_id=?',
+                         [(folder_id, site, str(remote_id)) for site, remote_id in posts])
+        conn.commit()
+        return len(posts)
+    finally:
+        conn.close()
+
+
+def mark_failed_imports_unavailable() -> int:
+    """Startup: wildcard imports that failed with Gelbooru's 404 before FileUnavailable existed become bans too."""
+    from app.services.media import UNAVAILABLE_PREFIX
+    main = db.get_connection()
+    try:
+        rows = main.execute("""SELECT t.batch_id, b.collection_id, b.provider, t.remote_id FROM import_item t
+                               JOIN import_batch b ON b.id=t.batch_id
+                               WHERE t.status='error' AND t.error LIKE 'Gelbooru returned HTTP 404 while trying to download an image%'""").fetchall()
+    finally:
+        main.close()
+    by_folder = defaultdict(set)
+    for r in rows:
+        by_folder[r['collection_id']].add((r['provider'], str(r['remote_id'])))
+    for folder_id, posts in by_folder.items():
+        mark_unavailable(folder_id, sorted(posts))
+    if rows:
+        main = db.get_connection()
+        try:
+            main.executemany("UPDATE import_item SET status='skipped', error=? WHERE batch_id=? AND remote_id=?",
+                             [(f"{UNAVAILABLE_PREFIX}: Gelbooru answers 404 for post {r['remote_id']}'s file", r['batch_id'], r['remote_id'])
+                              for r in rows])
+            main.commit()
+        finally:
+            main.close()
+    return len(rows)
+
+
 def set_era(folder_id: int, era_from: int | None) -> dict:
     """Keep images posted from this year on; older ones are dimmed and wildcards default to the era."""
     if era_from is not None and not 1990 <= int(era_from) <= 2100:

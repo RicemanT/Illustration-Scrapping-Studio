@@ -12,7 +12,7 @@ from app.providers.booru import BOORU_SITES, ProviderAuthenticationError, get_ge
 from app.providers.gallery_dl import GALLERY_DL_PROVIDERS, provider_ready
 from app.providers.registry import create_provider, max_provider_limit, supported_provider
 from app.services.images import ImageService
-from app.services.media import StaticPreviewUnavailable
+from app.services.media import FileUnavailable, StaticPreviewUnavailable
 from app.services.post_ingest import ingest_post
 from app.services.queries import provider_query_for_folder, validate_collection_query
 from app.services.settings import get_parallel_workers
@@ -182,6 +182,10 @@ async def _run_import(job_id: str, batch_id: int, collection_id: int, provider_n
                     conn.execute("UPDATE import_item SET status = 'skipped', error = ? WHERE batch_id = ? AND remote_id = ?", (str(exc), batch_id, remote_id))
                     conn.commit()
                     conn.close()
+                    if isinstance(exc, FileUnavailable):
+                        # A wildcard this server cannot download: unlock and ban it so it stops coming back.
+                        from app.services.planner_curation import mark_unavailable
+                        await asyncio.to_thread(mark_unavailable, collection_id, [(provider_name, remote_id)])
                     job["progress"]["skipped"] += 1
                     transfer = None
                     message = f"Skipped {remote_id}: {exc}"

@@ -562,6 +562,11 @@ class BooruProvider(Provider):
         for attempt in range(DOWNLOAD_ATTEMPTS):
             await pacing.pacer(self.site, 'download').wait(interval)
             async with self.client.stream("GET", post.image_url, auth=None) as response:
+                if self.site == 'gelbooru' and response.status_code == 404:
+                    # Gelbooru's image servers refuse some files to some servers (every host and the sample alike),
+                    # while the same file downloads elsewhere. Retrying cannot help.
+                    from app.services.media import UNAVAILABLE_PREFIX, FileUnavailable
+                    raise FileUnavailable(f'{UNAVAILABLE_PREFIX}: Gelbooru answers 404 for post {post.remote_id}\'s file')
                 if pacing.is_throttle(self.site, response.status_code) and attempt + 1 < DOWNLOAD_ATTEMPTS:
                     # The pacer now waits longer for every download on this site.
                     pacing.pacer(self.site, 'download').throttled(pacing.retry_after_seconds(response), interval)

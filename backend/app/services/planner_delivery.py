@@ -23,7 +23,7 @@ from app.models import FolderCreate
 from app.providers.booru import ProviderAuthenticationError
 from app.providers.registry import create_provider
 from app.services.diagnostics import emit
-from app.services.media import StaticPreviewUnavailable
+from app.services.media import FileUnavailable, StaticPreviewUnavailable
 from app.services.planner_harvest import TRANSIENT_ATTEMPTS, _transient
 from app.services.planner_store import connect, now, planner_dir
 from app.services.post_ingest import ingest_post
@@ -289,6 +289,9 @@ async def _deliver_site(delivery_id: int, site: str, progress: dict, stop: async
                 _set_item(delivery_id, item, 'done' if result['new_count'] else 'skipped', result['new_count'])
             except StaticPreviewUnavailable as exc:
                 _set_item(delivery_id, item, 'filtered', error=str(exc)[:500])
+                if isinstance(exc, FileUnavailable):
+                    from app.services.planner_curation import mark_unavailable
+                    mark_unavailable(item['folder_id'], [(item['site'], item['remote_id'])])
             except Exception as exc:
                 emit('planner.delivery_failed', 'Planner delivery item failed', 'ERROR', error=exc, remote_id=item['remote_id'])
                 _set_item(delivery_id, item, 'error', error=str(exc)[:500])

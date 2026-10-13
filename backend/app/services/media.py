@@ -47,6 +47,15 @@ class StaticPreviewUnavailable(ValueError):
     pass
 
 
+class FileUnavailable(StaticPreviewUnavailable):
+    """The site has no copy of the post's file for this machine (Gelbooru answers 404 to some servers for some
+    files, at every address). Handled like an unusable file: skipped, not an error, and planner posts are banned
+    so wildcards and later plans pick something else."""
+
+
+UNAVAILABLE_PREFIX = 'Not available from this server'
+
+
 DownloadProgress = Callable[[dict], None]
 VIDEO_FRAME_COUNT = 3
 
@@ -491,7 +500,7 @@ async def download_importable_image(
                 _convert_first_frame, raw_path, representative=True, lossless=True
             )
             return _finish_original_frame(post, raw_path, converted_path, output_format, width, height)
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, StaticPreviewUnavailable):   # FileUnavailable keeps its type
             Path(raw_path).unlink(missing_ok=True)
             raise
         except (UnidentifiedImageError, OSError, ValueError) as exc:

@@ -18,7 +18,9 @@ from app.services.planner_select import PlannerConfig
 from tests.test_planner_delivery import FakeSite, planner_post
 
 
-class FolderGuardTests(unittest.IsolatedAsyncioTestCase):
+class PlannerFolderCase(unittest.IsolatedAsyncioTestCase):
+    """A temporary library with one delivered planner artist."""
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         from pathlib import Path
@@ -66,6 +68,8 @@ class FolderGuardTests(unittest.IsolatedAsyncioTestCase):
         finally:
             main.close()
 
+
+class FolderGuardTests(PlannerFolderCase):
     async def test_removed_posts_are_not_delivered_again_until_undone(self):
         await self.deliver()
         folder_id, ids = self.folder_images()
@@ -161,6 +165,62 @@ class FolderGuardTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(main.execute('SELECT count(*) FROM folder_removed_source').fetchone()[0], 0)
         finally:
             main.close()
+
+
+class UnavailableFileTests(PlannerFolderCase):
+    """A file the site will not serve to this server is skipped, banned and never planned again."""
+
+    async def test_delivery_skips_and_bans_unavailable_files(self):
+        from app.services.media import FileUnavailable
+
+        class Refusing(FakeSite):
+            async def download_image(self, post, dest_path, progress=None):
+                if post.remote_id == '2':
+                    raise FileUnavailable('Not available from this server: test')
+                await super().download_image(post, dest_path, progress)
+
+        job = delivery.create_delivery(self.run_id, 'Planner', self.root)
+        await delivery.run_delivery(job['id'], asyncio.Event(), lambda site: Refusing(site), self.root)
+        conn = store.connect()
+        try:
+            item = conn.execute("SELECT status FROM delivery_item WHERE remote_id='2'").fetchone()
+            ban = conn.execute("SELECT action FROM override WHERE site='danbooru' AND remote_id='2'").fetchone()
+        finally:
+            conn.close()
+        if item is None:
+            self.skipTest('the plan did not select post 2')
+        self.assertEqual(item['status'], 'filtered')
+        self.assertEqual(ban['action'], 'ban')
+        folder_id, _ = self.folder_images()
+        listed = {i['remote_id'] for i in curation.candidates(folder_id, include_filtered=True)['items']}
+        self.assertNotIn('2', listed)   # gone from wildcards
+
+    async def test_earlier_failed_imports_are_turned_into_bans(self):
+        await self.deliver()
+        folder_id, _ = self.folder_images()
+        curation.accept_posts(folder_id, [('danbooru', '6')])
+        main = db.get_connection()
+        main.execute("INSERT INTO import_batch (id, collection_id, provider, status, created_at) VALUES (7, ?, 'danbooru', 'completed', 'now')",
+                     (folder_id,))
+        main.execute("INSERT INTO import_item (batch_id, remote_id, status, error) VALUES (7, '6', 'error', "
+                     "'Gelbooru returned HTTP 404 while trying to download an image')")
+        main.commit()
+        main.close()
+        self.assertEqual(curation.mark_failed_imports_unavailable(), 1)
+        conn = store.connect()
+        try:
+            self.assertEqual(conn.execute("SELECT action FROM override WHERE remote_id='6'").fetchone()['action'], 'ban')
+            self.assertIsNone(conn.execute("SELECT 1 FROM accepted_post WHERE remote_id='6'").fetchone())
+        finally:
+            conn.close()
+        main = db.get_connection()
+        try:
+            status, error = main.execute("SELECT status, error FROM import_item WHERE batch_id=7").fetchone()
+        finally:
+            main.close()
+        self.assertEqual(status, 'skipped')
+        self.assertTrue(error.startswith('Not available from this server'))
+        self.assertEqual(curation.mark_failed_imports_unavailable(), 0)   # idempotent
 
 
 if __name__ == '__main__':
