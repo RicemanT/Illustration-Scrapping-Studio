@@ -15,6 +15,7 @@ import app.db as db
 from app.services.planner_select import PlannerConfig, rejection
 from app.services.planner_store import connect, now
 from app.services.post_dates import post_year, sortable_time
+from app.services import folder_guard
 from app.services.tags import AESTHETIC_MARKS, QUALITY_MARKS, TagService
 
 POST_URLS = {'danbooru': 'https://danbooru.donmai.us/posts/{}', 'e621': 'https://e621.net/posts/{}',
@@ -273,6 +274,58 @@ def commit_marks(folder_id: int) -> int:
     return len(changed)
 
 
+def _accepted_folders() -> dict[int, str]:
+    """{folder_id: accepted_at} for every accepted planner folder."""
+    conn = connect()
+    try:
+        return {r['folder_id']: r['completed_at'] for r in conn.execute(
+            """SELECT DISTINCT d.folder_id, a.completed_at FROM delivery_item d JOIN artist a ON a.id=d.artist_id
+               WHERE d.folder_id IS NOT NULL AND a.completed_at IS NOT NULL""")}
+    finally:
+        conn.close()
+
+
+def sync_frozen() -> int:
+    """Startup: accepted planner folders are frozen in the library database (folders accepted before the guard)."""
+    accepted = _accepted_folders()
+    main = db.get_connection()
+    try:
+        changed = 0
+        for folder_id, frozen in main.execute('SELECT id, frozen_at FROM collection').fetchall():
+            want = accepted.get(folder_id)
+            if bool(frozen) != bool(want):
+                folder_guard.set_frozen(main, folder_id, want)
+                changed += 1
+        main.commit()
+        return changed
+    finally:
+        main.close()
+
+
+def late_images(folder_ids: list[int] | None = None) -> dict[int, list[int]]:
+    """Images that reached accepted folders after acceptance (sync, delivery or frame leaks)."""
+    accepted = _accepted_folders()
+    if folder_ids is not None:
+        accepted = {f: stamp for f, stamp in accepted.items() if f in set(folder_ids)}
+    main = db.get_connection()
+    try:
+        return folder_guard.late_images(main, accepted)
+    finally:
+        main.close()
+
+
+def remove_late_images(folder_id: int, library) -> dict:
+    """Move the folder's late images to recovery storage (undo with the returned token)."""
+    import uuid
+    from app.services.collections import CollectionService
+    ids = late_images([folder_id]).get(folder_id, [])
+    if not ids:
+        return {'removed': 0, 'undo_token': None}
+    token = uuid.uuid4().hex
+    removed = CollectionService().remove_images(folder_id, ids, library, token)
+    return {'removed': len(removed), 'undo_token': token}
+
+
 def set_complete_all(complete: bool) -> dict:
     """Accept (or reopen) every planner collection whose state differs; returns how many changed."""
     conn = connect()
@@ -327,6 +380,7 @@ def set_complete(folder_id: int, complete: bool) -> dict:
     try:
         main.execute('UPDATE image SET review_status=? WHERE folder_id=? AND review_status=?',
                      ('accepted', folder_id, 'pending') if complete else ('pending', folder_id, 'accepted'))
+        folder_guard.set_frozen(main, folder_id, stamp if complete else None)   # accepted: no new images from anywhere
         main.commit()
     finally:
         main.close()

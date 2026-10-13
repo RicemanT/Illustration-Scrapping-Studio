@@ -352,6 +352,9 @@ class CollectionService:
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "images": records,
             }, indent=2), encoding="utf-8")
+            from app.services import folder_guard
+            # Removed by hand: sync and delivery must not bring these posts (or their other frames) back.
+            folder_guard.record_removed_images(conn, collection_id, [record["image_id"] for record in records])
             conn.execute(
                 f"DELETE FROM collection_image WHERE collection_id = ? AND image_id IN ({placeholders})",
                 [collection_id, *image_ids],
@@ -476,6 +479,8 @@ class CollectionService:
                     collection_id, record["image_id"], record["added_at"],
                     record.get("review_status", "pending"), record.get("selected", 1), record.get("rejection_reason"),
                 ))
+            from app.services import folder_guard
+            folder_guard.clear_restored_images(conn, collection_id, [record["image_id"] for record in records])
             conn.commit()
         except Exception:
             conn.rollback()

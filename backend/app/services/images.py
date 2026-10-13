@@ -206,6 +206,12 @@ class ImageService:
         # dimensions, thumbnails, and duplicate fingerprints are computed.
         from app.services.settings import get_processing_settings
         from app.services.server import require_space
+        from app.services import folder_guard
+        conn = get_connection()
+        try:
+            folder_guard.require_open(conn, collection_id)   # accepted folders take no new images, whatever the path
+        finally:
+            conn.close()
         require_space(self.library_path)
         post = prepare_training_image(temp_path, post, get_processing_settings())
 
@@ -324,9 +330,12 @@ class ImageService:
         cursor = conn.cursor()
 
         try:
+            from app.services import folder_guard
             owner = cursor.execute("SELECT folder_id FROM image WHERE id = ?", (image_id,)).fetchone()
             if not owner:
                 raise LookupError("Image not found")
+            if owner[0] is None:
+                folder_guard.require_open(conn, collection_id)
             if owner[0] is not None and int(owner[0]) != int(collection_id):
                 raise ValueError("Images cannot be shared between folders")
             cursor.execute("UPDATE image SET folder_id = ? WHERE id = ? AND folder_id IS NULL", (collection_id, image_id))
@@ -525,10 +534,13 @@ class ImageService:
     @pair_write
     def delete_image(self, image_id: int) -> bool:
         conn = get_connection()
-        row = conn.execute("SELECT path, thumb_path FROM image WHERE id = ?", (image_id,)).fetchone()
+        row = conn.execute("SELECT path, thumb_path, folder_id FROM image WHERE id = ?", (image_id,)).fetchone()
         if not row:
             conn.close()
             return False
+        if row[2] is not None:
+            from app.services import folder_guard
+            folder_guard.record_removed_images(conn, row[2], [image_id])   # sync and delivery will not bring it back
         conn.execute("DELETE FROM image WHERE id = ?", (image_id,))
         conn.commit()
         conn.close()

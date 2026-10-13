@@ -135,7 +135,7 @@ def _enabled_pairs() -> list[tuple[int, str, str]]:
     rows = conn.execute("""
         SELECT c.id, c.name, cs.provider
         FROM collection c JOIN collection_source cs ON cs.collection_id = c.id
-        WHERE c.enabled = 1 AND cs.enabled = 1 AND NOT EXISTS (SELECT 1 FROM group_blocked_folder b WHERE b.folder_id=c.id) ORDER BY c.name, cs.provider
+        WHERE c.enabled = 1 AND cs.enabled = 1 AND c.frozen_at IS NULL AND NOT EXISTS (SELECT 1 FROM group_blocked_folder b WHERE b.folder_id=c.id) ORDER BY c.name, cs.provider
     """).fetchall()
     conn.close()
     return [(int(row[0]), row[1], row[2]) for row in rows]
@@ -188,10 +188,14 @@ async def _run_all_job(job_id: str) -> None:
                 conn = get_connection()
                 try:
                     protected = conn.execute('SELECT 1 FROM group_blocked_folder WHERE folder_id=?', (folder_id,)).fetchone()
+                    accepted = conn.execute('SELECT frozen_at FROM collection WHERE id=?', (folder_id,)).fetchone()
                 finally:
                     conn.close()
                 if protected:
                     _append_log(job, {'message': f'Skipped protected collection: {folder_name}'})
+                    continue
+                if accepted and accepted[0]:
+                    _append_log(job, {'message': f'Skipped accepted collection: {folder_name}'})
                     continue
                 if 'group_id' in params:
                     conn = get_connection()
@@ -264,6 +268,17 @@ async def resume_unfinished_jobs() -> int:
             job.update(status="canceled", finished_at=_now())
             save_job(job)
             continue
+        if job.get("kind") == "folder" and job.get("folder_id") is not None:
+            conn = get_connection()
+            try:
+                row = conn.execute("SELECT frozen_at FROM collection WHERE id = ?", (int(job["folder_id"]),)).fetchone()
+            finally:
+                conn.close()
+            if row and row[0]:
+                # Queued before the folder was accepted: it must not add images now.
+                job.update(status="canceled", finished_at=_now(), error="The folder was accepted; its queued sync was dropped")
+                save_job(job)
+                continue
         job.update(status="queued", trigger="resumed", started_at=None, finished_at=None)
         job["progress"] = {**job.get("progress", {}), "phase": "queued", "message": "Resuming after backend restart", "current_file": None, "active_files": []}
         save_job(job)
@@ -355,7 +370,10 @@ async def sync_folder(folder_id: int, provider: str, limit: int = 20, sort: str 
         "SELECT enabled FROM collection_source WHERE collection_id = ? AND provider = ?",
         (folder_id, provider),
     ).fetchone()
+    accepted = conn.execute("SELECT frozen_at FROM collection WHERE id = ?", (folder_id,)).fetchone()
     conn.close()
+    if accepted and accepted[0]:
+        raise HTTPException(status_code=409, detail="This folder is accepted; it takes no new images. Reopen it to sync.")
     if not source:
         raise HTTPException(status_code=404, detail="Folder source not found")
     if not source[0]:
@@ -472,7 +490,7 @@ async def sync_group(group_id: int, limit: int = 20, sort: str = 'latest',
                 raise HTTPException(409, reason)
         pairs = [list(row) for row in conn.execute('''SELECT c.id,c.name,cs.provider
             FROM collection c JOIN collection_source cs ON cs.collection_id=c.id
-            WHERE c.group_id=? AND c.enabled=1 AND cs.enabled=1 AND cs.provider=? AND NOT EXISTS (SELECT 1 FROM group_blocked_folder b WHERE b.folder_id=c.id) ORDER BY c.name,c.id''',
+            WHERE c.group_id=? AND c.enabled=1 AND cs.enabled=1 AND cs.provider=? AND c.frozen_at IS NULL AND NOT EXISTS (SELECT 1 FROM group_blocked_folder b WHERE b.folder_id=c.id) ORDER BY c.name,c.id''',
             (group_id, provider))]
     finally:
         conn.close()

@@ -390,6 +390,9 @@ def folders() -> dict:
         listed = _planner_folders(planner)
         row = planner.execute("SELECT config FROM run WHERE status='completed' ORDER BY id DESC LIMIT 1").fetchone()
         default_target = json.loads(row['config']).get('max_images') if row else None
+        from app.services.folder_guard import late_images
+        late = late_images(main, {folder_id: folder['completed_at'] for folder_id, folder in listed.items()
+                                  if folder['completed_at'] and folder_id in existing})
         items = []
         for folder_id, folder in listed.items():
             info = existing.get(folder_id)
@@ -397,9 +400,11 @@ def folders() -> dict:
                 continue
             items.append({'folder_id': folder_id, 'name': info['name'], 'group': info['group_name'], 'group_id': info['group_id'],
                           'site': folder['site'], 'artist': folder['display_name'], 'images': info['images'],
-                          'target': default_target, 'completed_at': folder['completed_at']})
+                          'target': default_target, 'completed_at': folder['completed_at'],
+                          'late': len(late.get(folder_id, []))})   # images added after acceptance (leaks)
         items.sort(key=lambda item: ((item['group'] or '').casefold(), item['name'].casefold()))
         return {'items': items, 'accepted': sum(bool(item['completed_at']) for item in items), 'total': len(items),
+                'late_folders': sum(bool(item['late']) for item in items), 'late_images': sum(item['late'] for item in items),
                 'images': sum(item['images'] for item in items),
                 'accepted_images': sum(item['images'] for item in items if item['completed_at'])}
     finally:

@@ -130,6 +130,14 @@ function CollectionView() {
     retry: false,
   });
   const folderComplete = Boolean(plannerFolder?.completed_at);
+  // Images that reached the folder after it was accepted (a sync, a delivery or re-extracted video frames).
+  const lateImages = useQuery({
+    queryKey: ['planner-late', id, collection?.image_count],
+    queryFn: async () => (await api.planner.lateImages(id)).data.image_ids,
+    enabled: folderComplete,
+    retry: false,
+  });
+  const lateIds = folderComplete ? (lateImages.data || []) : [];
   const marks = plannerFolder?.marks;
   const unviewed = marks ? Math.max(0, marks.total - marks.viewed) : 0;
   const markSummary = marks ? ['masterpiece', 'best quality', 'low quality', 'very aesthetic', 'aesthetic'].filter(tag => marks[tag]).map(tag => `${marks[tag]} ${tag}`).join(' · ') : '';
@@ -243,6 +251,20 @@ function CollectionView() {
       refreshFolderViews(queryClient, id);
       queryClient.invalidateQueries({ queryKey: ['folder-image-recovery', id] });
       queryClient.invalidateQueries({ queryKey: ['planner-folder', id] });
+    },
+  });
+
+  const removeLateMutation = useMutation({
+    meta: { successMessage: 'Late images moved to recovery' },
+    mutationFn: () => api.planner.removeLateImages(id),
+    onSuccess: (response) => {
+      if (response.data.undo_token) setUndoToken(response.data.undo_token);
+      setSelected(new Set());
+      refreshFolderViews(queryClient, id);
+      queryClient.invalidateQueries({ queryKey: ['folder-image-recovery', id] });
+      queryClient.invalidateQueries({ queryKey: ['planner-folder', id] });
+      queryClient.invalidateQueries({ queryKey: ['planner-late', id] });
+      queryClient.invalidateQueries({ queryKey: ['tracker-folders'] });
     },
   });
 
@@ -380,6 +402,19 @@ function CollectionView() {
             {qualityHere && <span role="status" className={`max-w-sm text-right text-[11px] ${quality.job.status === 'failed' ? 'text-red-300' : 'text-slate-400'}`}>{describeQualityJob(quality.job)}</span>}
             {quality.start.isError && <span className="text-xs text-red-300">{quality.start.error.response?.data?.detail || quality.start.error.message}</span>}
             {completeMutation.isError && <span className="text-xs text-red-300">{completeMutation.error.response?.data?.detail || completeMutation.error.message}</span>}
+            {lateIds.length > 0 && <div role="alert" className="mt-1 max-w-sm rounded border border-amber-600/70 bg-amber-950/40 p-2 text-right text-xs text-amber-100">
+              <div className="font-semibold">{lateIds.length} image{lateIds.length === 1 ? ' was' : 's were'} added after you accepted this folder</div>
+              <div className="mt-0.5 text-amber-200/80">By a sync, a delivery or re-extracted video frames, not by you. Accepted folders are now locked against this.</div>
+              <div className="mt-1.5 flex justify-end gap-2">
+                <button type="button" onClick={() => selectMany(lateIds)} className="rounded border border-amber-600/60 px-2 py-0.5 hover:bg-amber-900/40">Select them</button>
+                <button type="button" disabled={removeLateMutation.isPending}
+                  onClick={() => { if (confirm(`Move the ${lateIds.length} image(s) added after acceptance to recovery? "Recover last deletion" brings them back.`)) removeLateMutation.mutate(); }}
+                  className="rounded bg-amber-700 px-2 py-0.5 font-semibold text-white hover:bg-amber-600 disabled:opacity-50">
+                  {removeLateMutation.isPending ? 'Removing...' : 'Remove them'}
+                </button>
+              </div>
+              {removeLateMutation.isError && <div className="mt-1 text-red-300">{removeLateMutation.error.response?.data?.detail || removeLateMutation.error.message}</div>}
+            </div>}
           </div>}
           <button
             onClick={handleDelete}
@@ -418,7 +453,8 @@ function CollectionView() {
                     {source.last_cursor && <span className="text-[11px] text-slate-400">Cursor {source.last_cursor.substring(0, 8)}...</span>}
                     <button
                       onClick={() => handleSync(source.provider)}
-                      disabled={!source.enabled || folderSyncing || !source.available || !source.supported}
+                      disabled={!source.enabled || folderSyncing || !source.available || !source.supported || folderComplete}
+                      title={folderComplete ? 'Accepted folders take no new images. Reopen the folder to sync it.' : undefined}
                       className="min-w-28 rounded bg-[#344a73] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#405b88] disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       {syncTargetsThisFolder && !jobFinished ? 'Syncing...' : activeAllJob ? 'Batch running...' : 'Sync now'}

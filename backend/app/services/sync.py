@@ -91,14 +91,20 @@ class SyncService:
             if legacy_output_filter and not static_original_allowed and not ({"jpg", "webp"} & allowed_formats):
                 return {"status": "skipped", "message": f"Skipped {post.remote_id}: folder does not allow JPEG/WebP training output", "transfer": None}
 
+            from app.services import folder_guard
             conn = get_connection()
-            rejected = conn.execute(
-                "SELECT 1 FROM rejected_post WHERE provider = ? AND remote_id = ?",
-                (post.provider, post.remote_id),
-            ).fetchone()
-            conn.close()
+            try:
+                rejected = conn.execute(
+                    "SELECT 1 FROM rejected_post WHERE provider = ? AND remote_id = ?",
+                    (post.provider, post.remote_id),
+                ).fetchone()
+                guarded = folder_guard.skip_reason(conn, collection_id, post.provider, post.remote_id, automatic=True)
+            finally:
+                conn.close()
             if rejected:
                 return {"status": "skipped", "message": f"Skipped rejected post {post.remote_id}", "transfer": None}
+            if guarded:
+                return {"status": "skipped", "message": guarded, "transfer": None}
 
             existing_source_id = await run_blocking_safely(
                 self.image_service.check_existing_by_source,

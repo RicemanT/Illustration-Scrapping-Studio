@@ -506,6 +506,18 @@ def init_db():
         WHERE derived_from_preview = 1 AND derived_media_source IS NULL
     """)
     _ensure_column(cursor, "collection_image", "review_status", "TEXT NOT NULL DEFAULT 'pending'")
+    # Curation guard (services/folder_guard.py): accepted folders take no new images, and posts removed by hand
+    # are not brought back by sync or delivery.
+    _ensure_column(cursor, "collection", "frozen_at", "TEXT")
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS folder_removed_source (
+            folder_id INTEGER NOT NULL,
+            provider TEXT NOT NULL,
+            remote_id TEXT NOT NULL,
+            removed_at TEXT NOT NULL,
+            PRIMARY KEY (folder_id, provider, remote_id)
+        )
+    """)
     _ensure_column(cursor, "collection_image", "selected", "INTEGER NOT NULL DEFAULT 1")
     _ensure_column(cursor, "collection_image", "rejection_reason", "TEXT")
     _ensure_column(cursor, "image_source", "source_url", "TEXT")

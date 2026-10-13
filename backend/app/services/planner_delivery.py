@@ -276,7 +276,7 @@ async def _deliver_site(delivery_id: int, site: str, progress: dict, stop: async
             file_progress = {'stage': 'starting', 'remote_id': post.remote_id, 'format': post.format}
             try:
                 result = await ingest_post(provider, post, item['folder_id'], filters, image_service, library,
-                                           file_progress.update, file_progress)
+                                           file_progress.update, file_progress, automatic=True)
                 _set_item(delivery_id, item, 'done' if result['new_count'] else 'skipped', result['new_count'])
             except StaticPreviewUnavailable as exc:
                 _set_item(delivery_id, item, 'filtered', error=str(exc)[:500])

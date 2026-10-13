@@ -41,7 +41,7 @@ function Sidebar({ variant = 'column' }) {
   const filteredCollections = collections.filter((c) =>
     (c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
     c.query.toLowerCase().includes(searchQuery.toLowerCase()))
-    && !(hideAccepted && reviewState.get(c.id)?.completed_at && location.pathname !== `/folder/${c.id}`)
+    && !(hideAccepted && reviewState.get(c.id)?.completed_at && !reviewState.get(c.id)?.late && location.pathname !== `/folder/${c.id}`)
   );
 
   return (
@@ -79,6 +79,9 @@ function Sidebar({ variant = 'column' }) {
           <input type="checkbox" checked={hideAccepted} onChange={(e) => toggleHideAccepted(e.target.checked)} />
           Hide accepted ({review.data.accepted}/{review.data.total})
         </label>}
+        {review.data?.late_folders > 0 && <div className="border-b border-[#202a34] px-4 py-2 text-xs text-amber-300" title="Accepted folders that received images after you accepted them. Open one to review or remove them.">
+          ⚠ {review.data.late_images} late image{review.data.late_images === 1 ? '' : 's'} in {review.data.late_folders} accepted folder{review.data.late_folders === 1 ? '' : 's'}
+        </div>}
 
         {/* Folders List */}
         <div className="flex-1 overflow-y-auto p-4">
@@ -101,7 +104,7 @@ function Sidebar({ variant = 'column' }) {
               {section.id && <Link to={`/groups/${section.id}`} className="block text-xs text-blue-300 mb-2">Manage / scrape group</Link>}
               <div className="space-y-1">{members.map((collection) => (
                 <Link key={collection.id} to={`/folder/${collection.id}`} className={`block px-3 py-2 rounded-lg hover:bg-[#1b2539] ${location.pathname === `/folder/${collection.id}` ? 'bg-[#1b2539] text-blue-200' : 'text-slate-400'}`}>
-                  <div className="flex items-center gap-1 font-medium"><span className="truncate">{collection.name}</span>{reviewState.get(collection.id)?.completed_at && <span className="text-emerald-400" title="Accepted">✓</span>}</div>
+                  <div className="flex items-center gap-1 font-medium"><span className="truncate">{collection.name}</span>{reviewState.get(collection.id)?.completed_at && <span className="text-emerald-400" title="Accepted">✓</span>}{reviewState.get(collection.id)?.late > 0 && <span className="text-amber-300" title={`${reviewState.get(collection.id).late} image(s) added after acceptance`}>⚠{reviewState.get(collection.id).late}</span>}</div>
                   <div className="text-xs text-slate-400">{collection.image_count} images / {collection.type === 'tag' ? 'query' : collection.type}
                     {captioned(collection.id) > 0 && <span className={captioned(collection.id) >= collection.image_count ? 'text-emerald-400' : 'text-sky-300'}
                       title={`Images with a ${captionCounts.data?.suffix || 'caption'} file`}> · {captioned(collection.id)} captioned</span>}</div>

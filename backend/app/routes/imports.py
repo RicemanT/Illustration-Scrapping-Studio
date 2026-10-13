@@ -124,6 +124,14 @@ async def _run_import(job_id: str, batch_id: int, collection_id: int, provider_n
         folder_row = conn.execute("SELECT filters FROM collection WHERE id = ?", (collection_id,)).fetchone()
         conn.close()
         folder_filters = json.loads(folder_row[0] or "{}") if folder_row else {}
+        # Importing posts yourself (an import batch, or accepting wildcards) brings back posts removed by hand.
+        from app.services import folder_guard
+        conn = get_connection()
+        try:
+            folder_guard.clear_posts(conn, collection_id, provider_name, remote_ids)
+            conn.commit()
+        finally:
+            conn.close()
         provider = create_provider(provider_name)
         started_at = datetime.now(timezone.utc).isoformat()
         workers = get_parallel_workers()

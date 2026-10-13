@@ -20,12 +20,24 @@ MOTION_CANDIDATES = VIDEO_FORMATS | ARCHIVE_FORMATS | {"gif", "webp", "png", "av
 
 
 async def ingest_post(provider, post: RemotePost, folder_id: int, folder_filters: dict, image_service, library: Path,
-                      report_file: Callable[[dict], None], file_progress: dict) -> dict:
+                      report_file: Callable[[dict], None], file_progress: dict, automatic: bool = False) -> dict:
     """Return image_id, new_count, message and the final transfer state.
+
+    `automatic` (Dataset Planner delivery): posts removed from the folder by hand are skipped. Accepted folders
+    are skipped either way (services/folder_guard.py).
 
     Raises StaticPreviewUnavailable when every original-quality frame is
     unusable; other errors propagate to the caller's per-item handling.
     """
+    from app.db import get_connection
+    from app.services import folder_guard
+    conn = get_connection()
+    try:
+        reason = folder_guard.skip_reason(conn, folder_id, post.provider, post.remote_id, automatic)
+    finally:
+        conn.close()
+    if reason:
+        return {"image_id": None, "new_count": 0, "transfer": None, "message": reason, "guarded": True}
     fmt = normalized_format(post.format)
     image_id = await run_blocking_safely(image_service.check_existing_by_source, post.provider, post.remote_id, folder_id)
     if image_id and fmt not in STATIC_REUSE_EXCLUDED:

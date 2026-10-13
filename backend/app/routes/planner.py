@@ -549,6 +549,26 @@ def accept_candidates(folder_id: int, request: AcceptRequest):
         raise HTTPException(409, str(exc)) from exc
 
 
+@router.get('/folders/late-images')
+def late_images_summary():
+    """Accepted folders that received images after they were accepted."""
+    late = curation.late_images()
+    return {'folders': {str(folder_id): len(ids) for folder_id, ids in late.items()}, 'images': sum(len(ids) for ids in late.values())}
+
+
+@router.get('/folders/{folder_id}/late-images')
+def folder_late_images(folder_id: int):
+    return {'image_ids': curation.late_images([folder_id]).get(folder_id, [])}
+
+
+@router.post('/folders/{folder_id}/late-images/remove')
+def remove_folder_late_images(folder_id: int):
+    try:
+        return curation.remove_late_images(folder_id, LIBRARY_PATH)
+    except (ValueError, FileExistsError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
 @router.post('/folders/complete-all')
 def complete_all_folders(request: CompleteRequest):
     """Accept or reopen every planner collection at once."""
