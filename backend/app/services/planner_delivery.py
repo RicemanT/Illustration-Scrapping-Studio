@@ -126,7 +126,10 @@ def _existing_folders() -> dict[tuple[str, int], int]:
     return {key: folder for key, folder in latest.items() if folder in alive}
 
 
-def create_delivery(run_id: int, group_prefix: str, library: Path) -> dict:
+def create_delivery(run_id: int, group_prefix: str, library: Path, new_artists_only: bool = False) -> dict:
+    """`new_artists_only`: download only artists without a collection yet. A batch plan keeps artists with
+    collections in scope so their characters count towards the shared goals; this keeps its download out of
+    folders that are still being curated."""
     group_prefix = ' '.join(group_prefix.split()) or 'Planner'
     if _task and not _task.done():
         raise RuntimeError('A delivery is already running')
@@ -146,6 +149,12 @@ def create_delivery(run_id: int, group_prefix: str, library: Path) -> dict:
         conn.close()
     if not selections:
         raise ValueError('This run selected no images')
+    if new_artists_only:
+        existing = _existing_folders()
+        selections = [r for r in selections if (r['site'], r['artist_id']) not in existing]
+        if not selections:
+            raise ValueError('Every artist in this run already has a collection; untick "Only artists without a collection" '
+                             'to download into existing collections')
     by_site = defaultdict(dict)
     for row in selections:
         by_site[row['site']][row['artist_id']] = {'artist_id': row['artist_id'], 'tag': row['tag'], 'display_name': row['display_name']}

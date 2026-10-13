@@ -148,6 +148,10 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(config['dataset']['caption']['protected_tags_file'], '@DATA_DIR@/protected_tags.txt')
             self.assertTrue(config['sampling']['prompts'][0].lower().startswith('drawn by'))
 
+        # Only artists without a collection: every artist of this run has one, so there is nothing to download.
+        with self.assertRaises(ValueError):
+            delivery.create_delivery(self.run_id, 'Planner', self.root, new_artists_only=True)
+
         # A second delivery of the same run reuses the folders and downloads nothing new.
         again = delivery.create_delivery(self.run_id, 'Planner', self.root)
         await delivery.run_delivery(again['id'], asyncio.Event(), self.factory, self.root)

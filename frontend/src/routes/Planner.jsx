@@ -334,6 +334,7 @@ const DELIVERY_STATES = ['done', 'skipped', 'filtered', 'missing', 'error', 'pen
 
 function DeliveryPanel({ status, runId, onChange }) {
   const [prefix, setPrefix] = usePersisted('deliveryPrefix', 'Planner');
+  const [newOnly, setNewOnly] = usePersisted('deliveryNewArtistsOnly', true);
   const deliveryId = status?.delivery_id;
   const job = useQuery({ queryKey: ['planner-delivery', deliveryId], enabled: Boolean(deliveryId), queryFn: async () => (await api.planner.delivery(deliveryId)).data,
     refetchInterval: (query) => ACTIVE.includes(query.state.data?.status) ? 2000 : false });
@@ -342,7 +343,7 @@ function DeliveryPanel({ status, runId, onChange }) {
   const run = status?.runs?.find((item) => item.id === runId);
   const harvesting = ACTIVE.includes(status?.harvest_job?.status);
   const after = () => { onChange(); job.refetch(); };
-  const start = useMutation({ mutationFn: () => api.planner.deliver(runId, prefix), onSuccess: after });
+  const start = useMutation({ mutationFn: () => api.planner.deliver(runId, prefix, newOnly), onSuccess: after });
   const resume = useMutation({ mutationFn: () => api.planner.resumeDelivery(deliveryId), onSuccess: after });
   const errorCount = Object.entries(data?.counts || {}).filter(([key]) => key.endsWith(':error')).reduce((sum, [, n]) => sum + n, 0);
   const problemCount = Object.entries(data?.counts || {}).filter(([key]) => /:(error|missing|filtered|skipped)$/.test(key)).reduce((sum, [, n]) => sum + n, 0);
@@ -364,6 +365,8 @@ function DeliveryPanel({ status, runId, onChange }) {
     <p className="text-xs text-slate-400">Downloads the chosen run into collections: one group per site named “&lt;prefix&gt; &lt;site&gt;” and one artist collection per artist, with the usual sidecars, artist trigger, duplicate checks and frame extraction. Planner collections are protected from Sync All, scheduled and group syncs. Metadata is refreshed in batches of 100 posts; downloads use the normal request pace and worker count, so large plans take days and need plenty of disk space. Stopping keeps finished downloads, and Resume continues the rest. Delivering a run again reuses its collections and skips posts already downloaded.</p>
     <div className="flex flex-wrap items-end gap-2 text-sm">
       <label className="text-xs text-slate-400">Group name prefix<input className={`${field} block w-40`} value={prefix} maxLength={80} onChange={(event) => setPrefix(event.target.value)} /></label>
+      <label className="flex items-center gap-1.5 text-xs text-slate-300" title="A batch plan keeps artists that already have collections, so their characters count towards the goals. Ticked, only artists without a collection are downloaded, so folders you are still curating get nothing new.">
+        <input type="checkbox" checked={newOnly} onChange={(event) => setNewOnly(event.target.checked)} />Only artists without a collection</label>
       <button className={button} disabled={!run || run.status !== 'completed' || active || harvesting || start.isPending || !prefix.trim()} onClick={() => start.mutate()}>Download run #{runId || '—'}</button>
       {active && <button className={quiet} disabled={cancel.isPending || data.status === 'cancelling'} onClick={() => cancel.mutate()}>Stop</button>}
       {data && !active && (data.status !== 'completed' || errorCount > 0) && <button className={quiet} disabled={resume.isPending || harvesting} onClick={() => resume.mutate()}>{data.status === 'completed' ? `Retry ${number(errorCount)} failed` : `Resume download #${data.id}`}</button>}

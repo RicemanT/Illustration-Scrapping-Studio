@@ -221,7 +221,7 @@ export const api = {
     prioritySeries: (data) => client.post('/planner/characters/series', data),
     seriesStatus: () => client.get('/planner/characters/series'),
     clearPriority: () => client.delete('/planner/characters/priority'),
-    deliver: (runId, groupPrefix) => client.post(`/planner/runs/${runId}/deliver`, { group_prefix: groupPrefix }),
+    deliver: (runId, groupPrefix, newArtistsOnly = false) => client.post(`/planner/runs/${runId}/deliver`, { group_prefix: groupPrefix, new_artists_only: newArtistsOnly }),
     delivery: (id) => client.get(`/planner/deliveries/${id}`),
     resumeDelivery: (id) => client.post(`/planner/deliveries/${id}/resume`),
     deliveryProblems: (id) => client.get(`/planner/deliveries/${id}/problems`),

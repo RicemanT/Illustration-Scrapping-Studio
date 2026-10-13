@@ -387,6 +387,7 @@ def export(run_id: int):
 
 class DeliveryRequest(BaseModel):
     group_prefix: str = Field('Planner', min_length=1, max_length=80, description='Groups are named "<prefix> <site>"')
+    new_artists_only: bool = Field(False, description='Download only artists that have no collection yet')
 
 
 @router.post('/runs/{run_id}/deliver')
@@ -394,7 +395,7 @@ async def start_delivery(run_id: int, request: DeliveryRequest):
     if harvest._task and not harvest._task.done():
         raise HTTPException(409, 'Wait for the harvest to finish before downloading')
     try:
-        job = delivery.create_delivery(run_id, request.group_prefix, LIBRARY_PATH)
+        job = delivery.create_delivery(run_id, request.group_prefix, LIBRARY_PATH, request.new_artists_only)
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
     except (ValueError, RuntimeError) as exc:
