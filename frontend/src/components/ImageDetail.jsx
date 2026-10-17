@@ -7,6 +7,7 @@ import { MARKS, applyMark, isActive, markFor, markTags, marksOf } from './qualit
 import { describeAuto } from './qualityJob';
 import CaptionEditor from './CaptionEditor';
 import AnalysisDetails from './AnalysisDetails';
+import { AnnotationPanel, BoxOverlay, boxesOf } from './MossAnnotations';
 
 // Unambiguous dates ("Mar 2, 2024"), whatever the browser's day/month order.
 const formatDate = (value) => {
@@ -23,6 +24,14 @@ function ImageDetail({ image, onClose, onPrevious, onNext, position, total, mark
   const dialog = useRef(null);
   const [showInfo, setShowInfo] = useState(() => { try { return localStorage.getItem('artist.viewerInfo') !== 'false'; } catch { return true; } });
   const [zoom, setZoom] = useState(false);
+  const [showBoxes, setShowBoxes] = useState(() => { try { return localStorage.getItem('artist.viewerBoxes') !== 'false'; } catch { return true; } });
+  const [boxHighlight, setBoxHighlight] = useState(null);
+  const { data: annotations } = useQuery({
+    queryKey: ['image-annotations', image.id],
+    queryFn: async () => (await api.images.annotations(image.id)).data,
+    staleTime: 30000,
+  });
+  const boxes = boxesOf(annotations);
   const [imageLoading, setImageLoading] = useState(true);
   const [imageFailed, setImageFailed] = useState(false);
   const { data: fullImage, isLoading: detailsLoading, error: detailsError, refetch } = useQuery({
@@ -177,6 +186,9 @@ function ImageDetail({ image, onClose, onPrevious, onNext, position, total, mark
         <button aria-label="Previous image" disabled={!onPrevious || pending} onClick={() => leave(onPrevious)} className="rounded border border-slate-700 px-3 py-1 disabled:opacity-40">Previous</button>
         <button aria-label="Next image" disabled={!onNext || pending} onClick={() => leave(onNext)} className="rounded border border-slate-700 px-3 py-1 disabled:opacity-40">Next</button>
         <button onClick={() => setZoom(value => !value)} className="rounded border border-slate-700 px-3 py-1">{zoom ? 'Fit image' : 'Actual size'}</button>
+        {boxes.length > 0 && <button aria-pressed={showBoxes} title="Layout and watermark boxes from the MOSS captioning script"
+          onClick={() => setShowBoxes((value) => { try { localStorage.setItem('artist.viewerBoxes', String(!value)); } catch { /* storage unavailable */ } return !value; })}
+          className={`rounded border px-3 py-1 ${showBoxes ? 'border-sky-600 text-sky-200' : 'border-slate-700'}`}>{showBoxes ? 'Hide boxes' : `Boxes (${boxes.length})`}</button>}
         <button aria-expanded={showInfo} onClick={() => setShowInfo(value => !value)} className="rounded border border-slate-700 px-3 py-1">{showInfo ? 'Hide information' : 'Show information'}</button>
         <button aria-label="Close image viewer" onClick={() => leave(onClose)} disabled={pending} className="rounded border border-slate-700 px-3 py-1">Close</button>
       </header>
@@ -184,10 +196,13 @@ function ImageDetail({ image, onClose, onPrevious, onNext, position, total, mark
       <div className={`relative flex-1 min-w-0 min-h-0 overflow-auto p-3 ${zoom ? '' : 'flex items-center justify-center'}`}>
         {imageLoading && !imageFailed && <span role="status" className="absolute top-3 left-3 rounded bg-black/70 p-2 text-xs">Loading image...</span>}
         {imageFailed && <p role="alert">Image unavailable. Check File locations or run Dataset QA.</p>}
-        <img src={backendAssetUrl(`/static/images/${displayImage.path}`)} alt={`Image ${displayImage.id}`}
-          onLoad={() => setImageLoading(false)} onError={() => { setImageLoading(false); setImageFailed(true); }}
-          style={zoom ? { width: displayImage.width, maxWidth: 'none', height: 'auto' } : undefined}
-          className={imageFailed ? 'hidden' : zoom ? 'block' : 'max-w-full max-h-full object-contain'} />
+        <div className={`relative ${zoom ? 'inline-block' : 'inline-flex max-h-full max-w-full'}`}>
+          <img src={backendAssetUrl(`/static/images/${displayImage.path}`)} alt={`Image ${displayImage.id}`}
+            onLoad={() => setImageLoading(false)} onError={() => { setImageLoading(false); setImageFailed(true); }}
+            style={zoom ? { width: displayImage.width, maxWidth: 'none', height: 'auto' } : undefined}
+            className={imageFailed ? 'hidden' : zoom ? 'block' : 'max-w-full max-h-full object-contain'} />
+          {showBoxes && !imageFailed && !imageLoading && <BoxOverlay boxes={boxes} width={displayImage.width} height={displayImage.height} highlight={boxHighlight} onHover={setBoxHighlight} />}
+        </div>
       </div>
       <div hidden={!showInfo} className="w-full md:w-[380px] lg:w-[440px] max-h-[50vh] md:max-h-none viewer-info shrink-0 overflow-y-auto border-l border-slate-700">
         {detailsLoading && <p role="status" className="p-3 text-sm">Loading metadata...</p>}
@@ -329,6 +344,7 @@ function ImageDetail({ image, onClose, onPrevious, onNext, position, total, mark
           </div>
 
           {/* Natural-language caption file beside the image */}
+          <AnnotationPanel annotations={annotations} highlight={boxHighlight} onHover={setBoxHighlight} />
           <CaptionEditor imageId={image.id} dirtyRef={captionDirty}
             onSavedNext={onNext ? () => navigation.current.leave(navigation.current.onNext) : undefined} />
 

@@ -83,6 +83,7 @@ export const api = {
     delete: (id) => client.delete(`/images/${id}`),
     decoderStatus: () => client.get('/images/media/decoder-status'),
     caption: (id) => client.get(`/images/${id}/caption`),
+    annotations: (id) => client.get(`/images/${id}/annotations`),
     saveCaption: (id, data) => client.put(`/images/${id}/caption`, data),
     deleteCaption: (id, baseVersion) => client.delete(`/images/${id}/caption`, { params: { base_version: baseVersion ?? undefined } }),
   },

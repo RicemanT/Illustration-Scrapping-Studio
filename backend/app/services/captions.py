@@ -8,6 +8,7 @@ copies the previous version to `<library>/.trash/captions/`.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -67,6 +68,40 @@ def caption_relative(relative: str, suffix: str) -> str:
     """Library-relative caption path for a library-relative image path."""
     path = PurePosixPath(str(relative).replace('\\', '/'))
     return str(path.with_name(path.stem + suffix))
+
+
+# MOSS-Image annotations written by the captioning script (moss-caption.py) next to each image: captions at
+# three lengths with watermark boxes, the layout (summary + boxed items) and the cached OCR lines. They travel
+# with their image like its .txt and caption file.
+ANNOTATION_SUFFIXES = {"moss": "_moss.json", "layout": "_layout.json", "ocr": "_ocr.json"}
+
+
+def annotation_relatives(relative: str) -> list[str]:
+    """Library-relative paths of an image's annotation files (whether or not they exist)."""
+    return [caption_relative(relative, suffix) for suffix in ANNOTATION_SUFFIXES.values()]
+
+
+def read_annotations(image_id: int) -> dict:
+    """The image's MOSS annotations as parsed JSON (None when a file is absent)."""
+    conn = db.get_connection()
+    try:
+        row = conn.execute('SELECT path FROM image WHERE id=?', (image_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row or not row[0]:
+        raise LookupError('Image not found')
+    root = (db.LIBRARY_PATH / 'images').resolve()
+    result = {}
+    for name, suffix in ANNOTATION_SUFFIXES.items():
+        path = (root / caption_relative(row[0], suffix)).resolve()
+        if root not in path.parents or not path.is_file():
+            result[name] = None
+            continue
+        try:
+            result[name] = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, ValueError) as exc:
+            result[name] = {'error': f'{type(exc).__name__}: {exc}'}
+    return result
 
 
 def caption_file(image_path: Path, suffix: str) -> Path:

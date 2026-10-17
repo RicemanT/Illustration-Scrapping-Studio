@@ -544,9 +544,10 @@ class ImageService:
         conn.execute("DELETE FROM image WHERE id = ?", (image_id,))
         conn.commit()
         conn.close()
-        from app.services.captions import caption_relative, get_suffix
+        from app.services.captions import annotation_relatives, caption_relative, get_suffix
         caption = caption_relative(row[0], get_suffix()) if row[0] else None
-        for relative in (row[0], row[1], str(Path(row[0]).with_suffix('.txt')) if row[0] else None, caption):
+        extra = annotation_relatives(row[0]) if row[0] else []
+        for relative in (row[0], row[1], str(Path(row[0]).with_suffix('.txt')) if row[0] else None, caption, *extra):
             if relative:
                 root = self.thumbnails_path if relative == row[1] else self.images_path
                 (root / relative).unlink(missing_ok=True)

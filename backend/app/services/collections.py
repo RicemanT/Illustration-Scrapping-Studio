@@ -320,7 +320,7 @@ class CollectionService:
             conn.close()
             raise ValueError("Unsafe recovery path")
 
-        from app.services.captions import caption_relative, get_suffix
+        from app.services.captions import annotation_relatives, caption_relative, get_suffix
         caption_suffix = get_suffix(conn)
         move_plan: list[tuple[Path, Path]] = []
         for record in records:
@@ -330,6 +330,8 @@ class CollectionService:
             move_plan.append((sidecar_path, self._safe_library_path(recovery_root / "images", str(Path(record["path"]).with_suffix(".txt")))))
             caption = caption_relative(record["path"], caption_suffix)
             move_plan.append((self._safe_library_path(images_root, caption), self._safe_library_path(recovery_root / "images", caption)))
+            for extra in annotation_relatives(record["path"]):   # MOSS captions, layout, OCR
+                move_plan.append((self._safe_library_path(images_root, extra), self._safe_library_path(recovery_root / "images", extra)))
             if record.get("thumb_path"):
                 thumb_path = self._safe_library_path(thumbs_root, record["thumb_path"])
                 move_plan.append((thumb_path, self._safe_library_path(recovery_root / "thumbnails", record["thumb_path"])))
@@ -435,7 +437,7 @@ class CollectionService:
                 if conflict:
                     raise ValueError("Cannot recover because the same image was imported again")
 
-            from app.services.captions import caption_relative, get_suffix
+            from app.services.captions import annotation_relatives, caption_relative, get_suffix
             caption_suffix = get_suffix(conn)
             restore_plan: list[tuple[Path, Path]] = []
             for record in records:
@@ -454,6 +456,9 @@ class CollectionService:
                     self._safe_library_path(recovery_root / "images", caption_relative(record["path"], caption_suffix)),
                     self._safe_library_path(images_root, caption_relative(record["restore_path"], caption_suffix)),
                 ))
+                for old, new in zip(annotation_relatives(record["path"]), annotation_relatives(record["restore_path"])):
+                    restore_plan.append((self._safe_library_path(recovery_root / "images", old),
+                                         self._safe_library_path(images_root, new)))
                 if record.get("thumb_path"):
                     restore_plan.append((
                         self._safe_library_path(recovery_root / "thumbnails", record["thumb_path"]),

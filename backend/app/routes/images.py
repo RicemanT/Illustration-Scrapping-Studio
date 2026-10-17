@@ -61,6 +61,16 @@ class CaptionWrite(BaseModel):
     base_version: Optional[str] = Field(None, max_length=64)
 
 
+@router.get("/{image_id}/annotations")
+def get_annotations(image_id: int):
+    """MOSS captions, layout and OCR files next to the image (from the captioning script)."""
+    from app.services.captions import read_annotations
+    try:
+        return read_annotations(image_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.get("/{image_id}/caption")
 def get_caption(image_id: int):
     """The image's natural-language caption file (for example `<name>_nl.txt`), if present."""
