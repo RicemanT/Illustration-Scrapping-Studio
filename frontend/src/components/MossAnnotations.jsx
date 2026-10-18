@@ -114,7 +114,7 @@ export function DetectionPanel({ annotations, layers, onLayers, visible, highlig
     <div>
       <div className="mb-1 flex items-center justify-between gap-2">
         <h3 className="text-sm font-semibold text-slate-100">Detections</h3>
-        <span className="text-[11px] text-slate-500">{engine === 'anzhc_vl' ? 'Anzhc text-seg + PaddleOCR-VL' : 'RapidOCR'}{ocr.size ? ` · ${ocr.size[0]}×${ocr.size[1]}` : ''}</span>
+        <span className="text-[11px] text-slate-500">{({ anzhc: 'Anzhc text-seg', anzhc_vl: 'Anzhc text-seg + PaddleOCR-VL', rapidocr: 'RapidOCR' })[engine] || engine}{ocr.size ? ` · ${ocr.size[0]}×${ocr.size[1]}` : ''}</span>
       </div>
       <div className="mb-2 flex flex-wrap gap-1.5" role="group" aria-label="Detection layers">
         {DETECTION_LAYERS.filter((layer) => Array.isArray(ocr[layer.field])).map((layer) => {
