@@ -487,16 +487,21 @@ class ImageService:
         from app.services.storage_locations import image_storage_locations
         image['storage_locations'] = image_storage_locations(image, self.library_path, db.DB_PATH)
 
-        # Get tags
+        # Get tags: the latest metadata version of each source post (a re-fetch whose metadata changed, e.g.
+        # its score, stores a new version with all its tags again), primary source first, each tag once.
         cursor.execute("""
-            SELECT category, tag FROM image_tag WHERE image_id = ?
+            SELECT t.category, t.tag FROM image_tag t JOIN image_source s ON s.id = t.source_id
+            WHERE t.image_id = ? AND s.version = (
+                SELECT MAX(s2.version) FROM image_source s2
+                WHERE s2.image_id = s.image_id AND s2.provider = s.provider AND s2.remote_id = s.remote_id)
+            ORDER BY s.is_primary DESC, s.id, t.rowid
         """, (image_id,))
-        tags = {}
-        for row in cursor.fetchall():
-            category, tag = row[0], row[1]
-            if category not in tags:
-                tags[category] = []
-            tags[category].append(tag)
+        tags, seen = {}, set()
+        for category, tag in cursor.fetchall():
+            key = (category, tag.replace('_', ' ').strip().casefold())
+            if key not in seen:
+                seen.add(key)
+                tags.setdefault(category, []).append(tag)
         image['tags'] = tags
         # Source tags above remain immutable provenance. This flat list is the
         # editable trainer-facing truth after applying add/remove overrides.

@@ -7,7 +7,7 @@ import { MARKS, applyMark, isActive, markFor, markTags, marksOf } from './qualit
 import { describeAuto } from './qualityJob';
 import CaptionEditor from './CaptionEditor';
 import AnalysisDetails from './AnalysisDetails';
-import { AnnotationPanel, BoxOverlay, boxesOf } from './MossAnnotations';
+import { AnnotationPanel, BoxOverlay, DEFAULT_LAYERS, DetectionPanel, boxesOf, detectionBoxesOf, detectionCount } from './MossAnnotations';
 
 // Unambiguous dates ("Mar 2, 2024"), whatever the browser's day/month order.
 const formatDate = (value) => {
@@ -31,7 +31,17 @@ function ImageDetail({ image, onClose, onPrevious, onNext, position, total, mark
     queryFn: async () => (await api.images.annotations(image.id)).data,
     staleTime: 30000,
   });
-  const boxes = boxesOf(annotations);
+  const [showDetections, setShowDetections] = useState(() => { try { return localStorage.getItem('artist.viewerDetections') === 'true'; } catch { return false; } });
+  const [detectionLayers, setDetectionLayers] = useState(() => {
+    try { return { ...DEFAULT_LAYERS, ...JSON.parse(localStorage.getItem('artist.viewerDetectionLayers') || '{}') }; } catch { return DEFAULT_LAYERS; }
+  });
+  const chooseDetectionLayers = (next) => {
+    setDetectionLayers(next);
+    try { localStorage.setItem('artist.viewerDetectionLayers', JSON.stringify(next)); } catch { /* storage unavailable */ }
+  };
+  const layoutBoxes = boxesOf(annotations);
+  const detections = detectionCount(annotations);
+  const boxes = [...(showDetections ? detectionBoxesOf(annotations, detectionLayers) : []), ...(showBoxes ? layoutBoxes : [])];
   const [imageLoading, setImageLoading] = useState(true);
   const [imageFailed, setImageFailed] = useState(false);
   const { data: fullImage, isLoading: detailsLoading, error: detailsError, refetch } = useQuery({
@@ -186,9 +196,12 @@ function ImageDetail({ image, onClose, onPrevious, onNext, position, total, mark
         <button aria-label="Previous image" disabled={!onPrevious || pending} onClick={() => leave(onPrevious)} className="rounded border border-slate-700 px-3 py-1 disabled:opacity-40">Previous</button>
         <button aria-label="Next image" disabled={!onNext || pending} onClick={() => leave(onNext)} className="rounded border border-slate-700 px-3 py-1 disabled:opacity-40">Next</button>
         <button onClick={() => setZoom(value => !value)} className="rounded border border-slate-700 px-3 py-1">{zoom ? 'Fit image' : 'Actual size'}</button>
-        {boxes.length > 0 && <button aria-pressed={showBoxes} title="Layout and watermark boxes from the MOSS captioning script"
+        {layoutBoxes.length > 0 && <button aria-pressed={showBoxes} title="Layout and watermark boxes from the MOSS captioning script"
           onClick={() => setShowBoxes((value) => { try { localStorage.setItem('artist.viewerBoxes', String(!value)); } catch { /* storage unavailable */ } return !value; })}
-          className={`rounded border px-3 py-1 ${showBoxes ? 'border-sky-600 text-sky-200' : 'border-slate-700'}`}>{showBoxes ? 'Hide boxes' : `Boxes (${boxes.length})`}</button>}
+          className={`rounded border px-3 py-1 ${showBoxes ? 'border-sky-600 text-sky-200' : 'border-slate-700'}`}>{showBoxes ? 'Hide boxes' : `Boxes (${layoutBoxes.length})`}</button>}
+        {detections > 0 && <button aria-pressed={showDetections} title="What the local detectors found (text, faces, panels, watermarks), from the image's _ocr.json"
+          onClick={() => setShowDetections((value) => { try { localStorage.setItem('artist.viewerDetections', String(!value)); } catch { /* storage unavailable */ } return !value; })}
+          className={`rounded border px-3 py-1 ${showDetections ? 'border-teal-600 text-teal-200' : 'border-slate-700'}`}>{showDetections ? 'Hide detections' : `Detections (${detections})`}</button>}
         <button aria-expanded={showInfo} onClick={() => setShowInfo(value => !value)} className="rounded border border-slate-700 px-3 py-1">{showInfo ? 'Hide information' : 'Show information'}</button>
         <button aria-label="Close image viewer" onClick={() => leave(onClose)} disabled={pending} className="rounded border border-slate-700 px-3 py-1">Close</button>
       </header>
@@ -201,7 +214,7 @@ function ImageDetail({ image, onClose, onPrevious, onNext, position, total, mark
             onLoad={() => setImageLoading(false)} onError={() => { setImageLoading(false); setImageFailed(true); }}
             style={zoom ? { width: displayImage.width, maxWidth: 'none', height: 'auto' } : undefined}
             className={imageFailed ? 'hidden' : zoom ? 'block' : 'max-w-full max-h-full object-contain'} />
-          {showBoxes && !imageFailed && !imageLoading && <BoxOverlay boxes={boxes} width={displayImage.width} height={displayImage.height} highlight={boxHighlight} onHover={setBoxHighlight} />}
+          {boxes.length > 0 && !imageFailed && !imageLoading && <BoxOverlay boxes={boxes} width={displayImage.width} height={displayImage.height} highlight={boxHighlight} onHover={setBoxHighlight} />}
         </div>
       </div>
       <div hidden={!showInfo} className="w-full md:w-[380px] lg:w-[440px] max-h-[50vh] md:max-h-none viewer-info shrink-0 overflow-y-auto border-l border-slate-700">
@@ -345,6 +358,8 @@ function ImageDetail({ image, onClose, onPrevious, onNext, position, total, mark
 
           {/* Natural-language caption file beside the image */}
           <AnnotationPanel annotations={annotations} highlight={boxHighlight} onHover={setBoxHighlight} />
+          <DetectionPanel annotations={annotations} layers={detectionLayers} onLayers={chooseDetectionLayers} visible={showDetections}
+            highlight={boxHighlight} onHover={setBoxHighlight} />
           <CaptionEditor imageId={image.id} dirtyRef={captionDirty}
             onSavedNext={onNext ? () => navigation.current.leave(navigation.current.onNext) : undefined} />
 

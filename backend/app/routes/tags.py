@@ -49,7 +49,7 @@ async def search_tags(query: str, limit: int = 50):
 
     normalized_query = query.replace("_", " ")
     cursor.execute("""
-        SELECT category, tag, COUNT(*) as count
+        SELECT category, tag, COUNT(DISTINCT image_id) as count
         FROM image_tag
         WHERE REPLACE(tag, '_', ' ') LIKE ?
         GROUP BY category, tag
