@@ -12,6 +12,7 @@ export const LABEL_STYLE = {
   object: { stroke: '#fbbf24', text: 'text-amber-300' },
   text: { stroke: '#34d399', text: 'text-emerald-300' },
   watermark: { stroke: '#f87171', text: 'text-red-300' },
+  panel: { stroke: '#c084fc', text: 'text-purple-300' },   // MageTrail's comic / collage panel items
   ocr: { stroke: '#2dd4bf', text: 'text-teal-300', dash: '6 4' },
   face: { stroke: '#f472b6', text: 'text-pink-300', dash: '6 4' },
   panel: { stroke: '#a78bfa', text: 'text-violet-300', dash: '10 6' },
