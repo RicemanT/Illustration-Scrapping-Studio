@@ -193,6 +193,7 @@ export function AnnotationPanel({ annotations, highlight, onHover }) {
                   {item.tags?.length ? <span className="text-slate-400"> [{item.tags.join(', ')}]</span> : null}
                   {item.text ? <span className="text-emerald-200"> “{item.text.replaceAll('\n', ' / ')}”{item.from_ocr ? ' (OCR)' : ''}</span> : null}
                   <div className="text-slate-400">{item.caption}</div>
+                  {item.short && <div className="text-slate-500"><span className="text-slate-600">short:</span> {item.short}</div>}
                 </li>
               );
             })}
