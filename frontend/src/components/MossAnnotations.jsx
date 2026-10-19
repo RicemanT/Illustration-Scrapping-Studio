@@ -190,6 +190,7 @@ export function AnnotationPanel({ annotations, highlight, onHover }) {
                 <li key={key} onMouseEnter={() => onHover?.(key)} onMouseLeave={() => onHover?.(null)}
                   className={`rounded px-1.5 py-1 text-xs ${highlight === key ? 'bg-slate-800' : ''}`}>
                   <span className={`font-semibold ${style.text}`}>{index + 1}. {item.label}</span>
+                  {Number.isInteger(item.part_of) && <span className="text-slate-500"> · detail of {item.part_of + 1}</span>}
                   {item.tags?.length ? <span className="text-slate-400"> [{item.tags.join(', ')}]</span> : null}
                   {item.text ? <span className="text-emerald-200"> “{item.text.replaceAll('\n', ' / ')}”{item.from_ocr ? ' (OCR)' : ''}</span> : null}
                   <div className="text-slate-400">{item.caption}</div>
