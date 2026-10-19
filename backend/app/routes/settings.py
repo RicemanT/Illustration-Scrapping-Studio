@@ -102,6 +102,40 @@ class CaptionSettings(BaseModel):
     suffix: str
 
 
+class ArtistTriggerSwitch(BaseModel):
+    template: str
+    group_id: int | None = None
+    captions: bool = True
+
+
+@router.get('/artist-trigger')
+def artist_trigger_status():
+    from app.services.artist_trigger import status
+    return status()
+
+
+@router.get('/artist-trigger/preview')
+def artist_trigger_preview(template: str, group_id: int | None = None):
+    from fastapi import HTTPException
+    from app.services.artist_trigger import preview
+    try:
+        return preview(template, group_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post('/artist-trigger')
+def artist_trigger_switch(request: ArtistTriggerSwitch):
+    from fastapi import HTTPException
+    from app.services.artist_trigger import start
+    try:
+        return start(request.template, request.group_id, request.captions)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.get('/captions')
 def read_caption_settings():
     from app.services.captions import DEFAULT_SUFFIX, get_suffix

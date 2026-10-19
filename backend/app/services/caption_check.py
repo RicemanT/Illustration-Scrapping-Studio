@@ -33,7 +33,7 @@ CHECKS = {
     'refusal': 'Refusal, safety or provider block message',
     'echo': 'Repeats the prompt (<tags>, <characters>)',
     'artist_start': "Does not start with the artist trigger",
-    'double_drawn_by': '"Drawn by" twice',
+    'double_drawn_by': 'The artist trigger twice',
     'too_short': 'Shorter than the minimum words',
     'too_long': 'Longer than the maximum words',
     'line_break': 'More than one paragraph',
@@ -162,10 +162,13 @@ def explain_caption(caption: str, tags: list[str], facts: dict, min_words: int, 
     if markers := [m for m in ('<tags>', '</tags>', '<characters>') if m in lowered]:
         problems['echo'] = 'contains ' + ', '.join(markers)
     first = tags[0] if tags else ''
-    if first.lower().startswith('drawn by') and not lowered.startswith(first.lower()):
+    trigger = first.lower() if first.lower().startswith(('drawn by', '@')) else ''   # "Drawn by x" or "@x"
+    if trigger and not lowered.startswith(trigger):
         problems['artist_start'] = f'should start with "{first}"'
     if re.match(r'\s*drawn by\s+drawn by\b', lowered) or lowered.count('drawn by') > 1:
         problems['double_drawn_by'] = f'"Drawn by" appears {lowered.count("drawn by")} times'
+    elif trigger.startswith('@') and lowered.count(trigger) > 1:
+        problems['double_drawn_by'] = f'"{first}" appears {lowered.count(trigger)} times'
     words = len(text.split())
     if words < min_words:
         problems['too_short'] = f'{words} words, at least {min_words} wanted'

@@ -5,6 +5,7 @@ import BooruAccess from '../components/BooruAccess';
 import ServerSettings from '../components/ServerSettings';
 import ProcessingSettings from '../components/ProcessingSettings';
 import CaptionSettings from '../components/CaptionSettings';
+import ArtistTriggerSettings from '../components/ArtistTriggerSettings';
 
 function Settings() {
   const queryClient = useQueryClient();
@@ -227,6 +228,8 @@ function Settings() {
       </section>
 
       <CaptionSettings />
+
+      <ArtistTriggerSettings />
 
       <section className="bg-[#0c1219] border border-[#202a34] rounded p-4">
         <div className="flex items-center justify-between gap-3">
