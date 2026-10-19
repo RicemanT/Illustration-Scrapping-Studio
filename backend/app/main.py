@@ -92,6 +92,11 @@ async def startup_event():
         from app.services.planner_curation import mark_failed_imports_unavailable, sync_frozen
         sync_frozen()   # folders accepted before the curation guard existed are frozen too
         mark_failed_imports_unavailable()   # earlier Gelbooru 404 imports: unlock and ban those posts
+        from app.services.tag_repair import repair_escaped_gelbooru_tags
+        repaired = repair_escaped_gelbooru_tags(LIBRARY_PATH)   # Gelbooru tags stored HTML-escaped (it&#039;s)
+        if repaired["tag_rows"] or repaired["overrides"] or repaired["planner_posts"]:
+            from app.services.diagnostics import emit
+            emit("tags.gelbooru_unescaped", "Repaired HTML-escaped Gelbooru tag names", **repaired)
         image_service = ImageService(LIBRARY_PATH)
         migrated = image_service.migrate_to_collection_folders()
         recovered = image_service.reconcile_filesystem()

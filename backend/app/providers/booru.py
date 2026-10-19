@@ -1,5 +1,6 @@
 import httpx
 import asyncio
+import html
 import json
 import os
 import time
@@ -211,6 +212,12 @@ class BooruProvider(Provider):
             return [dict(item.attrib) for item in root.findall('.//post')]
 
     @staticmethod
+    def _gelbooru_tag_list(post_data: Dict[str, Any]) -> List[str]:
+        """A Gelbooru post's tags. Its API HTML-escapes them (`it&#039;s`, `&amp;`): unescaped here, or the
+        names would be stored wrong and miss the tag index (a series filed as a general tag)."""
+        return [html.unescape(tag) for tag in str(post_data.get('tags', '')).split()]
+
+    @staticmethod
     def _response_tags(response: httpx.Response) -> list[Dict[str, Any]]:
         """Decode Gelbooru's JSON or XML tag-index response."""
         content_type = response.headers.get('content-type', '').lower()
@@ -244,7 +251,7 @@ class BooruProvider(Provider):
             self._raise_for_status(response, 'look up tag categories')
             resolved = {}
             for item in self._response_tags(response):
-                name = str(item.get('name', '')).strip()
+                name = html.unescape(str(item.get('name', '')).strip())
                 try:
                     tag_type = int(item.get('type', 0))
                 except (TypeError, ValueError):
@@ -284,11 +291,9 @@ class BooruProvider(Provider):
 
         elif self.site == 'gelbooru':
             # Post payloads are flat; the tag-index API supplies their types.
-            tag_string = post_data.get('tags', '')
-            if tag_string:
-                for tag in tag_string.split():
-                    category = (category_map or {}).get(tag, 'general')
-                    tags.setdefault(category, []).append(tag)
+            for tag in self._gelbooru_tag_list(post_data):
+                category = (category_map or {}).get(tag, 'general')
+                tags.setdefault(category, []).append(tag)
 
         return tags
 
@@ -461,11 +466,7 @@ class BooruProvider(Provider):
             # ingest without issuing one request per tag.
             category_map = None
             if self.site == 'gelbooru':
-                page_tags = [
-                    tag
-                    for post_data in posts_data
-                    for tag in str(post_data.get('tags', '')).split()
-                ]
+                page_tags = [tag for post_data in posts_data for tag in self._gelbooru_tag_list(post_data)]
                 category_map = await self._gelbooru_tag_categories(page_tags)
 
             # Convert to RemotePost objects
@@ -628,9 +629,7 @@ class BooruProvider(Provider):
 
             category_map = None
             if self.site == 'gelbooru':
-                category_map = await self._gelbooru_tag_categories(
-                    str(post_data.get('tags', '')).split()
-                )
+                category_map = await self._gelbooru_tag_categories(self._gelbooru_tag_list(post_data))
             return self._post_to_remote(post_data, category_map)
 
     async def close(self):

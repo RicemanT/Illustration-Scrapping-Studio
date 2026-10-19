@@ -115,5 +115,16 @@ class GelbooruProviderTests(unittest.IsolatedAsyncioTestCase):
         })
 
 
+    def test_escaped_tag_names_are_unescaped(self):
+        # Gelbooru's API HTML-escapes tag names; the tag index is keyed by the real names.
+        provider = object.__new__(BooruProvider)
+        provider.site = "gelbooru"
+        post = {"tags": "1girl bang_dream!_it&#039;s_mygo!!!!! tom_&amp;_jerry"}
+        self.assertEqual(BooruProvider._gelbooru_tag_list(post),
+                         ["1girl", "bang_dream!_it's_mygo!!!!!", "tom_&_jerry"])
+        tags = provider._parse_tags(post, {"bang_dream!_it's_mygo!!!!!": "copyright"})
+        self.assertEqual(tags, {"general": ["1girl", "tom_&_jerry"], "copyright": ["bang_dream!_it's_mygo!!!!!"]})
+
+
 if __name__ == "__main__":
     unittest.main()
