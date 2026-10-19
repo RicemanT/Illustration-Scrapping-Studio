@@ -102,6 +102,33 @@ class CaptionSettings(BaseModel):
     suffix: str
 
 
+class MetaTagList(BaseModel):
+    text: str
+
+
+@router.get('/meta-tags')
+def meta_tags_status():
+    from app.services.meta_tags import status
+    return status()
+
+
+@router.get('/meta-tags/export')
+def meta_tags_export():
+    from fastapi.responses import PlainTextResponse
+    from app.services.meta_tags import export_text
+    return PlainTextResponse(export_text(), headers={'Content-Disposition': 'attachment; filename="meta-tags.txt"'})
+
+
+@router.put('/meta-tags')
+def meta_tags_save(request: MetaTagList):
+    from fastapi import HTTPException
+    from app.services.meta_tags import start
+    try:
+        return start(request.text)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 class ArtistTriggerSwitch(BaseModel):
     template: str
     group_id: int | None = None

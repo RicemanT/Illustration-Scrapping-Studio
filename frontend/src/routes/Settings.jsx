@@ -6,6 +6,7 @@ import ServerSettings from '../components/ServerSettings';
 import ProcessingSettings from '../components/ProcessingSettings';
 import CaptionSettings from '../components/CaptionSettings';
 import ArtistTriggerSettings from '../components/ArtistTriggerSettings';
+import MetaTagSettings from '../components/MetaTagSettings';
 
 function Settings() {
   const queryClient = useQueryClient();
@@ -226,6 +227,8 @@ function Settings() {
         <p className="mt-3 text-xs text-slate-400">Changes immediately update sidecars in folders using the global defaults. Metadata is excluded by default.</p>
         {categoryMutation.isError && <p className="mt-2 text-xs text-red-400">{categoryMutation.error.response?.data?.detail || categoryMutation.error.message}</p>}
       </section>
+
+      <MetaTagSettings />
 
       <CaptionSettings />
 

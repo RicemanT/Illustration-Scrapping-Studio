@@ -471,9 +471,28 @@ class TagService:
             if machine:
                 rows = sorted([(row[0], row[1]) for row in rows] + [("general", row[0]) for row in machine],
                               key=lambda row: TAG_CATEGORY_ORDER.get(row[0], len(TAG_CATEGORY_ORDER)))
+        rows = list(rows) + TagService._allowed_meta_rows(conn, image_id, source_categories)
         for row in rows:
             tags.append(normalize_tag(row[1]))
         return normalize_tags(tags)
+
+    @staticmethod
+    def _allowed_meta_rows(conn, image_id: int, source_categories: Iterable[str]) -> list[tuple[str, str]]:
+        """With the meta section off, the allow-listed meta tags (meta_tags.py) the image has, as ("meta", tag)."""
+        if "meta" in source_categories:
+            return []
+        from app.services.meta_tags import allowlist
+        allowed = {normalize_tag(tag).casefold() for tag in allowlist(conn)}
+        if not allowed:
+            return []
+        trusted = sorted(GROUND_TRUTH_TAG_PROVIDERS)
+        rows = conn.execute(
+            f"""SELECT it.tag FROM image_tag it JOIN image_source src ON src.id = it.source_id
+                WHERE it.image_id = ? AND it.category = 'meta'
+                  AND src.provider IN ({','.join('?' for _ in trusted)}) ORDER BY it.rowid""",
+            [image_id, *trusted],
+        ).fetchall()
+        return [("meta", row[0]) for row in rows if normalize_tag(row[0]).casefold() in allowed]
 
     @staticmethod
     def _category_for_tag(conn, image_id: int, tag: str, included_categories: Iterable[str]) -> str:
@@ -538,6 +557,8 @@ class TagService:
         ).fetchall()
         for row in rows:
             result.setdefault(normalize_tag(row[1]).casefold(), row[0])
+        for category, tag in TagService._allowed_meta_rows(conn, image_id, source_categories):
+            result.setdefault(normalize_tag(tag).casefold(), category)
         return result
 
     @staticmethod
