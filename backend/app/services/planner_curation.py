@@ -322,6 +322,18 @@ def commit_marks(folder_id: int) -> int:
     return len(changed)
 
 
+def sync_accepted_marks() -> int:
+    """Startup: every accepted folder's ground truth carries its current marks. Accepted folders take no hand
+    edits, so their committed quality tags always equal their marks; jobs that changed marks without committing
+    them (the automatic quality marks did, for accepted folders) left them apart. Returns images fixed."""
+    main = db.get_connection()
+    try:
+        existing = {r[0] for r in main.execute('SELECT id FROM collection')}
+    finally:
+        main.close()
+    return sum(commit_marks(folder_id) for folder_id in sorted(_accepted_folders()) if folder_id in existing)
+
+
 def _accepted_folders() -> dict[int, str]:
     """{folder_id: accepted_at} for every accepted planner folder."""
     conn = connect()

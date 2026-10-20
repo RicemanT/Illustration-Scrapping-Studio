@@ -306,6 +306,10 @@ def apply(folder_ids: Optional[list[int]], config: QualityConfig, progress: Call
                                       aesthetic_source=CASE WHEN COALESCE(aesthetic_source, 'auto')='auto' THEN 'auto' ELSE aesthetic_source END
                                     WHERE id=?""", aesthetic_updates)
             main.commit()
+            if completed_at:
+                # An accepted folder's marks are its ground truth: commit the new ones to its sidecars now.
+                from app.services.planner_curation import commit_marks
+                commit_marks(folder_id)
             result['folders'] += 1
             result['images'] += len(updates)
         progress(done=len(folders), total=len(folders))

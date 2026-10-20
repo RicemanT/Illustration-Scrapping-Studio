@@ -89,9 +89,13 @@ async def startup_event():
         recover()
         from app.services import planner_store
         planner_store.recover()
-        from app.services.planner_curation import mark_failed_imports_unavailable, sync_frozen
+        from app.services.planner_curation import mark_failed_imports_unavailable, sync_accepted_marks, sync_frozen
         sync_frozen()   # folders accepted before the curation guard existed are frozen too
         mark_failed_imports_unavailable()   # earlier Gelbooru 404 imports: unlock and ban those posts
+        recommitted = sync_accepted_marks()   # accepted folders' sidecars carry their current quality marks
+        if recommitted:
+            from app.services.diagnostics import emit
+            emit("planner.marks_recommitted", "Committed quality marks of accepted folders", images=recommitted)
         from app.services.tag_repair import repair_escaped_gelbooru_tags
         repaired = repair_escaped_gelbooru_tags(LIBRARY_PATH)   # Gelbooru tags stored HTML-escaped (it&#039;s)
         if repaired["tag_rows"] or repaired["overrides"] or repaired["planner_posts"]:
