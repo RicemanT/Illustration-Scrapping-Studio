@@ -146,6 +146,7 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((config['train']['flux2_vae'], config['train']['vae_path']), (True, '@VAE_PATH@'))
             self.assertEqual(config['dataset']['caption']['attribution_patterns'], ['^drawn by\\s'])
             self.assertEqual(config['dataset']['caption']['protected_tags_file'], '@DATA_DIR@/protected_tags.txt')
+            self.assertIs(config['dataset']['caption']['layout_panels_as_objects'], True)
             self.assertTrue(config['sampling']['prompts'][0].lower().startswith('drawn by'))
 
         # Only artists without a collection: every artist of this run has one, so there is nothing to download.

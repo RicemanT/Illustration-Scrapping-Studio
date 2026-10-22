@@ -590,6 +590,7 @@ attribution_patterns = ['^drawn by\\s']
 attribution_position = "fixed"
 attribution_dropout_immune = true
 attribution_dedupe_on_combine = true
+layout_panels_as_objects = true        # panels as object boxes captioned "panel: ...", as ComfyUI's box node sends them
 
 [optimizer]
 kind = "adamw8bit"
