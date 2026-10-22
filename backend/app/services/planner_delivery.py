@@ -519,10 +519,18 @@ def prune_delivery(delivery_id: int, apply: bool, library: Path | None = None) -
     return result
 
 
-MAGEFLOW_STAGES = (  # the pilot plan: most epochs at 512 px, then a short 1024 px stage (Bluvoll's 16-4 style split)
-    {'name': '512', 'resolution': 512, 'epochs': 22, 'batch_size': 16, 'sample_size': 768},
-    {'name': '1024', 'resolution': 1024, 'epochs': 6, 'batch_size': 4, 'sample_size': 1024},
+# The MossAD-Demo pilot's recipe (MOSS-Image full finetune, Oct 2026): about 8k views per artist, most of them at
+# 512 px, the peak LR halved at each higher resolution (the effective batch halves too), varlen attention with
+# packed resolutions. A stage's "views" is how often the median artist is seen in it (images x repeats x epochs):
+# ~7k gave ~85-90% style that carries to other subjects, ~4k only in the artist's own domain. Batch sizes fit one
+# 192 GB GPU (MI300X); elsewhere lower batch_size and raise gradient_accumulation_steps so the effective batch
+# (batch_size x gradient_accumulation_steps x GPUs) stays the same, or scale the LR with it.
+MOSS_STAGES = (
+    {'name': '512', 'resolution': 512, 'views': 4500, 'lr': '4e-5', 'batch_size': 128, 'save_every': 5},
+    {'name': '768', 'resolution': 768, 'views': 2600, 'lr': '2e-5', 'batch_size': 64, 'save_every': 5},
+    {'name': '1024', 'resolution': 1024, 'views': 900, 'lr': '1e-5', 'batch_size': 32, 'save_every': 2},
 )
+MOSS_GRAD_ACCUM = 4
 
 
 def _trigger(conn, folder_id: int) -> str:
@@ -533,93 +541,164 @@ def _trigger(conn, folder_id: int) -> str:
     return normalize_tag(str(row['artist_tag_template']).replace('{artist}', normalize_tag(row['name']).casefold()))
 
 
-def _mageflow_config(run_id: int, stage: dict, prompts: list[str]) -> str:
-    """A starting Mage-Flow trainer config (RicemanT/mage-flow-trainer) for one resolution stage.
+def _attribution_patterns(templates) -> list[str]:
+    """The trainer's attribution regexes for the folders' trigger templates ("@{artist}" -> ^@, "Drawn by {artist}"
+    -> ^drawn by\\s): the trigger is the first tag, starting with the template's text before {artist}."""
+    import re
+    patterns = []
+    for template in sorted({t for t in templates if t and '{artist}' in t}):
+        prefix = template.split('{artist}')[0]
+        if not prefix.strip():
+            continue
+        pattern = '^' + re.escape(prefix.strip().casefold()).replace('\\ ', ' ') + ('\\s' if prefix.endswith(' ') else '')
+        if pattern not in patterns:
+            patterns.append(pattern)
+    return patterns or ['^@']
+
+
+def _stage_epochs(stage: dict, samples_per_artist: int) -> int:
+    """Epochs that give an artist with `samples_per_artist` samples per epoch the stage's views."""
+    return max(1, round(stage['views'] / samples_per_artist)) if samples_per_artist else 1
+
+
+def _moss_config(run_id: int, index: int, epochs: int, prompts: list[str], patterns: list[str]) -> str:
+    """A MOSS-Image trainer config (RicemanT/mage-flow-trainer) for one resolution stage of the pilot recipe.
 
     Paths are @PLACEHOLDERS@: the trainer notebook's "write the configs" cell fills them in for the
     machine it runs on (or edit them in the GUI)."""
-    run_name = f"magetrail-run{run_id}-{stage['name']}"
-    first = stage is MAGEFLOW_STAGES[0]
-    transformer = '@TRANSFORMER_PATH@' if first else '@STAGE_512_CHECKPOINT@'
+    stage = MOSS_STAGES[index]
+    lr = stage['lr']
+    run_name = f"magetrail-run{run_id}-{stage['name']}-lr{lr.replace('-', '')}"
+    start = ''
+    if index:
+        previous = MOSS_STAGES[index - 1]['name']
+        start = f'transformer_path = "@STAGE_{previous}_CHECKPOINT@"   # the {previous} px stage\'s final checkpoint\n'
     prompt_lines = '\n'.join(f'  {json.dumps(prompt, ensure_ascii=False)},' for prompt in prompts)
-    return f"""# Mage-Flow trainer config written by Illustration Scrapping Studio for planner run {run_id},
-# stage {stage['name']} px. Starting values from configs/mageflow-magetrail-finetune.toml; tune them in the GUI.
+    every = stage['save_every']
+    effective = stage['batch_size'] * MOSS_GRAD_ACCUM
+    return f"""# MOSS-Image trainer config written by Illustration Scrapping Studio for planner run {run_id}, stage {stage['name']} px:
+# {epochs} epochs, about {stage['views']} views per artist, peak LR {lr}. The MossAD-Demo pilot's recipe.
 # @...@ placeholders are filled in by the trainer notebook's "write the configs" cell.
-{'' if first else '# Stage 2: continue from the final checkpoint of the 512 stage (set @STAGE_512_CHECKPOINT@ to it).'}
-[adapter]
-kind = "none"
-
 [train]
-model_path = "@MODEL_PATH@"            # Mage-Flow repository folder: text_encoder/ (tokenizer inside)
-transformer_path = "{transformer}"
-vae_path = "@VAE_PATH@"                # FLUX.2 VAE, diffusers format (a vae/ folder or a diffusers-layout .safetensors)
-flux2_vae = true                       # latents are FLUX.2 32c/8x packed to Mage-Flow's 128c/16x layout
-output_dir = "@OUTPUT_DIR@"
+model_family = "moss_image"
+model_path = "@MODEL_PATH@"            # the MOSS-Image base repository folder
+{start}output_dir = "@OUTPUT_DIR@"
 run_name = "{run_name}"
-epochs = {stage['epochs']}
-batch_size = {stage['batch_size']}
-gradient_accumulation_steps = 1
-dtype = "bfloat16"
+epochs = {epochs}
+batch_size = {stage['batch_size']}                     # for 192 GB: keep batch_size x gradient_accumulation_steps x GPUs = {effective}
+gradient_accumulation_steps = {MOSS_GRAD_ACCUM}
+num_workers = 8
 pack_resolutions = true
-attention_backend = "torch_varlen"
-compile = "default"
+attention_backend = "torch_varlen"     # always varlen: no caption padding, mixed resolutions in one batch
+gradient_checkpointing = true
+compile = false                        # must stay false on ROCm (varlen + compile crashes); on CUDA "default" may be faster
+dtype = "bfloat16"
 cache_text_embeddings = true
-caption_variations = 8                 # augmented captions per image, encoded once into SQLite
-caption_cache_path = "@DATA_DIR@/caption_variations.sqlite"   # shared by both stages; upload it with the latents
-num_workers = 4
-save_every_epochs = 2
-keep_last_n = 3
+caption_variations = 16
+caption_cache_path = "@DATA_DIR@/caption_variations.sqlite"   # shared by the stages
+text_cache_batch_size = 32
+max_text_tokens = 2560
+save_every_epochs = {every}
 save_optimizer_state = true
+keep_last_n = 2
 log_every = 10
 progress = "plain"
+
+[adapter]
+kind = "none"
 
 [dataset]
 subsets_file = "@DATA_DIR@/folders.csv"   # one row per artist folder with its repeats; paths relative to the file
 source = "auto"                        # trains from the cached latents once the images are gone
 resolution = {stage['resolution']}
-latent_dtype = "float16"
+max_bucket_reso = 1536
 
 [dataset.caption]
-caption_mode = "mixed"                 # tags (.txt) and natural language (_nl.txt)
+caption_mode = "mixed"
+mixed_weights = {{ tags = 25, short = 10, medium = 15, long = 15, layout = 25, tags_nl = 20 }}
 shuffle_tags = true
 tag_dropout_percent = 0.1
+min_tags_kept = 6
 caption_dropout_percent = 0.05
-nl_shuffle_sentences = true
 protected_tags_file = "@DATA_DIR@/protected_tags.txt"   # character and copyright tags: never dropped
-attribution_patterns = ['^drawn by\\s']
-attribution_position = "fixed"
-attribution_dropout_immune = true
-attribution_dedupe_on_combine = true
+nl_shuffle_sentences = true
+attribution_patterns = {json.dumps(patterns)}
+annotation_attribution_template = "{{attribution}}. {{caption}}"
+layout_item_dropout = 0.0
+layout_short_captions = 0.5            # share of layouts whose boxes use their short caption, the way people prompt boxes
+layout_panels = true
 layout_panels_as_objects = true        # panels as object boxes captioned "panel: ...", as ComfyUI's box node sends them
+layout_parts = true
 
 [optimizer]
 kind = "adamw8bit"
 lr = 1e-7
-use_kahan = true
 quantize_state = true
+use_kahan = false
 
 [schedule]
 kind = "stage"
-stages = [
-  {{ type = "linear",   end_lr = 7e-6, percent = 0.05 }},
-  {{ type = "constant", lr = 7e-6,     percent = 0.55 }},
-  {{ type = "rex",      max_val = 7e-6, min_val = 0.0, percent = 0.40 }},
-]
+[[schedule.stages]]
+type = "linear"
+percent = 0.05
+end_lr = {lr}
+[[schedule.stages]]
+type = "constant"
+percent = 0.55
+lr = {lr}
+[[schedule.stages]]
+type = "rex"
+percent = 0.4
+max_val = {lr}
+min_val = 0.0
 
 [tracking]
 backends = ["tensorboard", "wandb"]    # wandb needs WANDB_API_KEY or `wandb login`; never a key here
 project = "magetrail"
-wandb_tags = ["v0.4", "run{run_id}", "{stage['name']}"]
+wandb_tags = ["run{run_id}", "{stage['name']}", "lr{lr.replace('-', '')}"]
 
 [sampling]
 prompts = [
 {prompt_lines}
 ]
-every_n_steps = 1000
-at_start = true
-width = {stage['sample_size']}
-height = {stage['sample_size']}
+every_n_epochs = {every}
+at_start = {'true' if index == 0 else 'false'}
+steps = 30
+cfg = 4.0
+shift = 5.0
+width = 832
+height = 1216
+negative_prompt = "worst quality, bad anatomy, watermark, jpeg artifact"
 """
+
+
+def _sample_prompts(leaders: list[dict]) -> list[str]:
+    """A tags prompt and the natural-language caption of one real image per leading artist, so the samples show
+    whether each style lands in both prompt styles; generic prompts when the folders have no usable image."""
+    from app.services.captions import read_caption
+    from app.services.tags import TagService
+    prompts = []
+    main = db.get_connection()
+    try:
+        for leader in leaders:
+            row = main.execute('SELECT id FROM image WHERE folder_id=? ORDER BY id LIMIT 1', (leader['folder_id'],)).fetchone()
+            tags, caption = [], ''
+            if row:
+                try:
+                    tags = TagService(db.LIBRARY_PATH).get_ground_truth(row[0])['tags']
+                    caption = (read_caption(row[0]).get('text') or '').strip()
+                except (LookupError, OSError, ValueError):   # costs only this artist's real-image prompts
+                    pass
+            if tags:
+                prompts.append(', '.join(tags))
+            elif leader['trigger']:
+                prompts.append(f"{leader['trigger']}, 1girl, solo, looking at viewer, upper body, simple background")
+            if caption:
+                prompts.append(caption)
+    finally:
+        main.close()
+    return prompts or ['1girl, solo, looking at viewer, upper body, simple background',
+                       '1boy, armor, castle, dramatic lighting, wide shot']
 
 
 PROTECTED_CATEGORIES = ('character', 'copyright')
@@ -666,8 +745,8 @@ def export_training_layout(delivery_id: int) -> Path:
     The folder is meant to sit at the root of the dataset as uploaded (Hugging Face) or copied:
     `folders.csv` / `subsets.toml` list every artist folder by its path relative to that root
     (`<group>/<artist>`), so the trainer finds them wherever the dataset is downloaded. Also written:
-    `folders.json` (the same data with more detail), `mageflow-512.toml` and `mageflow-1024.toml` (starting
-    configs for the two resolution stages), `protected_tags.txt` (the folders' character and copyright tags,
+    `folders.json` (the same data with more detail), `moss-512.toml`, `moss-768.toml` and `moss-1024.toml`
+    (MOSS-Image configs for the three resolution stages), `protected_tags.txt` (the folders' character and copyright tags,
     which the configs exempt from tag dropout) and `README.txt`.
     """
     delivery = get_delivery(delivery_id)
@@ -700,6 +779,7 @@ def export_training_layout(delivery_id: int) -> Path:
             folders.append({'path': relative, 'num_repeats': repeats, 'repeats': repeats, 'images': images,
                             'site': row['site'], 'artist': row['display_name'], 'tag': row['tag'], 'folder': folder['name'],
                             'trigger': _trigger(main, row['folder_id']), 'planned_images': row['selected'], 'in_run': True,
+                            'folder_id': row['folder_id'],
                             'library_path': str((db.LIBRARY_PATH / 'images' / relative).resolve())})
         # The run's groups are the curated dataset: their other artist collections (artists a later plan of the
         # same groups dropped, or folders added by hand) train too, and the README names them.
@@ -726,8 +806,11 @@ def export_training_layout(delivery_id: int) -> Path:
                     folders.append({'path': relative, 'num_repeats': repeats, 'repeats': repeats, 'images': images,
                                     'site': info.get('site', ''), 'artist': info.get('display_name') or extra['name'],
                                     'tag': info.get('tag', ''), 'folder': extra['name'], 'trigger': _trigger(main, extra['id']),
-                                    'planned_images': None, 'in_run': False,
+                                    'planned_images': None, 'in_run': False, 'folder_id': extra['id'],
                                     'library_path': str((db.LIBRARY_PATH / 'images' / relative).resolve())})
+        templates = [r[0] for r in main.execute(
+            f"SELECT DISTINCT artist_tag_template FROM collection WHERE id IN ({','.join('?' * len(folders))})",
+            [f['folder_id'] for f in folders])] if folders else []
         protected = _protected_tags(main, [row['folder_id'] for row in rows] + [extra['id'] for extra in extras] if listed else [])
     finally:
         main.close()
@@ -756,15 +839,26 @@ def export_training_layout(delivery_id: int) -> Path:
         if group:
             lines += ['', f"# {category} ({len(group)})"] + [f"{tag}  # {count}" for _, tag, count in group]
     (target / 'protected_tags.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
-    # Sample prompts: the three largest artists' triggers, so samples show whether their styles land.
-    leaders = sorted((f for f in folders if f['images'] and f['trigger']), key=lambda f: (-f['images'], f['artist']))[:3]
-    prompts = [f"{f['trigger']}, 1girl, solo, looking at viewer, upper body, simple background" for f in leaders] \
-        or ['1girl, solo, looking at viewer, upper body, simple background']
-    prompts.append('1boy, armor, castle, dramatic lighting, wide shot')
-    for stage in MAGEFLOW_STAGES:
-        (target / f"mageflow-{stage['name']}.toml").write_text(_mageflow_config(run_id, stage, prompts), encoding='utf-8')
     used = [f for f in folders if f['images']]
     samples = sum(f['images'] * f['num_repeats'] for f in used)
+    # Stage lengths: the epochs that give the median artist each stage's views (images x repeats per epoch).
+    per_artist = sorted(f['images'] * f['num_repeats'] for f in used)
+    median = per_artist[len(per_artist) // 2] if per_artist else 0
+    epochs = [_stage_epochs(stage, median) for stage in MOSS_STAGES]
+    # Sample prompts: one real image of each of the four largest artists, as tags and as natural language.
+    leaders = sorted((f for f in used if f['trigger']), key=lambda f: (-f['images'], f['artist']))[:4]
+    prompts = _sample_prompts(leaders)
+    patterns = _attribution_patterns(templates)
+    for stale in target.glob('mageflow-*.toml'):   # the Mage-Flow configs of earlier exports
+        stale.unlink()
+    for index, stage in enumerate(MOSS_STAGES):
+        (target / f"moss-{stage['name']}.toml").write_text(_moss_config(run_id, index, epochs[index], prompts, patterns),
+                                                           encoding='utf-8')
+    stage_lines = '\n'.join(
+        f"  moss-{stage['name']}.toml{' ' * (6 - len(stage['name']))}stage {index + 1}: {epochs[index]} epochs at "
+        f"{stage['resolution']} px, peak LR {stage['lr']}"
+        + (f", from the {MOSS_STAGES[index - 1]['name']} stage's final checkpoint" if index else '')
+        for index, stage in enumerate(MOSS_STAGES))
     outside = [f for f in used if not f['in_run']]
     outside_note = ('\n'.join([f"{len(outside)} of these folders are in the run's groups but not in run {run_id}'s plan (for example artists",
                                 "a later plan dropped); they are included because they are part of the curated groups:"]
@@ -782,8 +876,10 @@ This folder is the root of the dataset as it goes to Hugging Face: the trainer n
   subsets.toml       the same folders as [[subsets]] tables
   folders.json       the same, with artist names, triggers and library paths
   protected_tags.txt dataset.caption.protected_tags_file: the {len(protected)} character and copyright tags, never dropped
-  mageflow-512.toml  stage 1 config ({MAGEFLOW_STAGES[0]['epochs']} epochs at 512 px)
-  mageflow-1024.toml stage 2 config ({MAGEFLOW_STAGES[1]['epochs']} epochs at 1024 px, from the 512 stage's checkpoint)
+{stage_lines}
+
+Stage lengths give the median artist ({median} samples per epoch with repeats) about {' / '.join(str(stage['views']) for stage in MOSS_STAGES)}
+views at {' / '.join(stage['name'] for stage in MOSS_STAGES)} px, about {sum(stage['views'] for stage in MOSS_STAGES)} in all (the MossAD-Demo pilot's recipe).
 
 The configs carry @PLACEHOLDER@ paths; the notebook's "write the configs" cell fills them in for the machine.
 """, encoding='utf-8')

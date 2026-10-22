@@ -139,15 +139,28 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
             rows = list(csv.DictReader(handle))
         self.assertEqual(list(rows[0])[:2], ['path', 'num_repeats'])
         self.assertTrue(all(row['path'].count('/') == 1 and not row['path'].startswith('/') for row in rows))
-        for stage in ('512', '1024'):
-            config = tomllib.loads((layout / f'mageflow-{stage}.toml').read_text(encoding='utf-8'))
+        # MOSS-Image configs for the pilot's three stages: the LR halves per stage, each continues from the last.
+        self.assertEqual(sorted(p.name for p in layout.glob('*.toml')), ['moss-1024.toml', 'moss-512.toml', 'moss-768.toml', 'subsets.toml'])
+        configs = {stage: tomllib.loads((layout / f'moss-{stage}.toml').read_text(encoding='utf-8')) for stage in ('512', '768', '1024')}
+        for stage, lr, start in (('512', 4e-5, None), ('768', 2e-5, '@STAGE_512_CHECKPOINT@'), ('1024', 1e-5, '@STAGE_768_CHECKPOINT@')):
+            config = configs[stage]
+            self.assertEqual(config['train']['model_family'], 'moss_image')
+            self.assertEqual(config['train'].get('transformer_path'), start)
+            self.assertEqual((config['train']['attention_backend'], config['train']['pack_resolutions']), ('torch_varlen', True))
             self.assertEqual(config['dataset']['subsets_file'], '@DATA_DIR@/folders.csv')
             self.assertEqual(config['dataset']['resolution'], int(stage))
-            self.assertEqual((config['train']['flux2_vae'], config['train']['vae_path']), (True, '@VAE_PATH@'))
-            self.assertEqual(config['dataset']['caption']['attribution_patterns'], ['^drawn by\\s'])
-            self.assertEqual(config['dataset']['caption']['protected_tags_file'], '@DATA_DIR@/protected_tags.txt')
-            self.assertIs(config['dataset']['caption']['layout_panels_as_objects'], True)
+            self.assertEqual([s.get('end_lr', s.get('lr', s.get('max_val'))) for s in config['schedule']['stages']], [lr] * 3)
+            caption = config['dataset']['caption']
+            self.assertEqual(caption['attribution_patterns'], ['^drawn by\\s'])
+            self.assertEqual(caption['protected_tags_file'], '@DATA_DIR@/protected_tags.txt')
+            self.assertEqual((caption['layout_panels_as_objects'], caption['layout_short_captions']), (True, 0.5))
             self.assertTrue(config['sampling']['prompts'][0].lower().startswith('drawn by'))
+        # Stage lengths: about 4500 / 2600 / 900 views for the median artist (images x repeats per epoch).
+        per_epoch = sorted(f['images'] * f['repeats'] for f in folders_json)[len(folders_json) // 2]
+        self.assertEqual([configs[s]['train']['epochs'] for s in ('512', '768', '1024')],
+                         [max(1, round(v / per_epoch)) for v in (4500, 2600, 900)])
+        self.assertEqual(delivery._attribution_patterns(['@{artist}']), ['^@'])
+        self.assertEqual(delivery._attribution_patterns(['Drawn by {artist}', '@{artist}']), ['^@', '^drawn by\\s'])
 
         # Only artists without a collection: every artist of this run has one, so there is nothing to download.
         with self.assertRaises(ValueError):
