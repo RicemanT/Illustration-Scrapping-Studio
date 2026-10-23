@@ -612,6 +612,10 @@ subsets_file = "@DATA_DIR@/folders.csv"   # one row per artist folder with its r
 source = "auto"                        # trains from the cached latents once the images are gone
 resolution = {stage['resolution']}
 max_bucket_reso = 1536
+use_masks = true                       # folders.csv's mask_path: watermarks, signatures and URLs carry no loss
+mask_outside_weight = 0.0              # loss weight inside those boxes (the masks' black)
+mask_dilate_px = 6                     # grow the boxes a little, in bucket pixels
+mask_feather_px = 3.0                  # and soften their edges
 
 [dataset.caption]
 caption_mode = "mixed"
@@ -816,11 +820,33 @@ def export_training_layout(delivery_id: int) -> Path:
         main.close()
     target = planner_dir() / 'exports' / f"run-{run_id}" / 'training'
     target.mkdir(parents=True, exist_ok=True)
+    # Loss masks over watermarks, signatures and URLs (training_masks): one folder of masks per artist that has any.
+    from app.services.training_masks import write_folder_masks
+    import shutil
+    shutil.rmtree(target / 'masks', ignore_errors=True)   # artists dropped since the last export keep no masks
+    masked_images = 0
+    main = db.get_connection()
+    try:
+        for folder in folders:
+            folder['mask_path'] = ''
+            if not folder['images']:
+                continue
+            rows = main.execute('SELECT path, width, height FROM image WHERE folder_id=? ORDER BY id',
+                                (folder['folder_id'],)).fetchall()
+            images = [(db.LIBRARY_PATH / 'images' / row[0], row[1], row[2]) for row in rows if row[0] and row[1] and row[2]]
+            boxed = write_folder_masks(images, target / 'masks' / folder['path'])
+            if boxed:
+                folder['mask_path'] = f"masks/{folder['path']}"
+                folder['masked_images'] = boxed
+                masked_images += boxed
+    finally:
+        main.close()
     (target / 'dataset.toml').unlink(missing_ok=True)   # the old diffusion-pipe [[directory]] file
     (target / 'folders.json').write_text(json.dumps(folders, indent=2, ensure_ascii=False), encoding='utf-8')
     import csv
     with open(target / 'folders.csv', 'w', encoding='utf-8', newline='') as handle:
-        writer = csv.DictWriter(handle, ['path', 'num_repeats', 'images', 'site', 'artist', 'tag', 'folder', 'trigger', 'planned_images'],
+        writer = csv.DictWriter(handle, ['path', 'num_repeats', 'images', 'site', 'artist', 'tag', 'folder', 'trigger', 'planned_images',
+                                         'mask_path'],
                                 extrasaction='ignore', lineterminator='\n')
         writer.writeheader()
         writer.writerows(folders)
@@ -875,6 +901,8 @@ This folder is the root of the dataset as it goes to Hugging Face: the trainer n
   folders.csv        dataset.subsets_file for the Mage-Flow trainer (path relative to this file, num_repeats)
   subsets.toml       the same folders as [[subsets]] tables
   folders.json       the same, with artist names, triggers and library paths
+  masks/             loss masks: black over watermarks, signatures and URLs, for the {sum(1 for f in used if f.get('mask_path'))} folders
+                     that have any ({masked_images} images boxed); folders.csv's mask_path column points the trainer to them
   protected_tags.txt dataset.caption.protected_tags_file: the {len(protected)} character and copyright tags, never dropped
 {stage_lines}
 

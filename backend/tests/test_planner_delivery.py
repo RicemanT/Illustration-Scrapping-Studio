@@ -161,6 +161,36 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
                          [max(1, round(v / per_epoch)) for v in (4500, 2600, 900)])
         self.assertEqual(delivery._attribution_patterns(['@{artist}']), ['^@'])
         self.assertEqual(delivery._attribution_patterns(['Drawn by {artist}', '@{artist}']), ['^@', '^drawn by\\s'])
+        # No watermark boxes yet: no masks, an empty mask_path column, masked training configured but idle.
+        self.assertFalse((layout / 'masks').exists())
+        self.assertTrue(all(row['mask_path'] == '' for row in rows))
+        self.assertIs(configs['512']['dataset']['use_masks'], True)
+
+        # A watermark box on one image: its folder gets a mask for every image, black only over the box.
+        main = db.get_connection()
+        folder_id, = main.execute('SELECT folder_id FROM image WHERE id=?', (image_id,)).fetchone()
+        images = main.execute('SELECT id, path, width, height FROM image WHERE folder_id=? ORDER BY id', (folder_id,)).fetchall()
+        slug = main.execute('SELECT slug FROM collection WHERE id=?', (folder_id,)).fetchone()[0].replace('\\', '/').strip('/')
+        main.close()
+        first = self.root / 'images' / images[0][1]
+        first.with_name(first.stem + '_moss.json').write_text(json.dumps(
+            {'caption': {}, 'watermark': [{'box_2d': [900, 700, 980, 990], 'label': 'signature'}]}), encoding='utf-8')
+        layout = delivery.export_training_layout(job['id'])
+        with (layout / 'folders.csv').open(encoding='utf-8') as handle:
+            rows = {row['path']: row for row in csv.DictReader(handle)}
+        self.assertEqual(rows[slug]['mask_path'], f'masks/{slug}')
+        self.assertTrue(all(row['mask_path'] == '' for path, row in rows.items() if path != slug))
+        masks = sorted((layout / 'masks' / slug).glob('*.png'))
+        self.assertEqual([m.stem for m in masks], sorted(Path(row[1]).stem for row in images))
+        from PIL import Image
+        with Image.open(layout / 'masks' / slug / f'{Path(images[0][1]).stem}.png') as mask:
+            w, h = mask.size
+            self.assertAlmostEqual(w / h, images[0][2] / images[0][3], places=2)
+            self.assertEqual(mask.getpixel((int(w * 0.85), int(h * 0.94))), 0)      # inside the box
+            self.assertEqual(mask.getpixel((w // 2, h // 2)), 255)                    # the rest learns
+        with Image.open(layout / 'masks' / slug / f'{Path(images[-1][1]).stem}.png') as mask:
+            self.assertEqual(mask.getextrema(), (255, 255) if len(images) > 1 else (0, 255))
+        self.assertIn('masks/', (layout / 'README.txt').read_text(encoding='utf-8'))
 
         # Only artists without a collection: every artist of this run has one, so there is nothing to download.
         with self.assertRaises(ValueError):
