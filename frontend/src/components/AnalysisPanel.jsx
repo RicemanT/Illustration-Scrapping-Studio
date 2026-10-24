@@ -161,6 +161,8 @@ export default function AnalysisPanel() {
               <input type="number" min="0" className={`${field} block w-28`} value={config.older_posts} onChange={(e) => set('older_posts', Number(e.target.value))} /></label>
             <label className="text-xs text-slate-400" title="Seconds between sample downloads per site; Danbooru, e621 and Gelbooru download side by side">Download pace (s)
               <input type="number" min="0.05" step="0.05" className={`${field} block w-24`} value={config.download_interval} onChange={(e) => set('download_interval', Number(e.target.value))} /></label>
+            <label className="text-xs text-slate-400" title="Samples each site downloads at the same time (1-32). Each download takes a few seconds, so this, not the pace, usually sets the speed; the pace still caps how often a new one starts. Separate from the sync/import workers in Settings.">Parallel downloads per site
+              <input type="number" min="1" max="32" className={`${field} block w-24`} value={config.download_workers ?? 4} onChange={(e) => set('download_workers', Math.min(32, Math.max(1, Math.round(Number(e.target.value)) || 1)))} /></label>
             <label className="text-xs text-slate-400" title="The worker pauses while a GPU it uses is this hot, until it is 5 °C cooler. 0 = never.">Pause at °C
               <input type="number" min="0" max="100" className={`${field} block w-20`} value={config.max_temp ?? 80} onChange={(e) => set('max_temp', Number(e.target.value))} /></label>
           </div>
