@@ -6,6 +6,7 @@ import ServerSettings from '../components/ServerSettings';
 import ProcessingSettings from '../components/ProcessingSettings';
 import CaptionSettings from '../components/CaptionSettings';
 import ArtistTriggerSettings from '../components/ArtistTriggerSettings';
+import TransparentSettings from '../components/TransparentSettings';
 import MetaTagSettings from '../components/MetaTagSettings';
 
 function Settings() {
@@ -233,6 +234,7 @@ function Settings() {
       <CaptionSettings />
 
       <ArtistTriggerSettings />
+      <TransparentSettings />
 
       <section className="bg-[#0c1219] border border-[#202a34] rounded p-4">
         <div className="flex items-center justify-between gap-3">

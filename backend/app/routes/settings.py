@@ -163,6 +163,29 @@ def artist_trigger_switch(request: ArtistTriggerSwitch):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+class FlattenTransparent(BaseModel):
+    folder_id: int | None = None   # one folder, or
+    group_id: int | None = None    # one group, or neither: every folder
+
+
+@router.get('/transparent')
+def transparent_status():
+    from app.services.transparency import status
+    return status()
+
+
+@router.post('/transparent')
+def transparent_flatten(request: FlattenTransparent):
+    from fastapi import HTTPException
+    from app.services.transparency import start
+    try:
+        return start(request.folder_id, request.group_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.get('/captions')
 def read_caption_settings():
     from app.services.captions import DEFAULT_SUFFIX, get_suffix
