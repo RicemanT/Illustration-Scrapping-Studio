@@ -96,6 +96,9 @@ async def update_account(site: Literal["danbooru", "e621"], payload: AccountUpda
             response = await client.get(url)
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"Could not reach {site}: {exc}") from exc
+    from app.providers.booru import blocked_message, cloudflare_challenge
+    if cloudflare_challenge(response):
+        raise HTTPException(status_code=502, detail=blocked_message(site, "check the account") + " Nothing was saved; try again once it lets the app through.")
     if response.status_code in {401, 403}:
         raise HTTPException(status_code=422, detail=f"{site} rejected this username and API key. Copy the API key from your {site} profile page.")
     if response.is_error:

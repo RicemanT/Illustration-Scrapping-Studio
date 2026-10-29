@@ -38,6 +38,29 @@ class BooruNormalizationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(posts), 2)
                 self.assertIsNone(cursor)
 
+    async def test_cloudflare_check_stops_the_site_instead_of_blaming_the_key(self):
+        from app.providers.booru import ProviderBlocked
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(403, headers={"cf-mitigated": "challenge", "content-type": "text/html"},
+                                  text="<title>Just a moment...</title>")
+
+        provider = BooruProvider("danbooru")
+        await provider.client.aclose()
+        provider.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+        async def no_wait():
+            return None
+
+        provider._rate_limit = no_wait
+        try:
+            with self.assertRaises(ProviderBlocked) as caught:
+                await provider.search("artist_name", limit=20)
+        finally:
+            await provider.close()
+        self.assertIn("Cloudflare bot check", str(caught.exception))
+        self.assertIn("not your account or API key", str(caught.exception))
+
     async def test_streaming_download_reports_size_speed_and_completion(self):
         payload = b"x" * (2 * 1024 * 1024)
 

@@ -20,6 +20,22 @@ class ProviderAuthenticationError(RuntimeError):
     """Raised when a provider requires credentials that are not configured."""
 
 
+class ProviderBlocked(ProviderAuthenticationError):
+    """The site answers with a Cloudflare bot check instead of its API or files. Like a credential problem it stops
+    the whole job for that site (items stay pending), but no setting fixes it."""
+
+
+def cloudflare_challenge(response) -> bool:
+    """Danbooru (since October 2026) answers some clients with Cloudflare's "Just a moment..." check: HTTP 403 with
+    cf-mitigated: challenge, an HTML page instead of JSON or the file."""
+    return response.status_code == 403 and (response.headers.get('cf-mitigated') or '').lower() == 'challenge'
+
+
+def blocked_message(site: str, operation: str) -> str:
+    return (f'{site} answered with a Cloudflare bot check instead of letting the app {operation}. This is on '
+            f"{site}'s side, not your account or API key; pending items stay queued for a later try.")
+
+
 def _stored_provider_settings() -> Dict[str, Any]:
     return read_provider_settings()
 
@@ -175,6 +191,8 @@ class BooruProvider(Provider):
         return {'user_id': self.gelbooru_user_id, 'api_key': self.gelbooru_api_key} if self.site == 'gelbooru' else {}
 
     def _raise_for_status(self, response: httpx.Response, operation: str, kind: str = 'api') -> None:
+        if cloudflare_challenge(response):
+            raise ProviderBlocked(blocked_message(self.site, operation))
         if pacing.is_throttle(self.site, response.status_code):
             wait = pacing.pacer(self.site, kind).throttled(pacing.retry_after_seconds(response), pacing.interval(self.site, kind))
             self.last_throttle_wait = wait
