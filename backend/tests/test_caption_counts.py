@@ -32,13 +32,16 @@ class CaptionCountTests(unittest.TestCase):
         (alpha / "0_nl.txt").write_text("caption", encoding="utf-8")
         (alpha / "1_nl.txt").write_text("caption", encoding="utf-8")
         (alpha / "2.txt").write_text("tags only, not a caption", encoding="utf-8")
+        (alpha / "0_layout.json").write_text("{}", encoding="utf-8")
+        (self.root / "images" / "group" / "beta" / "2_layout.json").write_text("{}", encoding="utf-8")
 
     def tearDown(self):
         db.DB_PATH, db.LIBRARY_PATH = self.old
         self.temp.cleanup()
 
-    def test_counts_caption_files_per_folder(self):
-        self.assertEqual(captions.caption_counts(), {"suffix": "_nl.txt", "folders": {1: 2, 2: 0}})
+    def test_counts_caption_and_layout_files_per_folder(self):
+        self.assertEqual(captions.caption_counts(),
+                         {"suffix": "_nl.txt", "folders": {1: 2, 2: 0}, "layouts": {1: 1, 2: 1}})
 
 
 if __name__ == "__main__":

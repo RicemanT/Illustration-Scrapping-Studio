@@ -111,10 +111,12 @@ def caption_file(image_path: Path, suffix: str) -> Path:
 _counts_lock = threading.Lock()
 _counts_cache: dict = {'at': 0.0, 'value': None}
 COUNTS_TTL = 20.0
+LAYOUT_SUFFIX = '_layout.json'
 
 
 def caption_counts() -> dict:
-    """How many images of each folder have a caption file: {"suffix", "folders": {folder_id: captioned}}.
+    """How many images of each folder have a caption file and a layout file (`<stem>_layout.json`, MOSS-Image's
+    boxes): {"suffix", "folders": {folder_id: captioned}, "layouts": {folder_id: with a layout}}.
 
     Lists each image directory once (no per-image stat), so the whole library takes well under a second; the
     result is reused for COUNTS_TTL seconds because the sidebar asks often while a captioning script runs."""
@@ -130,6 +132,7 @@ def caption_counts() -> dict:
         root = db.LIBRARY_PATH / 'images'
         listings: dict[str, set] = {}
         folders: dict[int, int] = {}
+        layouts: dict[int, int] = {}
         for folder_id, path in rows:
             relative = PurePosixPath(str(path).replace('\\', '/'))
             directory = str(relative.parent)
@@ -141,9 +144,12 @@ def caption_counts() -> dict:
                     names = set()
                 listings[directory] = names
             folders.setdefault(folder_id, 0)
+            layouts.setdefault(folder_id, 0)
             if relative.stem + suffix in names:
                 folders[folder_id] += 1
-        value = {'suffix': suffix, 'folders': folders}
+            if relative.stem + LAYOUT_SUFFIX in names:
+                layouts[folder_id] += 1
+        value = {'suffix': suffix, 'folders': folders, 'layouts': layouts}
         _counts_cache.update(at=time.monotonic(), value=value)
         return value
 
