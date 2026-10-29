@@ -63,6 +63,32 @@ class ReferencePairTests(unittest.TestCase):
             self.assertEqual(target['artist'], reference['artist'])
             self.assertFalse(set(target['characters']) & set(reference['characters']))
 
+    def test_coverage_counts_characters_across_artists(self):
+        coverage = rp.build(self.records)['coverage']
+        self.assertEqual(coverage, {'characters': 3, 'characters_2_plus_images': 1, 'characters_2_plus_artists': 1,
+                                    'characters_5_plus_artists': 0, 'artists': 2})
+
+    def test_large_pools_are_sampled_not_scanned(self):
+        # A popular character: more images than EXACT_POOL, so references are sampled per target.
+        records = [record(f'{a}/{i}.png', a, ['miku'], ['1girl', 'solo', 'aqua hair', 'twintails'])
+                   for a in ('p', 'q', 'r') for i in range(rp.EXACT_POOL)]
+        accepted = []
+        original = rp._usable
+        rp._usable = lambda r, c: accepted.append(1) or original(r, c)
+        try:
+            pairs = rp.build(records)['pairs']
+        finally:
+            rp._usable = original
+        identity = [p for p in pairs if p['kind'] == 'identity']
+        self.assertEqual(len(identity), len(records) * rp.REFS_PER_TARGET)
+        for p in identity:
+            self.assertNotEqual(p['target'].split('/')[0], p['reference']['path'].split('/')[0])
+        self.assertLess(len(accepted), len(records) * 20, 'no per-target scan of the whole pool')
+        same = [p for p in pairs if p['kind'] == 'identity_style']
+        self.assertTrue(all(p['target'] != p['reference']['path'] for p in same))
+        self.assertTrue(all(len({p['reference']['path'] for p in same if p['target'] == t}) == rp.REFS_PER_TARGET
+                            for t in {p['target'] for p in same}), 'references of one target are distinct')
+
     def test_held_out_characters_are_never_paired(self):
         records = [record(f'{a}/{i}.png', a, ['zed'], ['1boy', 'solo', 'green hair']) for a in ('x', 'y') for i in range(3)]
         original = rp.HOLDOUT_SHARE
@@ -101,3 +127,9 @@ class ReferencePairExportTests(PlannerFolderCase):
         if lines:
             self.assertIn(json.loads(lines[0])['kind'], ('identity_style', 'identity', 'style'))
         self.assertTrue((rp_path.parent / 'README.txt').is_file())
+        self.assertIn('characters_2_plus_artists', summary['coverage'])
+        # Accepted folders only: nothing is accepted yet, then this folder is.
+        from unittest.mock import patch
+        self.assertEqual(rp._folders(None, [folder_id], accepted_only=True), [])
+        with patch.object(rp, '_accepted_folder_ids', return_value={folder_id}):
+            self.assertEqual(rp.export(folder_ids=[folder_id], name='test-accepted', accepted_only=True)['images'], len(ids))

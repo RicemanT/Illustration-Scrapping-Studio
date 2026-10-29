@@ -14,17 +14,21 @@ never part of it. A few characters (hashed, with enough images and artists) are 
 them, and `eval.jsonl` lists their images.
 
 The trainer composes each prompt per step: `keep` alone (70%), plus a random 30-70% of `look` (20%), or `minimal` (10%).
+
+Pairs are written as they are made, so a whole library (hundreds of thousands of images, millions of pairs) fits in
+memory; references come from per-character and per-artist pools, sampled without scanning the whole pool per target.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import random
+import sys
 import threading
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Iterator, Optional
 
 import app.db as db
 
@@ -32,6 +36,7 @@ LOOK_SHARE = 0.4
 LOOK_MAX = 18
 REFS_PER_TARGET = 3          # references per (target, pair kind)
 HOLDOUT_SHARE = 0.03         # characters held out for evaluation, among those with enough images
+EXACT_POOL = 200             # pools up to this size are filtered exactly; larger ones are sampled
 NEVER_LOOK = {'solo', 'looking at viewer', 'simple background', 'white background', 'full body', 'upper body',
               'cowboy shot', 'portrait', 'smile', 'open mouth', 'blush', 'standing', 'sitting', 'closed mouth',
               'highres', 'absurdres', 'commentary', 'commentary request', 'english commentary', 'signature',
@@ -46,7 +51,15 @@ _lock = threading.Lock()
 _state: dict = {'status': 'idle'}
 
 
-def _folders(group_ids: Optional[list[int]], folder_ids: Optional[list[int]]) -> list[dict]:
+def _accepted_folder_ids() -> set[int]:
+    from app.services.planner_curation import _accepted_folders
+    try:
+        return set(_accepted_folders())
+    except Exception:   # no planner database: nothing has been accepted
+        return set()
+
+
+def _folders(group_ids: Optional[list[int]], folder_ids: Optional[list[int]], accepted_only: bool = False) -> list[dict]:
     conn = db.get_connection()
     try:
         if folder_ids:
@@ -55,9 +68,13 @@ def _folders(group_ids: Optional[list[int]], folder_ids: Optional[list[int]]) ->
             rows = conn.execute(f"SELECT id, name, slug FROM collection WHERE type='artist' AND group_id IN ({','.join('?' * len(group_ids))})", group_ids)
         else:
             rows = conn.execute("SELECT id, name, slug FROM collection WHERE type='artist'")
-        return [dict(r) for r in rows]
+        folders = [dict(r) for r in rows]
     finally:
         conn.close()
+    if accepted_only:
+        accepted = _accepted_folder_ids()
+        folders = [f for f in folders if f['id'] in accepted]
+    return folders
 
 
 def _character_boxes(image_path: Path) -> dict[str, list[float]]:
@@ -71,12 +88,13 @@ def _character_boxes(image_path: Path) -> dict[str, list[float]]:
     for item in data.get('items') or []:
         if isinstance(item, dict) and item.get('label') == 'character' and isinstance(item.get('box_2d'), list):
             for tag in item.get('tags') or []:
-                boxes.setdefault(str(tag).replace('_', ' ').casefold(), item['box_2d'])
+                boxes.setdefault(sys.intern(str(tag).replace('_', ' ').casefold()), item['box_2d'])
     return boxes
 
 
-def collect(folders: list[dict]) -> list[dict]:
-    """One record per image: its folder's artist, tags by category, quality tags, character boxes."""
+def collect(folders: list[dict], progress: Optional[Callable[[int], None]] = None) -> list[dict]:
+    """One record per image: its folder's artist, tags by category, quality tags, character boxes. Tag names are
+    interned: across a whole library the same few thousand strings repeat millions of times."""
     from app.services.tags import TagService
     service = TagService(db.LIBRARY_PATH)
     images_root = db.LIBRARY_PATH / 'images'
@@ -86,7 +104,7 @@ def collect(folders: list[dict]) -> list[dict]:
         for folder in folders:
             for image_id, relative in conn.execute('SELECT id, path FROM image WHERE folder_id=? ORDER BY id', (folder['id'],)).fetchall():
                 categories = service._source_category_map(conn, image_id, service._included_categories(conn, image_id))
-                tags = service._effective_tags(conn, image_id)
+                tags = [sys.intern(t) for t in service._effective_tags(conn, image_id)]
                 quality = set(t.casefold() for t in service._quality_tags(conn, image_id))
                 by = defaultdict(list)
                 for tag in tags:
@@ -97,8 +115,10 @@ def collect(folders: list[dict]) -> list[dict]:
                         by[categories.get(key, 'general')].append(tag)
                 records.append({'image_id': image_id, 'path': relative.replace('\\', '/'), 'folder': folder['id'],
                                 'artist': folder['name'], 'tags': tags, 'by': dict(by),
-                                'characters': [t.casefold() for t in by.get('character', [])],
+                                'characters': [sys.intern(t.casefold()) for t in by.get('character', [])],
                                 'boxes': _character_boxes(images_root / relative)})
+                if progress and len(records) % 1000 == 0:
+                    progress(len(records))
     finally:
         conn.close()
     return records
@@ -143,71 +163,119 @@ def _split(record: dict, drop_trigger: bool, character: Optional[str], look: lis
     return {'keep': keep, 'look': removed, 'minimal': minimal}
 
 
-def build(records: list[dict], seed: int = 0) -> dict:
-    rng = random.Random(seed)
+def _pick(rng: random.Random, pool: list, accept: Callable[[object], bool], k: int) -> list:
+    """Up to k distinct pool items that `accept`, in random order. Small pools are filtered exactly (every acceptable
+    item has a chance); large ones are sampled, a few tries per wanted item, so a target costs O(k), not O(pool)."""
+    if len(pool) <= EXACT_POOL:
+        return [item for item in rng.sample(pool, len(pool)) if accept(item)][:k]
+    chosen, seen = [], set()
+    for _ in range(k * 8):
+        item = pool[rng.randrange(len(pool))]
+        if id(item) not in seen and accept(item):
+            seen.add(id(item))
+            chosen.append(item)
+            if len(chosen) == k:
+                break
+    return chosen
+
+
+def _plan(records: list[dict]) -> dict:
+    """Looks, per-character images, held-out characters and coverage counts."""
     looks = character_looks(records)
     by_character = defaultdict(list)
     for r in records:
         for c in r['characters']:
             by_character[c].append(r)
+    artists_of = {c: len({r['artist'] for r in rs}) for c, rs in by_character.items()}
     # Held-out characters: enough images and more than one artist, picked by hash so reruns agree.
-    candidates = sorted(c for c, rs in by_character.items() if len(rs) >= 5 and len({r['artist'] for r in rs}) >= 2)
+    candidates = sorted(c for c, rs in by_character.items() if len(rs) >= 5 and artists_of[c] >= 2)
     holdout = {c for c in candidates if int(hashlib.md5(c.encode()).hexdigest()[:8], 16) % 1000 < HOLDOUT_SHARE * 1000}
-    pairs = []
+    trained = [c for c in by_character if c not in holdout]
+    coverage = {'characters': len(trained),
+                'characters_2_plus_images': sum(len(by_character[c]) >= 2 for c in trained),
+                'characters_2_plus_artists': sum(artists_of[c] >= 2 for c in trained),
+                'characters_5_plus_artists': sum(artists_of[c] >= 5 for c in trained),
+                'artists': len({r['artist'] for r in records})}
+    return {'looks': looks, 'by_character': by_character, 'holdout': holdout, 'coverage': coverage}
 
-    def reference(r, character):
-        """A reference record for `character` (a crop box when the image shows others too), or None."""
-        if len(r['characters']) == 1:
-            return {'path': r['path'], 'crop': None}
-        box = r['boxes'].get(character)
-        return {'path': r['path'], 'crop': box} if box else None
 
-    for character, group in by_character.items():
+def _usable(r: dict, character: str) -> Optional[dict]:
+    """A reference record for `character` (a crop box when the image shows others too), or None."""
+    if len(r['characters']) == 1:
+        return {'path': r['path'], 'crop': None}
+    box = r['boxes'].get(character)
+    return {'path': r['path'], 'crop': box} if box else None
+
+
+def iter_pairs(records: list[dict], plan: dict, seed: int = 0) -> Iterator[dict]:
+    rng = random.Random(seed)
+    looks, holdout = plan['looks'], plan['holdout']
+    for character, group in plan['by_character'].items():
         if character in holdout or len(group) < 2:
             continue
+        usable = [r for r in group if _usable(r, character)]
+        by_artist = defaultdict(list)
+        for r in usable:
+            by_artist[r['artist']].append(r)
         for target in group:
             if target['characters'] != [character]:
                 continue   # targets show only this character, so the prompt's other content stays coherent
-            others = [r for r in group if r is not target]
-            for kind, pool in (('identity_style', [r for r in others if r['artist'] == target['artist']]),
-                               ('identity', [r for r in others if r['artist'] != target['artist']])):
-                refs = [ref for r in rng.sample(pool, len(pool)) if (ref := reference(r, character))][:REFS_PER_TARGET]
-                for ref in refs:
-                    pairs.append({'kind': kind, 'character': character, 'target': target['path'], 'reference': ref,
-                                  **_split(target, kind == 'identity_style', character, looks.get(character, []))})
+            for kind, pool, accept in (
+                    ('identity_style', by_artist[target['artist']], lambda r: r is not target),
+                    ('identity', usable, lambda r: r['artist'] != target['artist'])):
+                for r in _pick(rng, pool, accept, REFS_PER_TARGET):
+                    yield {'kind': kind, 'character': character, 'target': target['path'], 'reference': _usable(r, character),
+                           **_split(target, kind == 'identity_style', character, looks.get(character, []))}
     by_artist = defaultdict(list)
     for r in records:
-        by_artist[r['artist']].append(r)
+        if not holdout.intersection(r['characters']):
+            by_artist[r['artist']].append(r)
     for artist, group in by_artist.items():
         for target in group:
-            if holdout.intersection(target['characters']):
-                continue
-            pool = [r for r in group if r is not target and not set(r['characters']) & set(target['characters'])
-                    and not holdout.intersection(r['characters'])]
-            for r in rng.sample(pool, min(REFS_PER_TARGET, len(pool))):
-                pairs.append({'kind': 'style', 'character': None, 'target': target['path'],
-                              'reference': {'path': r['path'], 'crop': None}, **_split(target, True, None, [])})
-    evaluation = [{'character': c, 'images': [r['path'] for r in by_character[c]], 'look': looks.get(c, [])} for c in sorted(holdout)]
-    return {'pairs': pairs, 'eval': evaluation, 'looks': looks,
-            'counts': dict(Counter(p['kind'] for p in pairs)), 'held_out': sorted(holdout)}
+            own = set(target['characters'])
+            for r in _pick(rng, group, lambda r: r is not target and not own.intersection(r['characters']), REFS_PER_TARGET):
+                yield {'kind': 'style', 'character': None, 'target': target['path'],
+                       'reference': {'path': r['path'], 'crop': None}, **_split(target, True, None, [])}
 
 
-def export(group_ids: Optional[list[int]] = None, folder_ids: Optional[list[int]] = None, name: str = 'reference-pairs') -> dict:
+def build(records: list[dict], seed: int = 0) -> dict:
+    """Everything in memory: for tests and small sets (export() streams instead)."""
+    plan = _plan(records)
+    pairs = list(iter_pairs(records, plan, seed))
+    return {'pairs': pairs, 'eval': _evaluation(plan), 'looks': plan['looks'], 'coverage': plan['coverage'],
+            'counts': dict(Counter(p['kind'] for p in pairs)), 'held_out': sorted(plan['holdout'])}
+
+
+def _evaluation(plan: dict) -> list[dict]:
+    return [{'character': c, 'images': [r['path'] for r in plan['by_character'][c]], 'look': plan['looks'].get(c, [])}
+            for c in sorted(plan['holdout'])]
+
+
+def export(group_ids: Optional[list[int]] = None, folder_ids: Optional[list[int]] = None, name: str = 'reference-pairs',
+           accepted_only: bool = False, progress: Optional[Callable[[str], None]] = None) -> dict:
     from app.services.planner_store import planner_dir
-    folders = _folders(group_ids, folder_ids)
-    records = collect(folders)
-    result = build(records)
+    say = progress or (lambda message: None)
+    folders = _folders(group_ids, folder_ids, accepted_only)
+    say(f'Reading {len(folders):,} folders')
+    records = collect(folders, lambda n: say(f'Read {n:,} images'))
+    say(f'Pairing {len(records):,} images')
+    plan = _plan(records)
     target = planner_dir() / 'exports' / name
     target.mkdir(parents=True, exist_ok=True)
+    counts = Counter()
     with open(target / 'pairs.jsonl', 'w', encoding='utf-8') as fh:
-        for pair in result['pairs']:
+        for pair in iter_pairs(records, plan):
             fh.write(json.dumps(pair, ensure_ascii=False) + '\n')
+            counts[pair['kind']] += 1
+            if sum(counts.values()) % 100_000 == 0:
+                say(f'Wrote {sum(counts.values()):,} pairs')
     with open(target / 'eval.jsonl', 'w', encoding='utf-8') as fh:
-        for item in result['eval']:
+        for item in _evaluation(plan):
             fh.write(json.dumps(item, ensure_ascii=False) + '\n')
-    (target / 'looks.json').write_text(json.dumps(result['looks'], ensure_ascii=False, indent=1), encoding='utf-8')
-    summary = {'folders': len(folders), 'images': len(records), 'pairs': len(result['pairs']), 'by_kind': result['counts'],
-               'held_out_characters': result['held_out'], 'path': str(target),
+    (target / 'looks.json').write_text(json.dumps(plan['looks'], ensure_ascii=False, indent=1), encoding='utf-8')
+    summary = {'folders': len(folders), 'accepted_only': accepted_only, 'images': len(records),
+               'pairs': sum(counts.values()), 'by_kind': dict(counts), 'coverage': plan['coverage'],
+               'held_out_characters': sorted(plan['holdout']), 'path': str(target),
                'created_at': datetime.now(timezone.utc).isoformat()}
     (target / 'README.txt').write_text(
         'Reference pairs for a MOSS-Image reference adapter (Illustration Scrapping Studio).\n'
@@ -216,7 +284,9 @@ def export(group_ids: Optional[list[int]] = None, folder_ids: Optional[list[int]
         '               keep (prompt tags), look (tags the reference supplies; 20% of prompts keep 30-70% of them),\n'
         '               minimal (10% of prompts)\n'
         '  eval.jsonl   held-out characters: their images and usual look, never in a pair\n'
-        '  looks.json   every character\'s usual look\n\n' + json.dumps(summary, indent=1) + '\n', encoding='utf-8')
+        '  looks.json   every character\'s usual look\n\n'
+        'coverage: characters outside the held-out set; *_2_plus_artists are the ones identity pairs can use.\n\n'
+        + json.dumps(summary, indent=1) + '\n', encoding='utf-8')
     return summary
 
 
@@ -225,18 +295,24 @@ def status() -> dict:
         return dict(_state)
 
 
-def start(group_ids: Optional[list[int]] = None, folder_ids: Optional[list[int]] = None, name: str = 'reference-pairs') -> dict:
+def start(group_ids: Optional[list[int]] = None, folder_ids: Optional[list[int]] = None, name: str = 'reference-pairs',
+          accepted_only: bool = False) -> dict:
     with _lock:
         if _state.get('status') == 'running':
             raise RuntimeError('Reference pairs are already being exported')
         _state.clear()
-        _state.update(status='running', started_at=datetime.now(timezone.utc).isoformat())
+        _state.update(status='running', started_at=datetime.now(timezone.utc).isoformat(), progress='Starting')
+
+    def say(message: str) -> None:
+        with _lock:
+            _state['progress'] = message
 
     def work():
         try:
-            result = export(group_ids, folder_ids, name)
+            result = export(group_ids, folder_ids, name, accepted_only, say)
             with _lock:
                 _state.update(status='done', result=result, finished_at=datetime.now(timezone.utc).isoformat())
+                _state.pop('progress', None)
         except Exception as exc:
             with _lock:
                 _state.update(status='error', error=f'{type(exc).__name__}: {exc}')

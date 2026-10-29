@@ -189,6 +189,7 @@ def transparent_flatten(request: FlattenTransparent):
 class ReferencePairsExport(BaseModel):
     group_ids: list[int] = []      # empty: every artist folder
     name: str = 'reference-pairs'
+    accepted_only: bool = False    # only folders accepted in the Tracker
 
 
 @router.get('/reference-pairs')
@@ -205,7 +206,7 @@ def reference_pairs_export(request: ReferencePairsExport):
     if not re.fullmatch(r'[A-Za-z0-9._-]{1,80}', request.name):
         raise HTTPException(status_code=422, detail='Name: letters, digits, dot, dash and underscore only')
     try:
-        return start(request.group_ids or None, None, request.name)
+        return start(request.group_ids or None, None, request.name, request.accepted_only)
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
