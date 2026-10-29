@@ -1,6 +1,7 @@
 from app.services.diagnostics import emit
 import hashlib
 import imagehash
+import os
 import shutil
 import re
 from PIL import Image
@@ -613,13 +614,20 @@ class ImageService:
 
     @pair_write
     def reconcile_filesystem(self) -> dict:
-        """Rebuild missing index rows from collection folders without deleting files."""
+        """Rebuild missing index rows from collection folders without deleting files.
+
+        Runs at every startup, so files the index already has at that path in that folder are not hashed again
+        (hashing reads every byte: minutes for a large library); only files new to the index are."""
         from app.services.groups import recover_moves
         recover_moves(self.library_path)
         valid_extensions = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff", ".avif"}
         now = datetime.now(timezone.utc).isoformat()
         stats = {"collections": 0, "images": 0, "thumbnails": 0, "tags": 0, "errors": 0}
         conn = get_connection()
+        indexed = {(str(path).replace('\\', '/'), folder_id): (image_id, sha256) for image_id, path, folder_id, sha256
+                   in conn.execute('SELECT id, path, folder_id, sha256 FROM image WHERE path IS NOT NULL')}
+        linked = set(conn.execute('SELECT collection_id, image_id FROM collection_image').fetchall())
+        sourced = {row[0] for row in conn.execute('SELECT DISTINCT image_id FROM image_source')}
         groups = {row['slug']: dict(row) for row in conn.execute('SELECT * FROM artist_group')}
         folders = []
         for parent in self.images_path.iterdir() if self.images_path.exists() else []:
@@ -654,18 +662,21 @@ class ImageService:
                 conn.execute("INSERT OR IGNORE INTO collection_source (collection_id, provider, enabled) VALUES (?, ?, 1)", (collection_id, group['provider'] if group else 'danbooru'))
                 stats["collections"] += 1
 
-            for image_path in folder.iterdir():
-                if not image_path.is_file() or image_path.suffix.lower() not in valid_extensions:
-                    continue
+            with os.scandir(folder) as entries:
+                names = [entry.name for entry in entries
+                         if os.path.splitext(entry.name)[1].lower() in valid_extensions and entry.is_file()]
+            for name in names:
+                image_path = folder / name
                 relative = image_path.relative_to(self.images_path).as_posix()
-                sha256, md5 = self.compute_hashes(str(image_path), include_md5=True)
-                existing = conn.execute(
-                    "SELECT id FROM image WHERE folder_id = ? AND sha256 = ?",
-                    (collection_id, sha256),
-                ).fetchone()
-                if existing:
-                    image_id = existing[0]
-                else:
+                image_id, sha256 = indexed.get((relative, collection_id), (None, None))
+                if image_id is None:
+                    sha256, md5 = self.compute_hashes(str(image_path), include_md5=True)
+                    existing = conn.execute(
+                        "SELECT id FROM image WHERE folder_id = ? AND sha256 = ?",
+                        (collection_id, sha256),
+                    ).fetchone()
+                    image_id = existing[0] if existing else None
+                if image_id is None:
                     thumb_rel = f"{slug}/{image_path.stem}_thumb.jpg"
                     thumb_path = self.thumbnails_path / thumb_rel
                     needs_thumbnail = not thumb_path.exists()
@@ -693,7 +704,10 @@ class ImageService:
                     image_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
                     stats["images"] += 1
 
-                conn.execute("INSERT OR IGNORE INTO collection_image (collection_id, image_id, added_at) VALUES (?, ?, ?)", (collection_id, image_id, now))
+                if (collection_id, image_id) not in linked:
+                    conn.execute("INSERT OR IGNORE INTO collection_image (collection_id, image_id, added_at) VALUES (?, ?, ?)", (collection_id, image_id, now))
+                if image_id in sourced:
+                    continue
                 sidecar = image_path.with_suffix(".txt")
                 if sidecar.exists() and not conn.execute("SELECT 1 FROM image_source WHERE image_id = ? LIMIT 1", (image_id,)).fetchone():
                     raw_tags = [tag.strip() for tag in sidecar.read_text(encoding="utf-8", errors="replace").replace("_", " ").split(",") if tag.strip()]

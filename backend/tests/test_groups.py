@@ -255,6 +255,20 @@ class ArtistGroupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.service.list_collections()), 1)
         self.assertEqual(self.service.get_collection(folder.id).image_count, 1)
 
+    def test_reconciliation_hashes_only_files_new_to_the_index(self):
+        folder = self.folder(group=self.dan['id'])
+        self.image(folder)
+        service = ImageService(self.root)
+        with patch.object(ImageService, 'compute_hashes', wraps=service.compute_hashes) as hashed:
+            service.reconcile_filesystem()
+        self.assertEqual(hashed.call_count, 0, 'an indexed file is not read again at startup')
+        Image.new('RGB', (512, 512), 'blue').save(self.root / 'images' / folder.slug / 'dropped-in.jpg')
+        with patch.object(ImageService, 'compute_hashes', wraps=service.compute_hashes) as hashed:
+            stats = service.reconcile_filesystem()
+        self.assertEqual(hashed.call_count, 1)
+        self.assertEqual(stats['images'], 1)
+        self.assertEqual(self.service.get_collection(folder.id).image_count, 2)
+
     async def test_group_job_snapshot_and_restart_exclude_other_groups_and_sources(self):
         dan = self.folder('Same artist', self.dan['id'], ['danbooru', 'e621'])
         self.folder('Same artist', self.e621['id'], ['e621', 'danbooru'])
