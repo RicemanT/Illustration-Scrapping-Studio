@@ -3,7 +3,7 @@ import { useParams } from 'react-router-dom';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import api, { backendAssetUrl } from '../api/client';
 import { refreshFolderViews } from '../api/folderCache';
-import { flagInfo, LEVEL_CLASS, parseFlags } from '../components/analysisFlags';
+import { flagInfo, LEVEL_CLASS, tileFlags } from '../components/analysisFlags';
 import { markFor } from '../components/qualityMarks';
 import TouchViewer from './TouchViewer';
 import TouchWildcards from './TouchWildcards';
@@ -118,7 +118,7 @@ export default function TouchFolder() {
       {tab === 'images' && <>
         <div ref={gridRef} className="grid grid-cols-3 gap-0.5 p-0.5 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6">
           {images.map((image, index) => {
-            const flags = parseFlags(image.analysis_flags);
+            const flags = tileFlags(image);
             const mark = (image.quality_mark && markFor(image.quality_mark)) || (image.aesthetic_mark && markFor(image.aesthetic_mark));
             const isSelected = selected.has(String(image.id));
             return <button key={image.id} type="button" data-image-id={image.id} data-select-key={image.id} onClick={() => tap(image, index)} onContextMenu={(event) => event.preventDefault()}

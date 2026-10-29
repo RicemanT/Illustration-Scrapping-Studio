@@ -26,6 +26,8 @@ class LocalFilter(BaseModel):
     posted_from_year: int | None = Field(default=None, ge=1990, le=2100)
     posted_to_year: int | None = Field(default=None, ge=1990, le=2100)
     flagged: bool | None = None
+    # Tagged "original" (an original character, not from a series).
+    original: bool | None = None
     quality: Literal["normal", "unviewed", "auto", "manual", "masterpiece", "best quality", "low quality", "very aesthetic", "aesthetic"] | None = None
     # Natural-language caption file beside the image.
     caption: Literal["has", "missing"] | None = None
@@ -54,6 +56,15 @@ class LocalQuery(BaseModel):
     limit: int = Field(default=100, ge=1, le=200)
     offset: int = Field(default=0, ge=0)
     sort: Literal["newest", "oldest", "width", "height", "posted_newest", "posted_oldest", "flags"] = "newest"
+
+
+LATEST_SOURCE = "NOT EXISTS (SELECT 1 FROM image_source n WHERE n.image_id=s.image_id AND n.provider=s.provider AND n.remote_id=s.remote_id AND n.version>s.version)"
+# An original character: the latest source tags say "original" (whatever the folder's category policy, since boorus
+# file it under copyright) or it was added by hand, and it was not removed by hand.
+ORIGINAL_SQL = f"""(EXISTS (SELECT 1 FROM image_tag_override o WHERE o.image_id=i.id AND tag_key(o.tag)='original' AND o.action='add')
+  OR (NOT EXISTS (SELECT 1 FROM image_tag_override o WHERE o.image_id=i.id AND tag_key(o.tag)='original' AND o.action='remove')
+    AND EXISTS (SELECT 1 FROM image_tag t JOIN image_source s ON s.id=t.source_id
+      WHERE t.image_id=i.id AND tag_key(t.tag)='original' AND {LATEST_SOURCE})))"""
 
 
 # Effective membership mirrors TagService: trusted source tags, canonical
@@ -137,6 +148,8 @@ def query_sql(folder_id: int, filters: LocalFilter):
         params.append(filters.posted_to_year)
     if filters.flagged is not None:
         clauses.append("COALESCE(i.analysis_flag_count,0) > 0" if filters.flagged else "COALESCE(i.analysis_flag_count,0) = 0")
+    if filters.original is not None:
+        clauses.append(ORIGINAL_SQL if filters.original else f"NOT {ORIGINAL_SQL}")
     if filters.quality == "normal":
         clauses.append("i.quality_mark IS NULL AND i.aesthetic_mark IS NULL")
     elif filters.quality == "unviewed":
@@ -168,7 +181,7 @@ def query_sql(folder_id: int, filters: LocalFilter):
     if filters.rating:
         source_conditions.append(f"({rating_expr})=?")
         params.append(filters.rating)
-    latest_condition = "NOT EXISTS (SELECT 1 FROM image_source n WHERE n.image_id=s.image_id AND n.provider=s.provider AND n.remote_id=s.remote_id AND n.version>s.version)"
+    latest_condition = LATEST_SOURCE
     if source_conditions:
         match = "EXISTS (SELECT 1 FROM image_source s WHERE s.image_id=i.id AND " + latest_condition + " AND " + " AND ".join(source_conditions) + ")"
         if filters.rating == "unknown" and not filters.provider:
@@ -210,8 +223,12 @@ def list_images(folder_id: int, query: LocalQuery) -> dict:
         total = conn.execute(cte + "SELECT count(*) FROM scope i WHERE " + where, params).fetchone()[0]
         order = {"newest": "i.added_at DESC,i.id DESC", "oldest": "i.added_at,i.id", "width": "i.width DESC,i.id DESC", "height": "i.height DESC,i.id DESC",
                  "posted_newest": "i.posted_at IS NULL,i.posted_at DESC,i.id DESC", "posted_oldest": "i.posted_at IS NULL,i.posted_at,i.id",
-                 "flags": "COALESCE(i.analysis_flag_count,0) DESC,i.posted_at DESC,i.id DESC"}[query.sort]
+                 # Hard analysis flags first, then original characters, then the rest.
+                 "flags": f"COALESCE(i.analysis_flag_count,0) DESC,{ORIGINAL_SQL} DESC,i.posted_at DESC,i.id DESC"}[query.sort]
         rows = conn.execute(cte + f"SELECT i.* FROM scope i WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?", [*params, query.limit, query.offset]).fetchall()
+        import json
+        page = json.dumps([row["id"] for row in rows])
+        original = {r[0] for r in conn.execute(f"SELECT i.id FROM image i WHERE i.id IN (SELECT value FROM json_each(?)) AND {ORIGINAL_SQL}", (page,))}
         from app import db
         from app.services.captions import caption_relative, get_suffix
         suffix = get_suffix(conn)
@@ -223,6 +240,7 @@ def list_images(folder_id: int, query: LocalQuery) -> dict:
                 item.pop(key, None)
             item["sidecar_path"] = Path(item["path"]).with_suffix(".txt").as_posix()
             item["has_caption"] = (images_root / caption_relative(item["path"], suffix)).is_file()
+            item["original"] = item["id"] in original
             items.append(item)
         return {"items": items, "images": items, "total": total, "next_cursor": str(query.offset + len(items)) if query.offset + len(items) < total else None,
                 "limit": query.limit, "offset": query.offset, "filters": query.filters.model_dump()}

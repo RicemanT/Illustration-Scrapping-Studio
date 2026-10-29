@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import api, { backendAssetUrl } from '../api/client';
 import { MARKS, applyMark, isActive, marksOf } from '../components/qualityMarks';
-import { flagInfo, LEVEL_CLASS, parseFlags } from '../components/analysisFlags';
+import { flagInfo, LEVEL_CLASS, tileFlags } from '../components/analysisFlags';
 import CaptionEditor from '../components/CaptionEditor';
 import AnalysisDetails from '../components/AnalysisDetails';
 import SwipeZoomStage from './SwipeZoomStage';
@@ -60,7 +60,7 @@ export default function TouchViewer({ images, index, setIndex, onClose, folderId
   };
   const remove = () => onRemove?.([image.id]);
 
-  const flags = parseFlags(image.analysis_flags);
+  const flags = tileFlags(image);
   const video = VIDEO.test(image.path || '');
 
   return (
@@ -71,7 +71,7 @@ export default function TouchViewer({ images, index, setIndex, onClose, folderId
         <span className="text-sm tabular-nums">{index + 1} / {images.length}{hasMore ? '+' : ''}</span>
         {mode === 'sort' && <span className="rounded bg-blue-900/60 px-2 py-0.5 text-[11px] text-blue-100">Quick sort</span>}
         <div className="ml-auto flex flex-wrap justify-end gap-1 text-[10px]">
-          {flags.slice(0, 3).map((flag) => { const info = flagInfo(flag); return <span key={flag} className={`rounded px-1 ${LEVEL_CLASS[info.level]}`}>{info.short}</span>; })}
+          {flags.map((flag) => { const info = flagInfo(flag); return <span key={flag} className={`rounded px-1 ${LEVEL_CLASS[info.level]}`}>{info.short}</span>; })}
         </div>
       </div>
 

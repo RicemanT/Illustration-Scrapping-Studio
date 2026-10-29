@@ -104,6 +104,24 @@ class LocalFilterTests(unittest.TestCase):
         conn = db.get_connection(); conn.execute('UPDATE image SET favorite=0 WHERE id=2'); conn.commit(); conn.close()
         with self.assertRaises(ValueError): filter_review.apply(1,result['preview_token'],[2],'rejected')
 
+    def test_original_characters_badge_filter_and_flags_first(self):
+        conn = db.get_connection()
+        sid = conn.execute("SELECT id FROM image_source WHERE image_id=2").fetchone()[0]
+        conn.execute("INSERT INTO image_tag(image_id,source_id,category,tag) VALUES (2,?,'copyright','original')", (sid,))
+        conn.execute("UPDATE image SET analysis_flag_count=31, analysis_flags='[\"off_style\"]' WHERE id=1")
+        conn.commit(); conn.close()
+        service = TagService(self.root)
+        service.bulk_edit(1,[3],['original'],'add')
+        service.set_folder_category_policy(1,['artist','general'])   # copyright left out of training tags: still original
+        self.assertEqual(self.ids(original=True),[3,2])
+        self.assertEqual(self.ids(original=False),[1])
+        items = list_images(1,LocalQuery(sort='flags'))['items']
+        self.assertEqual([i['id'] for i in items],[1,3,2], 'hard flags, then original characters, then the rest')
+        self.assertEqual({i['id']: i['original'] for i in items},{1: False, 2: True, 3: True})
+        service.set_folder_category_policy(1,['artist','copyright','general'])
+        service.bulk_edit(1,[2],['original'],'remove')
+        self.assertEqual(self.ids(original=True),[3], 'removed by hand')
+
     def test_effective_sql_membership_matches_tag_service(self):
         service = TagService(self.root)
         service.bulk_replace(1,[1,2],'blue hair','custom replacement')

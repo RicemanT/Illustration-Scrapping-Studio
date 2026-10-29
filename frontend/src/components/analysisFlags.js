@@ -13,12 +13,14 @@ export const FLAGS = {
   style_borderline: { short: 'style?', label: 'Borderline style', level: 1 },
   low_aesthetic_here: { short: 'weakest', label: "Among this artist's weakest", level: 1 },
   not_analyzed: { short: 'n/a', label: 'Not analysed', level: 1 },
+  original: { short: 'OC', label: 'Original character (tagged "original")', level: 0 },
 };
 
 export const LEVEL_CLASS = {
   3: 'bg-red-950/90 text-red-100 ring-1 ring-red-700/70',
   2: 'bg-amber-950/90 text-amber-100 ring-1 ring-amber-700/60',
   1: 'bg-black/80 text-slate-200',
+  0: 'bg-violet-950/90 text-violet-100 ring-1 ring-violet-600/60',
 };
 
 export function parseFlags(value) {
@@ -26,5 +28,8 @@ export function parseFlags(value) {
   if (Array.isArray(value)) return value;
   try { return JSON.parse(value) || []; } catch { return []; }
 }
+
+// Tile badges: up to three hard analysis flags, then OC for an original character (not a problem, just worth a look).
+export const tileFlags = (image) => [...parseFlags(image.analysis_flags).slice(0, 3), ...(image.original ? ['original'] : [])];
 
 export const flagInfo = (flag) => FLAGS[flag] || { short: flag.replaceAll('_', ' '), label: flag.replaceAll('_', ' '), level: 1 };
