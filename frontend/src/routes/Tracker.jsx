@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import api, { backendAssetUrl } from '../api/client';
+import ReferencePairsHistory from '../components/ReferencePairsHistory';
 
 const field = 'rounded border border-[#202a34] bg-[#090d12] px-2 py-1.5 text-xs text-slate-200';
 const quiet = 'rounded border border-[#2a3644] px-2.5 py-1.5 text-xs text-slate-300 hover:bg-[#121a24] disabled:opacity-40';
@@ -374,6 +375,7 @@ export default function Tracker() {
         <FoldersCard />
         <SnapshotsCard compare={compare} setCompare={setCompare} />
       </div>
+      <ReferencePairsHistory />
       <section className="rounded border border-[#202a34] bg-[#0c1219] p-4 space-y-3">
         <div className="flex flex-wrap items-center gap-2 border-b border-[#202a34] pb-2">
           {[['character', 'Characters'], ['general', 'General tags']].map(([value, text]) => (

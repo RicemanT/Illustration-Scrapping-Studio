@@ -198,6 +198,12 @@ def reference_pairs_status():
     return status()
 
 
+@router.get('/reference-pairs/history')
+def reference_pairs_history():
+    from app.services.reference_pairs import history
+    return {'items': history()}
+
+
 @router.post('/reference-pairs')
 def reference_pairs_export(request: ReferencePairsExport):
     import re

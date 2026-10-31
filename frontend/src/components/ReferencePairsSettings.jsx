@@ -14,6 +14,8 @@ export default function ReferencePairsSettings() {
     queryFn: async () => (await api.settings.referencePairs()).data,
     refetchInterval: (query) => (query.state.data?.status === 'running' ? 1500 : false),
   });
+  const finished = status.data?.finished_at;
+  React.useEffect(() => { if (finished) queryClient.invalidateQueries({ queryKey: ['reference-pairs-history'] }); }, [finished, queryClient]);
   const running = status.data?.status === 'running';
   const start = useMutation({
     mutationFn: () => api.settings.exportReferencePairs({ group_ids: selected, name, accepted_only: acceptedOnly }),

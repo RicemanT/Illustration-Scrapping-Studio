@@ -145,6 +145,18 @@ class ReferencePairExportTests(PlannerFolderCase):
             self.assertIn(json.loads(lines[0])['kind'], ('identity_style', 'identity', 'style'))
         self.assertTrue((rp_path.parent / 'README.txt').is_file())
         self.assertIn('characters_2_plus_artists', summary['coverage'])
+        # History: this export from its summary.json, and an older one (no summary.json) from its README.
+        older = rp_path.parent.parent / 'pairs-older'
+        older.mkdir()
+        (older / 'pairs.jsonl').write_text('', encoding='utf-8')
+        (older / 'README.txt').write_text('Reference pairs\n\ncoverage: notes\n\n' + json.dumps(
+            {'folders': 2, 'images': 9, 'pairs': 4, 'by_kind': {'style': 4}, 'coverage': {'artists': 2},
+             'held_out_characters': ['zed'], 'created_at': '2020-01-01T00:00:00+00:00'}, indent=1) + '\n', encoding='utf-8')
+        (rp_path.parent.parent / 'training-export').mkdir()
+        history = rp.history()
+        self.assertEqual([h['name'] for h in history], ['pairs-older', 'test-pairs'], 'oldest first; non-pair exports skipped')
+        self.assertEqual(history[0]['held_out'], 1)
+        self.assertEqual(history[1]['images'], len(ids))
         # Accepted folders only: nothing is accepted yet, then this folder is.
         from unittest.mock import patch
         self.assertEqual(rp._folders(None, [folder_id], accepted_only=True), [])

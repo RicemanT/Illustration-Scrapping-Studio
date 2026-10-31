@@ -177,6 +177,7 @@ export const api = {
     transparent: () => client.get('/settings/transparent'),
     flattenTransparent: (data) => client.post('/settings/transparent', data),
     referencePairs: () => client.get('/settings/reference-pairs'),
+    referencePairsHistory: () => client.get('/settings/reference-pairs/history'),
     exportReferencePairs: (data) => client.post('/settings/reference-pairs', data),
     updateCaptions: (data) => client.put('/settings/captions', data),
     updateStorage: data => client.put('/settings/storage', data),

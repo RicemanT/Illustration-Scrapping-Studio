@@ -286,10 +286,11 @@ def export(group_ids: Optional[list[int]] = None, folder_ids: Optional[list[int]
         for item in _evaluation(plan):
             fh.write(json.dumps(item, ensure_ascii=False) + '\n')
     (target / 'looks.json').write_text(json.dumps(plan['looks'], ensure_ascii=False, indent=1), encoding='utf-8')
-    summary = {'folders': len(folders), 'accepted_only': accepted_only, 'images': len(records),
-               'pairs': sum(counts.values()), 'by_kind': dict(counts), 'coverage': plan['coverage'],
+    summary = {'name': name, 'folders': len(folders), 'accepted_only': accepted_only, 'groups': _group_names(group_ids),
+               'images': len(records), 'pairs': sum(counts.values()), 'by_kind': dict(counts), 'coverage': plan['coverage'],
                'held_out_characters': sorted(plan['holdout']), 'path': str(target),
                'created_at': datetime.now(timezone.utc).isoformat()}
+    (target / 'summary.json').write_text(json.dumps(summary, ensure_ascii=False, indent=1), encoding='utf-8')
     (target / 'README.txt').write_text(
         'Reference pairs for a MOSS-Image reference adapter (Illustration Scrapping Studio).\n'
         'Paths are relative to the library images folder, like folders.csv in the training export.\n\n'
@@ -301,6 +302,41 @@ def export(group_ids: Optional[list[int]] = None, folder_ids: Optional[list[int]
         'coverage: characters outside the held-out set; *_2_plus_artists are the ones identity pairs can use.\n\n'
         + json.dumps(summary, indent=1) + '\n', encoding='utf-8')
     return summary
+
+
+def _group_names(group_ids: Optional[list[int]]) -> Optional[list[str]]:
+    """The exported groups' names (None: every group), so the history can tell exports of different scope apart."""
+    if not group_ids:
+        return None
+    conn = db.get_connection()
+    try:
+        return [r[0] for r in conn.execute(f"SELECT name FROM artist_group WHERE id IN ({','.join('?' * len(group_ids))}) ORDER BY name", group_ids)]
+    finally:
+        conn.close()
+
+
+def history() -> list[dict]:
+    """Every pair export's summary, oldest first. Exports made before summary.json existed are read from the JSON
+    block at the end of their README."""
+    from app.services.planner_store import planner_dir
+    root = planner_dir() / 'exports'
+    items = []
+    for folder in (root.iterdir() if root.is_dir() else []):
+        if not (folder / 'pairs.jsonl').is_file():
+            continue   # a training export, not pairs
+        try:
+            if (folder / 'summary.json').is_file():
+                summary = json.loads((folder / 'summary.json').read_text(encoding='utf-8'))
+            else:
+                text = (folder / 'README.txt').read_text(encoding='utf-8')
+                summary = json.loads(text[text.index('\n{') + 1:])
+        except (OSError, ValueError):
+            continue
+        summary.setdefault('name', folder.name)
+        summary.setdefault('groups', None)
+        summary['held_out'] = len(summary.pop('held_out_characters', []) or [])
+        items.append(summary)
+    return sorted(items, key=lambda s: s.get('created_at') or '')
 
 
 def status() -> dict:
