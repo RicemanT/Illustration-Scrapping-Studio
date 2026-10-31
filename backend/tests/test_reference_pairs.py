@@ -101,6 +101,23 @@ class ReferencePairTests(unittest.TestCase):
         self.assertFalse([p for p in result['pairs'] if p['character'] == 'zed'])
         self.assertEqual(len(result['eval'][0]['images']), 6)
 
+    def test_outfit_variants_are_held_out_with_their_character(self):
+        self.assertEqual(rp.identity('mejiro mcqueen (frontline elegance) (umamusume)'), 'mejiro mcqueen (umamusume)')
+        self.assertEqual(rp.identity('bb (swimsuit mooncancer) (second ascension) (fate)'), 'bb (fate)')
+        self.assertEqual(rp.identity('kaga (kancolle)'), 'kaga (kancolle)')
+        self.assertEqual(rp.identity('koakuma'), 'koakuma')
+        base, outfit = 'hasumi (blue archive)', 'hasumi (track) (blue archive)'
+        records = [record(f'{a}/{i}.png', a, [base], ['1girl', 'solo']) for a in ('x', 'y') for i in range(2)]
+        records.append(record('x/9.png', 'x', [outfit], ['1girl', 'solo', 'track suit']))
+        original = rp.HOLDOUT_SHARE
+        rp.HOLDOUT_SHARE = 1.0
+        try:
+            result = rp.build(records)
+        finally:
+            rp.HOLDOUT_SHARE = original
+        self.assertEqual(result['held_out'], [base, outfit], 'five images across both tags qualify them together')
+        self.assertFalse([p for p in result['pairs'] if p['character'] in (base, outfit)])
+
 
 from tests.test_folder_guard import PlannerFolderCase  # noqa: E402
 

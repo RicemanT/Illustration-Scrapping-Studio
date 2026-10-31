@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+import re
 import sys
 import threading
 from collections import Counter, defaultdict
@@ -179,6 +180,12 @@ def _pick(rng: random.Random, pool: list, accept: Callable[[object], bool], k: i
     return chosen
 
 
+def identity(character: str) -> str:
+    """The character a tag names, without outfit qualifiers: 'mejiro mcqueen (frontline elegance) (umamusume)' ->
+    'mejiro mcqueen (umamusume)'. The last parenthesis is the series and stays, so same-named characters stay apart."""
+    return re.sub(r'(?: \([^()]*\))+( \([^()]*\))$', r'\1', character)
+
+
 def _plan(records: list[dict]) -> dict:
     """Looks, per-character images, held-out characters and coverage counts."""
     looks = character_looks(records)
@@ -187,9 +194,15 @@ def _plan(records: list[dict]) -> dict:
         for c in r['characters']:
             by_character[c].append(r)
     artists_of = {c: len({r['artist'] for r in rs}) for c, rs in by_character.items()}
-    # Held-out characters: enough images and more than one artist, picked by hash so reruns agree.
-    candidates = sorted(c for c, rs in by_character.items() if len(rs) >= 5 and artists_of[c] >= 2)
-    holdout = {c for c in candidates if int(hashlib.md5(c.encode()).hexdigest()[:8], 16) % 1000 < HOLDOUT_SHARE * 1000}
+    # Held-out characters: enough images and more than one artist, picked by hash so reruns agree. Outfit variants
+    # share an identity, so they are held out together: otherwise the base tag trains the "unseen" character.
+    variants = defaultdict(list)
+    for c in by_character:
+        variants[identity(c)].append(c)
+    held = {i for i, cs in variants.items()
+            if len({id(r) for c in cs for r in by_character[c]}) >= 5 and len({r['artist'] for c in cs for r in by_character[c]}) >= 2
+            and int(hashlib.md5(i.encode()).hexdigest()[:8], 16) % 1000 < HOLDOUT_SHARE * 1000}
+    holdout = {c for i in held for c in variants[i]}
     trained = [c for c in by_character if c not in holdout]
     coverage = {'characters': len(trained),
                 'characters_2_plus_images': sum(len(by_character[c]) >= 2 for c in trained),
